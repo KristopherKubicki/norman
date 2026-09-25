@@ -304,6 +304,13 @@ class AWSReadinessResult(BaseModel):
     root_mfa_enabled: bool
 
 
+class AWSRotationResult(BaseModel):
+    """Only rotation state and account identifier may leave the executor."""
+
+    account_id: str
+    rotation_state: str
+
+
 class KeysCapabilityReceipt(BaseModel):
     receipt_id: str
     lease_id: str
@@ -313,7 +320,7 @@ class KeysCapabilityReceipt(BaseModel):
     host_id: str
     status: str
     completed_at: datetime
-    result: Optional[AWSReadinessResult] = None
+    result: Optional[AWSReadinessResult | AWSRotationResult] = None
 
 
 class KeysCapabilityAuditEventOut(KeysOrmResponseModel):

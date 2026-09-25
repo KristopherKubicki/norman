@@ -1,7 +1,7 @@
-"""Fail-closed rotation workflow, not registered as a live capability.
+"""Fail-closed rotation workflow behind the signed broker capability.
 
-Adapters must perform fixed, authenticated server-side operations. Until those
-adapters and host distribution are reviewed and deployed, this runs only in tests.
+Adapters perform fixed, authenticated server-side operations. Production policy
+restricts the available stages; completed cutover retains explicit recovery.
 No arbitrary commands, caller-chosen accounts, raw key APIs or key deletion.
 """
 

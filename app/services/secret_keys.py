@@ -949,16 +949,25 @@ def _execute_capability(
 ) -> dict[str, str | bool] | None:
     """Dispatch only fixed executors and audit failures without SDK material."""
     from app.services.aws_keys_readiness import AWSReadinessError, execute_readiness
+    from app.services.aws_rotation_executor import execute_rotation
+    from app.services.aws_rotation_store import RotationError
 
     if capability.executor_kind == CAPABILITY_RECEIPT_EXECUTOR:
         return None
     try:
+        if capability.executor_kind == "aws-rotation-v1":
+            return execute_rotation(
+                db,
+                executor_ref=capability.executor_ref,
+                action=request.action,
+                parameters=parameters,
+            )
         return execute_readiness(
             executor_ref=capability.executor_ref,
             action=request.action,
             parameters=parameters,
         )
-    except AWSReadinessError:
+    except (AWSReadinessError, RotationError):
         crud.secret_keys.update_capability_lease(db, lease=lease, status="failed")
         crud.secret_keys.create_capability_audit_event(
             db,
@@ -967,11 +976,11 @@ def _execute_capability(
             event_type="capability_failed",
             actor_type=request.requester_type,
             actor_id=request.requester_id,
-            summary="AWS readiness check failed",
+            summary="AWS capability operation failed",
             metadata_json={"error": "aws_check_failed"},
         )
         raise HTTPException(
-            status_code=502, detail="AWS readiness check failed"
+            status_code=502, detail="AWS capability operation failed"
         ) from None
 
 
@@ -1038,6 +1047,7 @@ def invoke_capability_lease(
     if capability.executor_kind not in (
         CAPABILITY_RECEIPT_EXECUTOR,
         "aws-readiness-v1",
+        "aws-rotation-v1",
     ):
         raise HTTPException(
             status_code=501, detail="Capability executor is not installed"
@@ -1049,7 +1059,17 @@ def invoke_capability_lease(
         raise HTTPException(
             status_code=503, detail="AWS executor activation is disabled"
         )
-    if capability.executor_kind == "aws-readiness-v1" and not lease.single_use:
+    if (
+        capability.executor_kind == "aws-rotation-v1"
+        and os.environ.get("NORMAN_KEYS_AWS_ROTATION_ENABLED") != "1"
+    ):
+        raise HTTPException(
+            status_code=503, detail="AWS rotation activation is disabled"
+        )
+    if (
+        capability.executor_kind in ("aws-readiness-v1", "aws-rotation-v1")
+        and not lease.single_use
+    ):
         raise HTTPException(
             status_code=403, detail="AWS checks require a single-use lease"
         )

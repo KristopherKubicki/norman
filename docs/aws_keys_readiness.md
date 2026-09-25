@@ -23,14 +23,14 @@ This supersedes the September 24 deployment status below.
 
 ## Credential Enrollment And YHIX
 
-Gmail still uses its existing long-lived CloudAgent key. A supported server-side import path and
-verified replacement consumers are required before migration or rotation. Do not use raw-secret
-broker endpoints from the TUI. ACM uses its existing temporary management-role session.
+Gmail uses the replacement CloudAgent key rotated September 25, stored encrypted inside Norman and
+distributed to the verified SDK profiles. The original key is inactive. Do not use raw-secret broker
+endpoints from the TUI. ACM uses its existing temporary management-role session.
 YHIX management-role bootstrap completed September 25; `kk-yhix` is verified on Hal and Norman.
 
-Durable storage and a fail-closed rotation workflow are now implemented and dummy-tested in this branch.
-They are not deployed or registered as a live write capability. See
-[Personal AWS Key Rotation Implementation](aws_key_rotation.md) for remaining receiver and integration work.
+The staged rotation completed with fresh checks on all three hosts before and after deactivation.
+Temporary delivery receivers have been removed; only status, cipher verification, and explicit recovery remain.
+See [Personal AWS Key Rotation](aws_key_rotation.md) for evidence, limitations, and recovery.
 
 ## Validation
 

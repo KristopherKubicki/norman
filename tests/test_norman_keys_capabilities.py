@@ -356,3 +356,35 @@ def test_aws_executor_is_disabled_by_default(aws_lease, monkeypatch):
     monkeypatch.setattr(aws_keys_readiness, "execute_readiness", execute)
     assert aws_lease[0]().status_code == 503
     execute.assert_not_called()
+
+
+def test_rotation_dispatch_is_separately_gated_and_returns_typed_receipt(
+    aws_lease, db, monkeypatch
+):
+    from unittest.mock import Mock
+    from app.models import KeysCapability
+    from app.services import aws_rotation_executor
+
+    capability = db.get(KeysCapability, aws_lease[2])
+    capability.executor_kind = "aws-rotation-v1"
+    db.commit()
+    execute = Mock(
+        return_value={
+            "account_id": "970651210182",
+            "rotation_state": "transport_tested",
+            "secret": "dummy-must-not-return",
+        }
+    )
+    monkeypatch.setattr(aws_rotation_executor, "execute_rotation", execute)
+    monkeypatch.delenv("NORMAN_KEYS_AWS_ROTATION_ENABLED", raising=False)
+    assert aws_lease[0]().status_code == 503
+    execute.assert_not_called()
+    monkeypatch.setenv("NORMAN_KEYS_AWS_ROTATION_ENABLED", "1")
+    response = aws_lease[0]()
+    assert response.status_code == 200
+    assert response.json()["result"] == {
+        "account_id": "970651210182",
+        "rotation_state": "transport_tested",
+    }
+    assert "dummy-must-not-return" not in response.text
+    assert aws_lease[0]().status_code == 409

@@ -1,75 +1,86 @@
-# Personal AWS Key Rotation Implementation
+# Personal AWS Key Rotation
 
-## Status
+## Production Status
 
-Development implementation only. No production migration, capability registration, key creation,
-credential import, distribution, deactivation, or deletion has been performed by this implementation.
-It is not yet a supported live rotation path. Existing signed read-only checks remain unchanged.
+Completed September 25, 2026 at approximately 21:46 UTC for IAM user `cloudagent` in account `970651210182`.
+The original key ending `Q2OX` is inactive. The replacement ending `O74M` is active.
+No key was deleted. ACM and YHIX continue to use temporary CloudAgentManagement role sessions.
+OpenBrand and the mothballed account were excluded.
 
-## Implemented Boundaries
+The replacement is encrypted using Norman's existing application cipher in `aws_key_rotations`, bound to
+logical name `cloudagent/aws/gmail`, account, rotation ID, and key ID. This is an internal executor store,
+not a raw-reveal alias. An encrypted-only recovery record also exists outside the database and on Hal.
+The existing SDK profiles remain standard AWS credential files; this change does not encrypt those files
+or reduce the cloudagent user's administrator permissions.
 
-- Durable encrypted rotation state with no stash expiry and no raw-reveal API.
-- Existing runtime cipher injection; no vault initialization or automatic encryption-key generation.
-- Ciphertext payload bound to the logical alias, account, rotation ID, and new key ID.
-- A unique account reservation committed before CreateAccessKey. An uncertain create response or storage
-  failure requires reconciliation; retrying prepare cannot create another key.
-- Pinned AWS endpoints, TLS verification, exact IAM identity and source-key checks, and SDK retries
-  disabled for the non-idempotent creation call.
-- Fixed Gmail account and cloudagent user. ACM and YHIX are verification targets; other accounts are excluded.
-- Exclusive host file lock through external operations and durable transitions, plus database revision checks.
-  Every production worker must use the same protected lock path on the same executor host.
-- Explicit partial-distribution state, fresh checks before retirement, and old-key reactivation on failed
-  post-retirement checks. Key deletion is deliberately absent.
-- Migration downgrade refuses to drop populated recovery storage.
+## Consumers And Verification
 
-The storage module's `consume` callback is an internal injection boundary, not an authorization mechanism.
-Never expose it as an HTTP callback, expression evaluator, generic command runner, or raw-secret provider.
-The live broker must authenticate and authorize each fixed operation before constructing the workflow.
-Likewise, `transition` is internal storage plumbing, not a caller-controlled state-change API.
+Both `kk-personal` and `personal-bedrock` were updated on:
 
-## Remaining Production Requirements
+| Host | OS User | Verification |
+| --- | --- | --- |
+| Hal | kristopher | Fresh credentials, account identities, notification and Glimpser services |
+| Norman | kristopher | Fresh credentials, account identities, production health |
+| NetOps | root | Fresh credentials, account identities, active CloudAgent services |
 
-1. Implement authenticated fixed receivers and `HostTransport` for Hal/kristopher, Norman/kristopher,
-   and NetOps/root. Both kk-personal and personal-bedrock must be covered. No secret values may appear
-   in command arguments, logs, receipts, TUI output, or plaintext staging/rollback files.
-2. Establish concrete fresh credential and application-health checks. A cached assumed-role session
-   or an active systemd process is insufficient. NetOps runs CloudAgent services under root;
-   Hal has long-lived notification and Glimpser alert clients. Inventory coverage remains incomplete.
-3. Prove the existing production encryption configuration survives restarts and has a recoverable backup.
-   The dummy test cipher is NOT suitable for deployment and is not the production cipher.
-4. Connect the workflow to signed, single-use, narrowly authorized broker operations and sanitized typed
-   receipts. Do not broaden existing read-only capability policies into credential write policies.
-5. Deploy receivers and database migration, then test the complete transport with dummy material before
-   enabling live writes. Migration downgrade is not a substitute for credential recovery.
-6. Prepare and distribute the replacement while the old key remains active. Verify every known consumer,
-   including representative scheduled work, before retiring the old key. Keep a recovery observation period.
+Each receiver explicitly authenticated both source profiles and used uncached STS role assumptions for
+ACM and YHIX. All nine host/account combinations passed before and after the original key was disabled.
+Notification and Glimpser clients on Hal were restarted to refresh their cached SDK credentials.
+No test notification was sent. Process/HTTP checks are not proof of end-to-end SMS or camera-event delivery.
+CloudTrail also recorded successful NetOps-kernel AWS CLI requests using the replacement after deactivation,
+including normal CloudAgent SSM activity. A recent old-key sample was empty; that is not an exhaustive audit.
+Unknown or infrequent consumers remain an observation-period risk; retain the inactive key for recovery.
 
-The current implementation intentionally has no default HostTransport and no registered write executor.
-User authorization to rotate exists; missing transport, verification and integration are engineering work,
-not a request for the user to log in again or disclose a credential.
+## Delivery And Authorization
 
-## Failure Recovery
+- Only the enrolled Hal host can request the personal rotation capability using the existing signed protocol.
+- Broker policies bind the requester, lane, action, account, and short-lived single-use lease.
+- The write executor has a separate activation gate from the read-only readiness executor.
+- SSH delivery used pinned server keys and the existing Norman deployment identity. Secrets traveled only
+  in encrypted SSH stdin or a local pipe, never command arguments or output.
+- Receivers accepted fixed operations and files, checked the IAM principal before installation, and returned
+  only status metadata. On Norman the receiver ran without sudo, preserving `NoNewPrivileges=yes`.
+- Replacement of standard credential files was atomic. A private mode-0600 sibling inode was used briefly
+  for the atomic rename and removed on failure; no plaintext rollback or audit copies were retained.
+- A temporary health failure during the first Hal restart stopped distribution while the old key stayed active.
+  Bounded application-readiness polling corrected that issue before cutover proceeded.
 
-- `creating`: inspect AWS key metadata through the normal management path. A second key may exist even
-  when the response was lost. Do not automatically issue another create or delete an unidentified key.
-- `stored`: encrypted replacement persisted; distribution has not completed.
-- `distributing` or `distribution_failed`: old key stays active. Re-run idempotent distribution only under
-  the exclusive operation lock, after resolving the failed receiver.
-- `verified`: all adapter checks passed, but retirement repeats those checks and must be a separate action.
-- `retiring` or `recovery_required`: use replacement credentials through the supported executor to reactivate
-  the old key and read back its status. The exclusive lock prevents racing an active retirement worker.
-- `old_reactivated`: both generations can remain usable; reconcile consumers before another cutover.
-  The implementation does not yet provide an automatic retry from this state.
-- `old_inactive`: preserve the encrypted replacement and old-key recovery option. No deletion is implemented.
+After cutover, all three temporary receivers, their sudo rules, and the temporary SSH host-pin file were removed.
+The broker policy and Hal client sudo rule now permit only `status`, `cipher-test`, and explicit `recover`.
+Creating, distributing, or retiring keys again requires a deliberate deployment and policy update.
+This is a fixed-account, fixed-generation workflow, not automatic recurring rotation.
 
-Tests use dummy credentials and mocked AWS. They cover ciphertext persistence across a new database engine,
-wrong encryption keys, ciphertext context mismatch, partial distribution, stale checks, ambiguous creation,
-failed rollback, concurrent-operation locking, exact AWS identity and source key, and no SDK create retries.
+## Durable Storage And Recovery
 
-## Validation Results
+State is reserved before CreateAccessKey, encrypted before distribution, and protected by a process-shared
+file lock plus database revisions. SDK creation retries are disabled. Uncertain creation requires explicit
+reconciliation; a retry cannot silently create another key. Migration downgrade refuses populated storage.
 
-September 25: 75 focused tests passed, including rotation, AWS adapter, readiness, host authentication,
-capability policy, and rollout tests. Formatting, lint, and whitespace checks passed.
-The full suite stopped after 883 passes at the previously observed, unchanged pricing-catalog failure:
-`test_control_plane_skill_gap_audit_reports_runbook_and_operation_coverage`, missing price for
-`gpt-5.5/standard`. The full suite is not green. No production tests with replacement credentials were run.
+Norman's encryption probe was written, then verified after a service restart using the existing configuration.
+The production configuration was tightened to mode 0600, and a root-private recovery copy was preserved at:
+`/home/kristopher/releases/aws-rotation-backup-20260925/runtime-config.yaml` on Norman.
+The configuration is sensitive: never display it or copy it into a transcript or repository.
+
+The encrypted credential recovery record is on Norman at
+`/var/lib/norman/state/aws-source-rotation-<rotation-id>.encrypted.json`.
+A private encrypted-only copy and nonsecret verification metadata are in Hal's audit directory:
+`/home/kristopher/personal-security-audit-20260921/estate/aws-source-key-rotation-20260925/`.
+Do not lose the application encryption configuration; an encrypted credential record alone is insufficient.
+
+Current status can be checked on Hal with `sudo -n /usr/local/sbin/norman-aws-rotation status`.
+If an unmigrated consumer fails, `sudo -n /usr/local/sbin/norman-aws-rotation recover` reactivates the original
+key using the encrypted replacement and reads back the result. It does not restore old profile files or
+delete the replacement. Recovery must be explicit; do not run it merely to test the command.
+The usual read-only `norman-aws-readiness gmail|acm|yhix` checks remain available.
+
+## Validation
+
+95 focused tests passed, including durable encryption, interrupted creation, partial distribution,
+failed rollback, concurrency, fixed AWS bindings, signed capability policy, transport, and service startup waits.
+Formatting, lint, and whitespace checks passed. The full suite stopped after 901 passes on the previously
+observed unrelated missing `gpt-5.5/standard` price in
+`test_control_plane_skill_gap_audit_reports_runbook_and_operation_coverage`; the full suite is not green.
+
+Live evidence includes dummy receiver tests on all three hosts, signed broker dummy delivery, encryption
+verification after restart, staged distribution, fresh identity checks before/after retirement, and AWS
+readback showing the original key inactive and replacement active. No secret value appeared in tool output.
