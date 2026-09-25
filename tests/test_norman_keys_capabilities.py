@@ -1,4 +1,5 @@
 from __future__ import annotations
+import pytest
 
 from app.api.deps import get_keys_service_user
 from app.crud.user import create_user, get_user_by_email
@@ -202,3 +203,154 @@ def test_capability_lease_binds_parameters_is_single_use_and_audits_safely(
         }
     finally:
         app.dependency_overrides.pop(get_keys_service_user, None)
+
+
+@pytest.fixture
+def aws_lease(test_app, db, monkeypatch):
+    """Create a real broker lease with mocked AWS only at execution."""
+    from app.models import KeysCapability
+
+    monkeypatch.setenv("NORMAN_KEYS_AWS_EXECUTOR_ENABLED", "1")
+    app.dependency_overrides[get_keys_service_user] = _keys_service_override(db)
+    import uuid
+
+    host = "aws-host-" + uuid.uuid4().hex
+    name = "aws.inspect." + uuid.uuid4().hex
+    _setup_capability(test_app, name=name, host_id=host)
+    capability = db.query(KeysCapability).filter_by(name=name).one()
+    capability.executor_kind = "aws-readiness-v1"
+    capability.executor_ref = "104637383649"
+    db.commit()
+    parameters = {"account_id": "104637383649"}
+    response = test_app.post(
+        "/v1/capabilities/request",
+        headers={"X-Norman-Keys-Host-Fingerprint": FINGERPRINT},
+        json={
+            "capability": capability.name,
+            "host_id": host,
+            "identity_fingerprint": FINGERPRINT,
+            "requester_type": "agent",
+            "requester_id": "hal-tui",
+            "lane": "personal",
+            "action": "inspect",
+            "parameters": parameters,
+            "target_host": "firewall.home.arpa",
+        },
+    )
+    assert response.status_code == 200, response.text
+    lease_id = response.json()["lease"]["lease_id"]
+
+    def invoke():
+        return test_app.post(
+            f"/v1/capabilities/{lease_id}/invoke",
+            headers={"X-Norman-Keys-Host-Fingerprint": FINGERPRINT},
+            json={
+                "host_id": host,
+                "identity_fingerprint": FINGERPRINT,
+                "parameters": parameters,
+            },
+        )
+
+    try:
+        yield invoke, lease_id, capability.id, host
+    finally:
+        app.dependency_overrides.pop(get_keys_service_user, None)
+
+
+def test_aws_dispatch_returns_typed_receipt_and_rejects_replay(aws_lease, monkeypatch):
+    from unittest.mock import Mock
+    from app.services import aws_keys_readiness
+
+    execute = Mock(
+        return_value={
+            "account_id": "104637383649",
+            "identity_verified": True,
+            "root_mfa_enabled": True,
+            "unexpected": "must-not-return",
+        }
+    )
+    monkeypatch.setattr(aws_keys_readiness, "execute_readiness", execute)
+    response = aws_lease[0]()
+    assert response.status_code == 200, response.text
+    assert response.json()["result"] == {
+        "account_id": "104637383649",
+        "identity_verified": True,
+        "root_mfa_enabled": True,
+    }
+    assert "must-not-return" not in response.text
+    assert aws_lease[0]().status_code == 409
+    assert execute.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "revocation",
+    ["capability", "policy", "action", "target", "requester", "approval", "enrollment"],
+)
+def test_post_issue_revocation_prevents_aws(aws_lease, db, monkeypatch, revocation):
+    from unittest.mock import Mock
+    from app.models import KeysCapability, KeysCapabilityPolicy, KeysHostEnrollment
+    from app.services import aws_keys_readiness
+
+    capability = db.get(KeysCapability, aws_lease[2])
+    policy = db.query(KeysCapabilityPolicy).filter_by(capability_id=capability.id).one()
+    enrollment = db.query(KeysHostEnrollment).filter_by(host_id=aws_lease[3]).one()
+    if revocation == "capability":
+        capability.enabled = False
+    elif revocation == "policy":
+        policy.enabled = False
+    elif revocation == "action":
+        policy.allowed_actions = ["different"]
+    elif revocation == "target":
+        policy.allowed_target_hosts = ["different"]
+    elif revocation == "requester":
+        policy.requester_id = "different"
+    elif revocation == "approval":
+        policy.approval_required = True
+    else:
+        enrollment.capability_names = ["different"]
+    db.commit()
+    execute = Mock()
+    monkeypatch.setattr(aws_keys_readiness, "execute_readiness", execute)
+    assert aws_lease[0]().status_code == 403
+    execute.assert_not_called()
+
+
+def test_failed_aws_check_is_consumed_and_audited(aws_lease, test_app, monkeypatch):
+    from app.services import aws_keys_readiness
+
+    def fail(**kwargs):
+        raise aws_keys_readiness.AWSReadinessError("private-detail")
+
+    monkeypatch.setattr(aws_keys_readiness, "execute_readiness", fail)
+    response = aws_lease[0]()
+    assert response.status_code == 502
+    assert "private-detail" not in response.text
+    assert aws_lease[0]().status_code == 409
+    audit = test_app.get("/api/v1/keys/capability-audit").json()
+    assert any(item["event_type"] == "capability_failed" for item in audit)
+    assert "private-detail" not in str(audit)
+
+
+def test_claim_rejects_stale_active_lease(aws_lease, db):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from app.models import KeysCapabilityLease
+    from app.services.secret_keys import _claim_capability_lease
+
+    lease = db.query(KeysCapabilityLease).filter_by(lease_uuid=aws_lease[1]).one()
+    stale = SimpleNamespace(id=lease.id, single_use=True)
+    _claim_capability_lease(db, lease=lease, receipt_uuid="first")
+    with pytest.raises(HTTPException) as error:
+        _claim_capability_lease(db, lease=stale, receipt_uuid="second")
+    assert error.value.status_code == 409
+
+
+def test_aws_executor_is_disabled_by_default(aws_lease, monkeypatch):
+    from unittest.mock import Mock
+    from app.services import aws_keys_readiness
+
+    monkeypatch.delenv("NORMAN_KEYS_AWS_EXECUTOR_ENABLED", raising=False)
+    execute = Mock()
+    monkeypatch.setattr(aws_keys_readiness, "execute_readiness", execute)
+    assert aws_lease[0]().status_code == 503
+    execute.assert_not_called()

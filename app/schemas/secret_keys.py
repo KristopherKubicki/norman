@@ -296,6 +296,14 @@ class KeysCapabilityInvoke(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 
+class AWSReadinessResult(BaseModel):
+    """Only these AWS metadata fields may leave the executor."""
+
+    account_id: str
+    identity_verified: bool
+    root_mfa_enabled: bool
+
+
 class KeysCapabilityReceipt(BaseModel):
     receipt_id: str
     lease_id: str
@@ -305,6 +313,7 @@ class KeysCapabilityReceipt(BaseModel):
     host_id: str
     status: str
     completed_at: datetime
+    result: Optional[AWSReadinessResult] = None
 
 
 class KeysCapabilityAuditEventOut(KeysOrmResponseModel):
