@@ -51,3 +51,4 @@ from .keys_capability_policy import KeysCapabilityPolicy
 from .keys_capability_request import KeysCapabilityRequest
 from .keys_capability_lease import KeysCapabilityLease
 from .keys_capability_audit_event import KeysCapabilityAuditEvent
+from .keys_transport_nonce import KeysTransportNonce

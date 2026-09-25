@@ -14,29 +14,19 @@ Only typed account ID, verified identity, and root MFA fields can leave the exec
 The executor rejects unbound accounts, arbitrary operations, caller profiles, and custom URLs.
 OpenBrand and the mothballed account are excluded.
 
-## Production Activation Blocked
+## Production Activation Complete — September 25
 
-AWS dispatch is disabled unless `NORMAN_KEYS_AWS_EXECUTOR_ENABLED=1` is explicitly configured.
-Do not set it before authenticating fleet host identities at the transport layer.
-
-On September 24, the live Caddy configuration forwarded `/v1/*` to port 8000 without client-certificate
-verification or replacement of the host fingerprint header. The app listened on `0.0.0.0:8000`.
-A shared service bearer token plus a client-supplied fingerprint does not prove enrolled host identity.
-Real AWS capabilities must remain disabled until the gateway authenticates the enrolled client,
-sets the fingerprint from that authentication, removes caller-supplied identity assertions, and
-prevents direct backend bypass. Verify all three enrolled hosts with their actual transport identities.
-
-After that gate, deliberately enroll exact account capabilities and policies through the operator API,
-validate short-lived request/invoke/revoke flows, and enable only the reviewed read-only executor.
-No fleet enrollments, capability records, or provider secrets were altered by this implementation.
+Signed host authentication is deployed and all nine host/account combinations passed live checks.
+See [Signed Host Authentication](keys_host_auth.md) for protocol, policies, client usage, and rollback.
+AWS execution is enabled only for the three fixed read-only readiness capabilities.
+This supersedes the September 24 deployment status below.
 
 ## Credential Enrollment And YHIX
 
 Gmail still uses its existing long-lived CloudAgent key. A supported server-side import path and
 verified replacement consumers are required before migration or rotation. Do not use raw-secret
 broker endpoints from the TUI. ACM uses its existing temporary management-role session.
-YHIX requires an authenticated studio session to run the prepared bootstrap:
-`code/cloudagent/projects/account-guardrails/bootstrap-yhix-management.sh`.
+YHIX management-role bootstrap completed September 25; `kk-yhix` is verified on Hal and Norman.
 
 ## Validation
 

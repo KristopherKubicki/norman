@@ -1,7 +1,8 @@
 from __future__ import annotations
 import pytest
 
-from app.api.deps import get_keys_service_user
+from fastapi import Request
+from app.api.keys_auth import get_keys_capability_user
 from app.crud.user import create_user, get_user_by_email
 from app.main import app
 from app.schemas.user import UserCreate
@@ -11,7 +12,8 @@ FINGERPRINT = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789
 
 
 def _keys_service_override(db):
-    async def override():
+    async def override(request: Request):
+        request.state.keys_fingerprint = FINGERPRINT
         user = get_user_by_email(db, email="keys-capability@example.com")
         if not user:
             user = create_user(
@@ -73,7 +75,7 @@ def _setup_capability(test_app, *, name: str, host_id: str = "hal") -> None:
 def test_capability_route_requires_enrolled_host_and_returns_opaque_lease(
     test_app, db
 ) -> None:
-    app.dependency_overrides[get_keys_service_user] = _keys_service_override(db)
+    app.dependency_overrides[get_keys_capability_user] = _keys_service_override(db)
     try:
         denied = test_app.post(
             "/v1/capabilities/request",
@@ -121,13 +123,13 @@ def test_capability_route_requires_enrolled_host_and_returns_opaque_lease(
         assert "secret" not in str(payload).lower()
         assert "value" not in payload["lease"]
     finally:
-        app.dependency_overrides.pop(get_keys_service_user, None)
+        app.dependency_overrides.pop(get_keys_capability_user, None)
 
 
 def test_capability_lease_binds_parameters_is_single_use_and_audits_safely(
     test_app, db
 ) -> None:
-    app.dependency_overrides[get_keys_service_user] = _keys_service_override(db)
+    app.dependency_overrides[get_keys_capability_user] = _keys_service_override(db)
     try:
         _setup_capability(
             test_app,
@@ -202,7 +204,7 @@ def test_capability_lease_binds_parameters_is_single_use_and_audits_safely(
             "capability_completed",
         }
     finally:
-        app.dependency_overrides.pop(get_keys_service_user, None)
+        app.dependency_overrides.pop(get_keys_capability_user, None)
 
 
 @pytest.fixture
@@ -211,7 +213,7 @@ def aws_lease(test_app, db, monkeypatch):
     from app.models import KeysCapability
 
     monkeypatch.setenv("NORMAN_KEYS_AWS_EXECUTOR_ENABLED", "1")
-    app.dependency_overrides[get_keys_service_user] = _keys_service_override(db)
+    app.dependency_overrides[get_keys_capability_user] = _keys_service_override(db)
     import uuid
 
     host = "aws-host-" + uuid.uuid4().hex
@@ -254,7 +256,7 @@ def aws_lease(test_app, db, monkeypatch):
     try:
         yield invoke, lease_id, capability.id, host
     finally:
-        app.dependency_overrides.pop(get_keys_service_user, None)
+        app.dependency_overrides.pop(get_keys_capability_user, None)
 
 
 def test_aws_dispatch_returns_typed_receipt_and_rejects_replay(aws_lease, monkeypatch):

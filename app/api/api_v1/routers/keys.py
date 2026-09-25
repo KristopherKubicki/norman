@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db, get_keys_service_user
+from app.api.keys_auth import get_keys_capability_user
 from app import crud
 from app.schemas.secret_keys import (
     SecretAliasOut,
@@ -406,15 +407,15 @@ def revoke_keys_capability_lease(
 )
 def request_capability_compat(
     body: KeysCapabilityRequestCreate,
-    x_norman_keys_host_fingerprint: str = Header(default=""),
+    transport_request: Request,
     db: Session = Depends(get_db),
-    current_user=Depends(get_keys_service_user),
+    current_user=Depends(get_keys_capability_user),
 ):
     request, lease, capability, enrollment = create_capability_request(
         db,
         user_id=current_user.id,
         body=body,
-        asserted_fingerprint=x_norman_keys_host_fingerprint,
+        asserted_fingerprint=transport_request.state.keys_fingerprint,
     )
     payload = {"request": request, "warnings": []}
     if lease:
@@ -437,13 +438,13 @@ def request_capability_compat(
 def invoke_capability_compat(
     lease_id: str,
     body: KeysCapabilityInvoke,
-    x_norman_keys_host_fingerprint: str = Header(default=""),
+    transport_request: Request,
     db: Session = Depends(get_db),
-    current_user=Depends(get_keys_service_user),
+    current_user=Depends(get_keys_capability_user),
 ):
     return invoke_capability_lease(
         db,
         lease_uuid=lease_id,
         body=body,
-        asserted_fingerprint=x_norman_keys_host_fingerprint,
+        asserted_fingerprint=transport_request.state.keys_fingerprint,
     )
