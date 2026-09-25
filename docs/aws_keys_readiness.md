@@ -28,6 +28,10 @@ verified replacement consumers are required before migration or rotation. Do not
 broker endpoints from the TUI. ACM uses its existing temporary management-role session.
 YHIX management-role bootstrap completed September 25; `kk-yhix` is verified on Hal and Norman.
 
+Durable storage and a fail-closed rotation workflow are now implemented and dummy-tested in this branch.
+They are not deployed or registered as a live write capability. See
+[Personal AWS Key Rotation Implementation](aws_key_rotation.md) for remaining receiver and integration work.
+
 ## Validation
 
 Formatting and lint pass. The focused executor and capability tests pass (32 tests), including
