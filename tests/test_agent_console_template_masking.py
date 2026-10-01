@@ -87,6 +87,17 @@ def _agent_console_web_source() -> str:
     ).read_text(encoding="utf-8")
 
 
+def test_agent_console_uses_shared_unfinished_work_contract() -> None:
+    module = _load_agent_console_web()
+
+    assert module.response_promises_unfinished_work(
+        "I need to connect to the Ops Portal MCP. Let me first check the launcher."
+    )
+    assert not module.response_promises_unfinished_work(
+        "I need your approval to deploy the repair. Please approve it first."
+    )
+
+
 def _agent_console_launch_source() -> str:
     return (
         Path(__file__).resolve().parents[1]
@@ -94,6 +105,128 @@ def _agent_console_launch_source() -> str:
         / "agent_console_template"
         / "agent_console_launch.sh"
     ).read_text(encoding="utf-8")
+
+
+def test_artmonster_latest_image_source_attaches_public_feed_image(monkeypatch) -> None:
+    module = _load_agent_console_web()
+    module.AGENT_NAME = "Artmonster"
+    created = {}
+
+    class _Response:
+        def __init__(self, body: bytes, content_type: str = "text/html"):
+            self._body = body
+            self.headers = {"Content-Type": content_type}
+
+        def read(self, _limit: int = -1) -> bytes:
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    image_url = "https://64.media.tumblr.com/example/s1280x1920/latest-art.jpg"
+    responses = iter(
+        [
+            _Response(f'<img src="{image_url}">'.encode("utf-8")),
+            _Response(b"image-bytes", "image/jpeg"),
+        ]
+    )
+    monkeypatch.setattr(
+        module.urllib_request, "urlopen", lambda *_args, **_kwargs: next(responses)
+    )
+    monkeypatch.setattr(
+        module,
+        "create_draft_attachment",
+        lambda **kwargs: created.setdefault("attachment", kwargs) or kwargs,
+    )
+
+    attachment = module.fetch_latest_source_attachment(
+        "Can you show the newest image we captured in the Artbot?"
+    )
+
+    assert attachment is created["attachment"]
+    assert created["attachment"]["url"] == image_url
+    assert created["attachment"]["kind"] == "image"
+    assert created["attachment"]["source"] == "drops-art-public"
+    assert (
+        module.build_attachment_origin_label(created["attachment"])
+        == "public Drops.art image"
+    )
+
+
+def test_media_request_never_uses_deterministic_status_handler(monkeypatch) -> None:
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+
+    assert (
+        module.deterministic_status_prompt_allowed(
+            "cna oyu show me hte images in the session here?", []
+        )
+        is False
+    )
+
+
+def test_session_media_request_restages_recent_images(monkeypatch, tmp_path) -> None:
+    module = _load_agent_console_web()
+    prior_image = tmp_path / "prior-art.jpg"
+    prior_image.write_bytes(b"prior-image")
+    created: list[dict] = []
+
+    monkeypatch.setattr(
+        module,
+        "load_history",
+        lambda **_kwargs: [
+            {
+                "attachments": [
+                    {
+                        "token": "image-2",
+                        "name": "prior-art-copy.jpg",
+                        "path": str(prior_image),
+                        "content_type": "image/jpeg",
+                        "kind": "image",
+                        "size": prior_image.stat().st_size,
+                        "source": "web-capture",
+                        "url": "https://example.test/prior-art.jpg",
+                    }
+                ]
+            },
+            {
+                "attachments": [
+                    {
+                        "token": "image-1",
+                        "name": "prior-art.jpg",
+                        "path": str(prior_image),
+                        "content_type": "image/jpeg",
+                        "kind": "image",
+                        "size": prior_image.stat().st_size,
+                        "source": "web-capture",
+                        "url": "https://example.test/prior-art.jpg",
+                    }
+                ]
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        module,
+        "create_draft_attachment",
+        lambda **kwargs: created.append(kwargs) or kwargs,
+    )
+
+    staged = module.stage_session_media_attachments(
+        "Can you show me the images in this session here?"
+    )
+
+    assert len(staged) == 1
+    assert created[0]["raw_bytes"] == b"prior-image"
+    assert created[0]["source"] == "session-history"
+    assert (
+        module.build_attachment_origin_label(
+            {**staged[0], "kind": "image", "source": "session-history"}
+        )
+        == "image from this session"
+    )
 
 
 def _norman_codex_launch_source() -> str:
@@ -2901,6 +3034,17 @@ def test_template_uses_operational_density_polish_across_viewports() -> None:
     assert "body:not(.low-ui-mode) #ask-button .composer-send-label {{" in source
 
 
+def test_template_uses_shared_responsive_surface_contract() -> None:
+    source = _agent_console_web_source()
+
+    assert "Responsive surface contract" in source
+    assert "--mobile-sheet-gutter: 8px;" in source
+    assert "border-radius: 18px 18px 0 0 !important;" in source
+    assert "font-size: 16px;" in source
+    assert "padding-bottom: calc(18px + env(safe-area-inset-bottom));" in source
+    assert "@media (hover: none), (pointer: coarse)" in source
+
+
 def test_template_uses_single_motion_source_for_live_worker_state() -> None:
     source = _agent_console_web_source()
 
@@ -2995,8 +3139,6 @@ def test_template_animates_microtextures_with_worker_state() -> None:
     assert "const gradient = context.createLinearGradient(" in source
     assert 'thread.axis === "h" && glintStrength > 0.01' in source
     assert "radial-gradient(circle at var(--microtexture-pulse-x)" not in source
-    assert "radial-gradient(ellipse at 12%" not in source
-    assert "radial-gradient(ellipse at 74%" not in source
     assert 'body[data-microtexture-state="flow"]::before {{' in source
     assert "--microtexture-drift-duration: 4.8s;" in source
     assert "--microtexture-drift-x: 230px;" in source
@@ -3068,10 +3210,10 @@ def test_template_adds_dense_menu_tooltips_and_icon_choices() -> None:
     assert 'control.dataset.tooltipFromControl = "true";' in source
     assert "function observeControlTooltips() {" in source
     assert "observeControlTooltips();" in source
-    assert "node.matches(CONTROL_TOOLTIP_SELECTOR)" in source
+    assert "scope.matches(CONTROL_TOOLTIP_SELECTOR)" in source
     assert '[role="button"]:focus-visible,' in source
     assert '[data-notice-action]:not([aria-disabled="true"]) {' in source
-    assert "hydrateControlTooltips();" in source
+    assert "scheduleControlTooltipHydration();" in source
     assert ".topbar-menu::before {" in source
     assert ".topbar-menu-links--context {" in source
     assert ".composer-upload-item[data-icon]::before," in source
@@ -3459,6 +3601,13 @@ def test_template_exposes_status_capsule_strip() -> None:
     assert 'id: "background"' in source
     assert "function buildStatusCapsules(snapshot) {" in source
     assert "function renderStatusCapsules(snapshot) {" in source
+    assert "function normalizeTopKpiMeters(snapshot) {" in source
+    assert (
+        'const processorMeta = processorStatus === "ranked" ? "DGX ranked" : "local fallback";'
+        in source
+    )
+    assert '"cloud_fallback": False' in source
+    assert 'work_source="tui-kpi-ranker"' in source
     assert "function renderSystemRuntimeMetrics(snapshot) {" in source
     assert 'button.dataset.kpiAction = String(item.action || "system");' in source
     assert 'const action = String(capsule.dataset.kpiAction || "system");' in source
@@ -3602,8 +3751,8 @@ def test_tui_submission_receipts_reconcile_and_surface_worker_progress() -> None
     assert (
         "function provisionalPromptSubmission(snapshot = state.snapshot) {{" in source
     )
-    assert "meta: `Sending to ${{AGENT_LABEL}}`," in source
-    assert "Checking admission and starting the worker…" in source
+    assert "? sendingPromptPhase(receipt)" in source
+    assert "Waiting for the server to confirm it was accepted." in source
     assert "Waiting for the worker's first signal…" in source
     assert 'appendMessage(\n          "user provisional",' in source
     assert 'appendMessage(\n          "assistant pending provisional",' in source
@@ -3611,8 +3760,18 @@ def test_tui_submission_receipts_reconcile_and_surface_worker_progress() -> None
     assert "function activeSubmissionLabel(snapshot = state.snapshot) {{" in source
     assert "submission_id: submissionId," in source
     assert 'state: "reconciling",' in source
+    assert "const PROMPT_SUBMISSION_RECONCILE_GRACE_MS = 1000 * 30;" in source
+    assert "reconcileAgeMs >= PROMPT_SUBMISSION_RECONCILE_GRACE_MS" in source
+    assert "Delivery is still unconfirmed. Your draft is restored" in source
+    assert "error.httpStatus = res.status;" in source
+    assert "error.responseData = data;" in source
+    assert "const knownRejection = Number(err?.httpStatus || 0) >= 400" in source
     assert (
-        "Submit outcome unknown. Checking whether the console accepted it; do not resend yet."
+        "clearPromptSubmission();\n          restoreRejectedPrompt(draftValue);"
+        in source
+    )
+    assert (
+        "Delivery is unconfirmed. Your draft is saved. Check delivery retries the same submission safely."
         in source
     )
     assert "no worker progress for" in source
@@ -3628,7 +3787,7 @@ def test_tui_submission_receipts_reconcile_and_surface_worker_progress() -> None
         in source
     )
     assert "function acceptedRouteReceipt(snapshot, options = {{}})" in source
-    assert "Applying route policy before acceptance." in source
+    assert "Sending your message. Waiting for confirmation." in source
     assert "Detailed local health and service state is loading." in source
     assert "if (!currentOperatorReceipt()) {{" in source
     assert "if (INITIAL_SNAPSHOT.snapshot_cached !== false) {{" in source
@@ -4143,15 +4302,17 @@ def test_base_nav_splits_chat_and_dashboard_routes() -> None:
     template = _base_template_source()
     styles = _styles_source()
 
+    assert 'href="/bridge"' in template
+    assert ">Bridge</a>" in template
     assert 'href="/bot/norman/"' in template
-    assert ">Chat</a>" in template
+    assert ">Focused console</a>" in template
     assert 'href="/dashboard.html?view=switchboard"' in template
     assert ">Switchboard</a>" in template
     assert 'id="normanShellMenu"' in template
     assert "norman-shell-menu__sheet" in template
     assert "Control Plane" in template
     assert ">Subprime lane</a>" in template
-    assert ">Directory</a>" in template
+    assert ">Applications &amp; Systems</a>" in template
     assert ">Settings</a>" in template
     assert ">Connectors</a>" in template
     assert ">Sources</a>" in template
@@ -4160,7 +4321,7 @@ def test_base_nav_splits_chat_and_dashboard_routes() -> None:
     assert "site-banner--norman-shell" in template
     assert "container-fluid lower-deck-main my-3" in template
     assert (
-        "brand-sub\">{% if active_page == 'home' %}Switchboard{% elif active_page == 'messages' %}Super TUI{% elif active_page == 'login' %}Sign In{% else %}Control Plane{% endif %}"
+        "brand-sub\">{% if active_page == 'bridge' %}Bridge{% elif active_page == 'home' %}Switchboard{% elif active_page == 'messages' %}Super TUI{% elif active_page == 'login' %}Login{% else %}Control Plane{% endif %}"
         in template
     )
     assert "body.page-systems," in styles
@@ -4170,10 +4331,7 @@ def test_base_nav_splits_chat_and_dashboard_routes() -> None:
     assert '@app_routes.get("/dashboard.html")' in routes
     assert '@app_routes.get("/switchboard")' in routes
     assert '@app_routes.get("/switchboard.html")' in routes
-    assert (
-        "return RedirectResponse(url=_norman_chat_redirect_url(request), status_code=307)"
-        in routes
-    )
+    assert "return await bridge(request)" in routes
     assert (
         'return f"/bot/norman/?{urlencode(params)}" if params else "/bot/norman/"'
         in routes
@@ -4288,8 +4446,8 @@ def test_norman_login_uses_gold_super_tui_shell() -> None:
     styles = _styles_source()
 
     assert "norman-auth-shell" in template
-    assert "Control Plane Sign In" in template
-    assert "Enter Norman" in template
+    assert "Norman Bridge" in template
+    assert "Log in to Norman" in template
     assert ".norman-auth-shell {" in styles
     assert ".norman-auth-card {" in styles
     assert "body.page-login," in styles
@@ -4572,9 +4730,7 @@ def test_profile_alias_paths_redirect_to_query_profile() -> None:
 def test_render_index_exposes_visible_enter_shortcut_hint() -> None:
     source = _agent_console_web_source()
 
-    assert (
-        "Queue prompt. Press Enter to queue and Shift+Enter for a new line." in source
-    )
+    assert "Send message. Press Enter to send and Shift+Enter for a new line." in source
 
 
 def test_build_console_and_file_href_support_prefixes() -> None:
@@ -4971,11 +5127,32 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
     assert (
         "@norman_root path /\n"
         "    handle @norman_root {\n"
-        "        redir * /bot/norman/ 302\n"
+        "        redir * /bridge 302\n"
         "    }"
     ) in rendered
     assert "tls /etc/caddy/certs/norman-lollie.crt" not in rendered
     responses_position = rendered.index("handle /v1/responses {")
+
+    assert (
+        "@bridge_document path /bridge /bridge.html\n"
+        '    header @bridge_document Cache-Control "no-store, max-age=0"'
+    ) in rendered
+    assert (
+        "@bridge_live_assets path /static/css/bridge.css /static/js/bridge.js\n"
+        "    handle @bridge_live_assets {\n"
+        "        reverse_proxy 127.0.0.1:8000 {\n"
+        '            header_down Cache-Control "no-store, max-age=0"\n'
+        "        }\n"
+        "    }"
+    ) in rendered
+    assert (
+        "handle_path /static/* {\n"
+        "        root * /var/www/norman-static\n"
+        '        header Cache-Control "public, max-age=300, '
+        'stale-while-revalidate=86400"\n'
+        "        file_server\n"
+        "    }"
+    ) in rendered
     gateway_position = rendered.index("handle /v1/* {")
     root_redirect_position = rendered.index("@norman_root path /")
     fallback_position = rendered.index("handle {\n        reverse_proxy 127.0.0.1:8000")
@@ -6832,3 +7009,93 @@ def test_recovered_errors_and_routes_are_marked_historical() -> None:
         assert "historicalError: Boolean(item.historical_error)" in source
         assert "Historical route for this turn." in source
         assert "historical error" in source
+
+
+def test_sentinel_alert_does_not_keep_itself_waiting_for_operator() -> None:
+    module = _load_agent_console_web()
+    snapshot = {
+        "human_intervention_count": 1,
+        "human_intervention_ask_now_count": 1,
+        "human_interventions": [
+            {
+                "kind": "sentinel_wedged",
+                "severity": "ask_now",
+                "status": "open",
+            }
+        ],
+        "auth": {"required": False},
+        "pending": False,
+        "queue_depth": 0,
+        "bbs": {},
+    }
+    kpis = {
+        "state": "idle",
+        "diagnosis": "The TUI is idle and ready.",
+        "signals": [],
+    }
+
+    sentinel = module.build_sentinel_state(snapshot, kpis)
+
+    assert sentinel["state"] == "healthy_idle"
+    assert sentinel["severity"] == "quiet_log"
+    assert sentinel["evidence"]["human_intervention_count"] == 0
+
+
+def test_sentinel_reconciliation_closes_alert_after_condition_clears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_agent_console_web()
+    closed: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        module,
+        "load_human_interventions",
+        lambda: [
+            {
+                "id": "hi_stale",
+                "fingerprint": "sentinel:Infra:wedged:kpi_wedged",
+                "kind": "sentinel_wedged",
+                "severity": "ask_now",
+                "status": "open",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        module,
+        "update_human_intervention_status",
+        lambda item_id, action, *, note="", actor_ip="": (
+            closed.append((item_id, action, note))
+            or {"id": item_id, "status": "canceled"}
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "upsert_human_intervention",
+        lambda _item: pytest.fail("a healthy sentinel must not raise an alert"),
+    )
+
+    changed = module.maybe_raise_sentinel_intervention(
+        {
+            "state": "healthy_idle",
+            "severity": "quiet_log",
+            "reason_codes": [],
+        }
+    )
+
+    assert changed == {"id": "hi_stale", "status": "canceled"}
+    assert closed == [
+        ("hi_stale", "not_actionable", "Sentinel condition cleared or changed.")
+    ]
+
+
+def test_human_intervention_upsert_serializes_status_updates() -> None:
+    source = _agent_console_web_source()
+
+    assert 'conn.execute("BEGIN IMMEDIATE")' in source
+
+
+def test_frontdoor_codex_alias_preserves_api_path_prefix() -> None:
+    config = _load_frontdoor_renderer().render_frontdoor_snippet()
+    assert (
+        "handle_path /codex/* {\n        reverse_proxy 127.0.0.1:8788 {\n            header_up X-Forwarded-Prefix /codex\n        }"
+        in config
+    )

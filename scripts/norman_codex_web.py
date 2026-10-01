@@ -21,12 +21,14 @@ import shlex
 import shutil
 import signal
 import socket
+import ssl
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import uuid
 import zlib
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -41,6 +43,13 @@ try:
     from app.services import tui_route_intent as SHARED_TUI_ROUTE_INTENT
 except Exception:
     SHARED_TUI_ROUTE_INTENT = None
+
+try:
+    from app.services.completion_contract import (
+        response_promises_unfinished_work as shared_response_promises_unfinished_work,
+    )
+except Exception:
+    shared_response_promises_unfinished_work = None
 
 try:
     from app.services.tui_waterfall import (
@@ -414,7 +423,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.08.04.1"
+DEFAULT_UI_VERSION = "2026.09.06.4"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -598,6 +607,35 @@ USAGE_SPARKLINE_ITEMS = max(
 )
 KPI_INTERVAL_SECONDS = int(os.environ.get("NORMAN_CODEX_KPI_INTERVAL_SECONDS", "30"))
 KPI_WEDGE_SECONDS = int(os.environ.get("NORMAN_CODEX_KPI_WEDGE_SECONDS", "240"))
+KPI_DGX_ENABLED = os.environ.get(
+    "NORMAN_CODEX_KPI_DGX_ENABLED", "1"
+).strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+KPI_DGX_REFRESH_SECONDS = max(
+    60, int(os.environ.get("NORMAN_CODEX_KPI_DGX_REFRESH_SECONDS", "300"))
+)
+KPI_DGX_TIMEOUT_SECONDS = max(
+    5, min(30, int(os.environ.get("NORMAN_CODEX_KPI_DGX_TIMEOUT_SECONDS", "12")))
+)
+KPI_APP_PROBE_TIMEOUT_SECONDS = max(
+    1,
+    min(5, int(os.environ.get("NORMAN_CODEX_KPI_APP_PROBE_TIMEOUT_SECONDS", "2"))),
+)
+KPI_APP_PROBES_JSON = os.environ.get("NORMAN_CODEX_KPI_APP_PROBES", "").strip()
+KPI_INFRA_PROBE_TIMEOUT_SECONDS = max(
+    1,
+    min(5, int(os.environ.get("NORMAN_CODEX_KPI_INFRA_PROBE_TIMEOUT_SECONDS", "2"))),
+)
+KPI_INFRA_HEALTH_TARGETS = (
+    ("spark-150", "DGX", "http://192.168.2.150:18151/health"),
+    ("spark-151", "DGX", "http://192.168.2.151:18151/health"),
+    ("mac-mini", "fallback", "http://192.168.2.133:18151/health"),
+    ("norllama-frontdoor", "network", "https://llm.home.arpa/health"),
+)
 RUNNING_NO_OUTPUT_SECONDS = int(
     os.environ.get("NORMAN_CODEX_RUNNING_NO_OUTPUT_SECONDS", str(15 * 60))
 )
@@ -656,7 +694,7 @@ WEB_PROMPT_RATE_LIMIT_MAX_BACKOFF_SECONDS = max(
     float(os.environ.get("NORMAN_CODEX_RATE_LIMIT_MAX_BACKOFF_SECONDS", "900")),
 )
 WEB_PROMPT_AUTO_CONTINUE_PROMISES = os.environ.get(
-    "NORMAN_CODEX_AUTO_CONTINUE_PROMISES", "1"
+    "NORMAN_CODEX_AUTO_CONTINUE_PROMISES", "0"
 ).strip().lower() not in {"0", "false", "no", "off"}
 WEB_PROMPT_EMPTY_REPLY_MAX_RETRIES = max(
     0, int(os.environ.get("NORMAN_CODEX_EMPTY_REPLY_MAX_RETRIES", "1"))
@@ -677,7 +715,7 @@ DEADLINE_CHECKPOINT_POLICY = (
 if DEADLINE_CHECKPOINT_POLICY not in {"auto", "off", "final", "target"}:
     DEADLINE_CHECKPOINT_POLICY = "auto"
 DEADLINE_CHECKPOINT_AUTO_CONTINUE = os.environ.get(
-    "NORMAN_CODEX_DEADLINE_CHECKPOINT_AUTO_CONTINUE", "1"
+    "NORMAN_CODEX_DEADLINE_CHECKPOINT_AUTO_CONTINUE", "0"
 ).strip().lower() not in {"0", "false", "no", "off"}
 
 
@@ -2038,6 +2076,16 @@ CODEX_ACCOUNT_CAPACITY_PATH = Path(
         str(STATE_DIR / "codex_account_capacity.json"),
     )
 )
+CODEX_RATE_LIMIT_RESET_APPROVAL_TTL_SECONDS = max(
+    60,
+    int(os.environ.get("NORMAN_CODEX_RATE_LIMIT_RESET_APPROVAL_TTL_SECONDS", "600")),
+)
+CODEX_RATE_LIMIT_RESET_RPC_TIMEOUT_SECONDS = max(
+    5,
+    int(os.environ.get("NORMAN_CODEX_RATE_LIMIT_RESET_RPC_TIMEOUT_SECONDS", "20")),
+)
+CODEX_RATE_LIMIT_RESET_APPROVAL_LOCK = threading.Lock()
+CODEX_RATE_LIMIT_RESET_APPROVALS: dict[str, dict[str, Any]] = {}
 CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = Path(
     os.environ.get(
         "NORMAN_CODEX_ACCOUNT_CAPACITY_HISTORY_PATH",
@@ -2250,6 +2298,9 @@ RESTART_HANDOFF_PATH = Path(
     )
 )
 KPI_PATH = STATE_DIR / "kpis.json"
+KPI_DGX_RANKING_PATH = STATE_DIR / "kpi_dgx_ranking.json"
+KPI_APP_HEALTH_PATH = STATE_DIR / "kpi_app_health.json"
+KPI_INFRA_HEALTH_PATH = STATE_DIR / "kpi_infra_health.json"
 AUDIT_PATH = STATE_DIR / "audit.jsonl"
 AUDIT_LOCK = threading.RLock()
 DETERMINISTIC_ARCHIVE_QUEUE: queue.Queue[Callable[[], None]] = queue.Queue(
@@ -2272,6 +2323,12 @@ STATUS_SNAPSHOT_REFRESH_LOCK = threading.Lock()
 STATUS_SNAPSHOT_CACHE_LOCK = threading.Lock()
 WORKING_RECAP_LOCK = threading.Lock()
 KPI_LOCK = threading.RLock()
+KPI_DGX_LOCK = threading.Lock()
+KPI_DGX_RANKING_ACTIVE = False
+KPI_APP_LOCK = threading.Lock()
+KPI_APP_REFRESH_ACTIVE = False
+KPI_INFRA_LOCK = threading.Lock()
+KPI_INFRA_REFRESH_ACTIVE = False
 KPI_COLLECTOR_STARTED = False
 STATUS_SNAPSHOT_COLLECTOR_STARTED = False
 ACTIVE_PROMPT_THREAD: threading.Thread | None = None
@@ -4526,6 +4583,14 @@ def service_tier_config_args(value: Any) -> list[str]:
         if tier in {"bedrock-emergency", "bedrock-failover", "bedrock-failover-2"}
         else tier
     )
+    # Some ChatGPT Codex accounts reject Flex on the provider wire. Keep the
+    # subscription routing checks, but allow the supported normal wire tier.
+    if (
+        codex_tier == "flex"
+        and os.environ.get("NORMAN_CODEX_FLEX_EXECUTION_TIER", "flex").strip().lower()
+        == "default"
+    ):
+        codex_tier = "default"
     # A shared CODEX_HOME may default to Bedrock; direct tiers must override it.
     return [
         "-c",
@@ -4604,6 +4669,13 @@ def codex_model_for_service_tier(value: Any, model: Any = "") -> str:
     ):
         return codex_direct_model_name(CODEX_PRIORITY_MODEL)
     return codex_direct_model_name(normalized_model)
+
+
+def codex_subscription_model_name(model: Any = "") -> str:
+    direct_model = codex_direct_model_name(model)
+    if direct_model.lower().startswith("gpt-"):
+        return direct_model
+    return codex_direct_model_name(CODEX_FLEX_MODEL)
 
 
 def codex_thread_scope_key(value: Any, model: Any = "") -> str:
@@ -8872,6 +8944,23 @@ def build_relay_targets(
     return targets
 
 
+def browser_relay_targets(targets: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """Return relay metadata that is safe to embed in the console page."""
+    public_targets: list[dict[str, str]] = []
+    for target in targets:
+        parsed = urlparse(str(target.get("url") or ""))
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        query.pop("token", None)
+        public_targets.append(
+            {
+                "label": str(target.get("label") or ""),
+                "url": parsed._replace(query=urlencode(query, doseq=True)).geturl(),
+                "host": str(target.get("host") or parsed.netloc),
+            }
+        )
+    return public_targets
+
+
 def build_handoff_message(source_prompt: str, source_response: str) -> str:
     prompt = source_prompt.strip() or "[no original prompt recorded]"
     response = source_response.strip() or "[no assistant response recorded]"
@@ -9025,6 +9114,70 @@ def append_session_admission_audit(
             "admission": decision,
         },
     )
+
+
+def session_admission_requires_idle_fresh_rotation(decision: Any) -> bool:
+    if not isinstance(decision, dict) or bool(decision.get("allowed")):
+        return False
+    reason_code = str(decision.get("reason_code") or "").strip()
+    if reason_code == "reauthorization_required":
+        return True
+    if reason_code != "checkpoint_required":
+        return False
+    usage = decision.get("usage") if isinstance(decision.get("usage"), dict) else {}
+    return _coerce_int(usage.get("age_seconds")) >= max(
+        1, int(SESSION_BUDGET_POLICY.max_age_seconds)
+    )
+
+
+def rotate_idle_provider_thread_for_operator_prompt(
+    decision: Any,
+    *,
+    prompt: str,
+    source: str,
+    actor_ip: str = "",
+) -> dict[str, Any]:
+    if normalize_queue_source(source, {}, prompt) != "operator":
+        return {}
+    if not session_admission_requires_idle_fresh_rotation(decision):
+        return {}
+    if prompt_runtime_alive():
+        return {}
+    with STATUS_LOCK:
+        meta = load_status_meta()
+        if meta.get("pending") or normalize_queue(meta.get("queued_prompts")):
+            return {}
+        prior_thread_id = read_text(THREAD_ID_PATH).strip()
+        if not prior_thread_id:
+            return {}
+        write_text(THREAD_ID_PATH, "")
+        write_text(THREAD_SCOPE_PATH, "")
+    usage = decision.get("usage") if isinstance(decision.get("usage"), dict) else {}
+    rotation = {
+        "schema": "norman.tui.idle-thread-rotation.v1",
+        "reason": "stale_idle_provider_thread",
+        "prior_thread_id": prior_thread_id,
+        "age_seconds": _coerce_int(usage.get("age_seconds")),
+        "total_tokens": _coerce_int(usage.get("total_tokens")),
+        "rotated_at": now_ts(),
+    }
+    append_audit_event(
+        event_type="session.idle-thread-rotated",
+        summary="Rotated a stale idle provider thread before admitting new work.",
+        detail=(
+            "The visible web history was preserved; the next operator prompt will "
+            "start in a fresh provider thread."
+        ),
+        severity="info",
+        actor_type="system",
+        actor_ip=actor_ip,
+        thread_id=prior_thread_id,
+        payload={
+            "rotation": rotation,
+            "prompt_preview": summarize_text(prompt, 240),
+        },
+    )
+    return rotation
 
 
 def session_admission_requires_fresh_thread(decision: Any, *, success: bool) -> bool:
@@ -11386,8 +11539,9 @@ def context_preflight_prompt_context(
 
 
 PROMISED_FOLLOWUP_RE = re.compile(
-    r"\b(?:i(?:['\u2019]ll| will)|i(?:['\u2019]m| am) going to)\s+"
-    r"(?:(?:now|next|then|still)\s+)?"
+    r"\b(?:i(?:['\u2019]ll| will)|i(?:['\u2019]m| am) going to|"
+    r"(?:i|we) (?:need|have|must) to|(?:i|we) should|let me)\s+"
+    r"(?:(?:first|now|next|then|still)\s+)?"
     r"(?:run|check|dig|look|verify|test|inspect|patch|fix|deploy|research|trace|"
     r"investigate|write|create|update|make|pull|query|audit|review|try|finish|"
     r"collect|execute|identify|install|continue|start|resume|complete|sample|do|"
@@ -11429,6 +11583,8 @@ def response_needs_next_action_plan(response: str) -> bool:
 
 
 def response_promises_unfinished_work(response: str) -> bool:
+    if shared_response_promises_unfinished_work is not None:
+        return shared_response_promises_unfinished_work(response)
     clean = " ".join((response or "").split())
     if not clean:
         return False
@@ -12405,9 +12561,35 @@ def normalize_history_entry(payload: Any) -> dict[str, Any] | None:
     return entry
 
 
+LEGACY_TRANSCRIPT_DIAGNOSTIC_RE = re.compile(
+    r"prior bridge status|characters omitted from live transport|"
+    r"bridge opening the estate|this diagnostic reply has been superseded|"
+    r"this status used deterministic tui state",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def history_entry_is_transcript_artifact(entry: dict[str, Any]) -> bool:
+    """Keep transport/status internals out of the operator conversation."""
+    prompt = str(entry.get("prompt") or "").strip()
+    model = str(entry.get("model") or "").strip().lower()
+    text = "\n".join(
+        str(entry.get(field) or "").strip()
+        for field in ("prompt", "response", "result", "error")
+    )
+    return bool(
+        model == "deterministic-status"
+        or prompt_is_auto_continuation(prompt)
+        or LEGACY_TRANSCRIPT_DIAGNOSTIC_RE.search(text)
+    )
+
+
 def finalize_history_entries(
     entries: list[dict[str, Any]], *, limit: int = MAX_HISTORY_ITEMS
 ) -> list[dict[str, Any]]:
+    entries = [
+        entry for entry in entries if not history_entry_is_transcript_artifact(entry)
+    ]
     if limit and len(entries) > limit:
         entries = entries[-limit:]
     usage_entries = usage_entries_with_effective_deltas(
@@ -12425,6 +12607,7 @@ def load_history_from_state_db(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str,
     try:
         params: tuple[Any, ...] = ()
         if limit and limit > 0:
+            fetch_limit = max(int(limit) * 4, int(limit) + 24)
             rows = conn.execute(
                 """
                 SELECT payload_json
@@ -12436,7 +12619,7 @@ def load_history_from_state_db(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str,
                 )
                 ORDER BY COALESCE(finished_at, started_at, 0) ASC, id ASC
                 """,
-                (int(limit),),
+                (fetch_limit,),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -12576,6 +12759,10 @@ def append_history_entry(
     usage: dict[str, Any] | None = None,
     turn_envelope: dict[str, Any] | None = None,
 ) -> None:
+    if str(
+        model or ""
+    ).strip().lower() == "deterministic-status" or prompt_is_auto_continuation(prompt):
+        return
     entries = load_history(limit=0)
     clean_error_text = strip_codex_empty_last_message_warning(error_text)
     normalized_budget = normalize_job_budget(job_budget)
@@ -13303,6 +13490,19 @@ def host_pressure_guard_snapshot(snapshot_at: int | None = None) -> dict[str, An
     guard["enabled"] = True
     guard["stale"] = stale
     guard["path"] = str(HOST_PRESSURE_GUARD_PATH)
+    expected_target = (
+        os.environ.get("NORMAN_CODEX_HOST_PRESSURE_GUARD_TARGET", socket.gethostname())
+        .strip()
+        .lower()
+        .split(".")[0]
+    )
+    actual_target = str(payload.get("target") or "").strip().lower().split(".")[0]
+    guard["applies_to_this_host"] = bool(
+        actual_target and actual_target == expected_target
+    )
+    if not guard["applies_to_this_host"]:
+        guard["enabled"] = False
+        guard["advisory_reason"] = "Pressure observation belongs to a different host."
     return guard
 
 
@@ -16969,9 +17169,15 @@ def prompt_is_generic_followup_action(prompt: Any) -> bool:
 
 
 def followup_source_turn(prompt: Any) -> dict[str, str]:
-    """Return the latest concrete turn when a reply shortcut has no session context."""
-    if not prompt_is_generic_followup_action(prompt):
-        return {}
+    """Carry the matching compact handoff into a fresh operator session."""
+    clean = str(prompt or "").strip()
+    generic = prompt_is_generic_followup_action(clean) or bool(
+        re.fullmatch(
+            r"(?:yes[,!]?\s*)?(?:please\s+)?(?:fix it|do it|proceed|continue|go ahead|make it so)(?:\s+please)?[.!]*|yes(?:\s+please)?[.!]*",
+            clean,
+            re.IGNORECASE,
+        )
+    )
     try:
         entries = load_history(limit=8)
     except Exception:
@@ -16980,12 +17186,23 @@ def followup_source_turn(prompt: Any) -> dict[str, str]:
         if not isinstance(entry, dict):
             continue
         prior_prompt = str(entry.get("prompt") or "").strip()
-        if not prior_prompt or prompt_is_generic_followup_action(prior_prompt):
+        response = str(entry.get("response") or "").strip()
+        if not prior_prompt or entry.get("error") or not response:
             continue
-        return {
-            "prompt": summarize_text(prior_prompt, 1200),
-            "response": summarize_text(str(entry.get("response") or ""), 1400),
-        }
+        if prior_prompt.startswith("/compact"):
+            pending = re.search(
+                r"<pending-operator-request>\s*(.*?)\s*</pending-operator-request>",
+                prior_prompt,
+                re.DOTALL,
+            )
+            if (pending and pending.group(1).strip() == clean) or generic:
+                return {"prompt": clean, "response": response[:16000]}
+            return {}
+        if not generic:
+            return {}
+        if prompt_is_generic_followup_action(prior_prompt):
+            continue
+        return {"prompt": prior_prompt[:8000], "response": response[:16000]}
     return {}
 
 
@@ -17003,6 +17220,8 @@ def build_followup_execution_prompt(prompt: str) -> str:
     parts = [
         "This is a continuation action from the Norman TUI.",
         "Continue the concrete operator request below; do not discuss this wrapper.",
+        "Preserve the active task and existing operator authorization. Background alerts do not replace it.",
+        "The prior result is context; compaction-only tool restrictions ended with the compacting turn.",
         "Prior operator request:",
         prior_prompt,
     ]
@@ -18892,6 +19111,270 @@ def normalize_codex_account_capacity(
     return payload
 
 
+def _prune_rate_limit_reset_approvals(observed_at: int | None = None) -> None:
+    current = _coerce_int(observed_at) or now_ts()
+    for token, approval in list(CODEX_RATE_LIMIT_RESET_APPROVALS.items()):
+        if _coerce_int(approval.get("expires_at")) < current:
+            CODEX_RATE_LIMIT_RESET_APPROVALS.pop(token, None)
+
+
+def create_rate_limit_reset_approval(
+    capacity: dict[str, Any], *, actor_ip: str = ""
+) -> dict[str, Any]:
+    current = now_ts()
+    with CODEX_RATE_LIMIT_RESET_APPROVAL_LOCK:
+        _prune_rate_limit_reset_approvals(current)
+        token = secrets.token_urlsafe(32)
+        approval = {
+            "token": token,
+            "idempotency_key": str(uuid.uuid4()),
+            "created_at": current,
+            "expires_at": current + CODEX_RATE_LIMIT_RESET_APPROVAL_TTL_SECONDS,
+            "available_count": max(
+                0, _coerce_int(capacity.get("usage_limit_resets_available"))
+            ),
+            "reset_hint": summarize_text(capacity.get("reset_hint"), 96).strip(),
+            "actor_ip": str(actor_ip or "").strip(),
+            "state": "pending",
+        }
+        CODEX_RATE_LIMIT_RESET_APPROVALS[token] = approval
+    append_audit_event(
+        event_type="chat.usage-limit-reset-offered",
+        summary="Offered an earned usage-limit reset before paid fallback.",
+        detail="Waiting for the operator to approve reset use or continue to fallback.",
+        severity="info",
+        actor_type="system",
+        actor_ip=actor_ip,
+        thread_id=read_text(THREAD_ID_PATH),
+        payload={
+            "available_count": approval["available_count"],
+            "reset_hint": approval["reset_hint"],
+            "expires_at": approval["expires_at"],
+        },
+    )
+    return {
+        "token": token,
+        "available_count": approval["available_count"],
+        "reset_hint": approval["reset_hint"],
+        "expires_at": approval["expires_at"],
+    }
+
+
+def authorize_rate_limit_reset_fallback(token: Any, *, actor_ip: str = "") -> bool:
+    clean_token = str(token or "").strip()
+    with CODEX_RATE_LIMIT_RESET_APPROVAL_LOCK:
+        _prune_rate_limit_reset_approvals()
+        approval = CODEX_RATE_LIMIT_RESET_APPROVALS.get(clean_token)
+        if not approval or approval.get("state") != "pending":
+            return False
+        approval["state"] = "fallback"
+        CODEX_RATE_LIMIT_RESET_APPROVALS.pop(clean_token, None)
+    append_audit_event(
+        event_type="chat.usage-limit-reset-declined",
+        summary="Operator kept the reset and continued to fallback.",
+        detail="The one-time approval was declined; the existing guarded fallback may continue.",
+        severity="info",
+        actor_type="operator",
+        actor_ip=actor_ip,
+        thread_id=read_text(THREAD_ID_PATH),
+        payload={"available_count": approval.get("available_count")},
+    )
+    return True
+
+
+def _codex_app_server_exchange(
+    method: str, params: Any, *, followup_read: bool = False
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    env = os.environ.copy()
+    env["CODEX_HOME"] = CODEX_HOME
+    process = subprocess.Popen(
+        [CODEX_BIN, "app-server", "--stdio"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        bufsize=1,
+    )
+    if process.stdin is None or process.stdout is None:
+        process.kill()
+        raise RuntimeError("Codex app-server stdio was unavailable")
+    deadline = time.monotonic() + CODEX_RATE_LIMIT_RESET_RPC_TIMEOUT_SECONDS
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+
+    def send(payload: dict[str, Any]) -> None:
+        process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        process.stdin.flush()
+
+    def receive(request_id: int) -> dict[str, Any]:
+        while time.monotonic() < deadline:
+            ready = selector.select(max(0.05, deadline - time.monotonic()))
+            if not ready:
+                continue
+            line = process.stdout.readline()
+            if not line:
+                break
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("id") != request_id:
+                continue
+            if isinstance(payload.get("error"), dict):
+                raise RuntimeError(
+                    summarize_text(payload["error"].get("message"), 240)
+                    or "Codex app-server request failed"
+                )
+            result = payload.get("result")
+            return result if isinstance(result, dict) else {}
+        raise RuntimeError("Timed out waiting for the Codex app-server")
+
+    try:
+        send(
+            {
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "capabilities": {"experimentalApi": True},
+                    "clientInfo": {
+                        "name": "norman_tui",
+                        "title": "Norman",
+                        "version": UI_VERSION,
+                    },
+                },
+            }
+        )
+        receive(1)
+        send({"method": "initialized"})
+        send({"id": 2, "method": method, "params": params})
+        result = receive(2)
+        limits: dict[str, Any] = {}
+        if followup_read:
+            send({"id": 3, "method": "account/rateLimits/read", "params": None})
+            limits = receive(3)
+        return result, limits
+    finally:
+        selector.close()
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+        process.terminate()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1)
+
+
+def _persist_app_server_rate_limits(value: Any) -> dict[str, Any]:
+    result = value if isinstance(value, dict) else {}
+    snapshot = result.get("rateLimits")
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    windows: list[dict[str, Any]] = []
+    for label, key in (("Short window", "primary"), ("Long window", "secondary")):
+        window = snapshot.get(key)
+        if not isinstance(window, dict):
+            continue
+        resets_at = max(0, _coerce_int(window.get("resetsAt")))
+        reset_seconds = max(0, resets_at - now_ts()) if resets_at else 0
+        windows.append(
+            {
+                "label": label,
+                "percent_left": max(
+                    0, min(100, 100 - _coerce_int(window.get("usedPercent")))
+                ),
+                "reset_hint": (
+                    f"in {max(1, math.ceil(reset_seconds / 60))} minutes"
+                    if reset_seconds
+                    else ""
+                ),
+                "reset_seconds": reset_seconds,
+            }
+        )
+    credits = result.get("rateLimitResetCredits")
+    credits = credits if isinstance(credits, dict) else {}
+    observed_at = now_ts()
+    payload = {
+        **default_codex_account_capacity(),
+        "source": "interactive_usage",
+        "observed_command": "app_server_rate_limits_read",
+        "observed_at": observed_at,
+        "last_probe_at": observed_at,
+        "auth_mode": "chatgpt",
+        "state": (
+            "available"
+            if windows and all(item["percent_left"] > 0 for item in windows)
+            else "blocked"
+        ),
+        "windows": windows,
+        "usage_limit_resets_available": max(
+            0, _coerce_int(credits.get("availableCount"))
+        ),
+    }
+    _persist_codex_account_capacity(payload)
+    return codex_account_capacity_snapshot()
+
+
+def consume_rate_limit_reset_approval(
+    token: Any, *, actor_ip: str = ""
+) -> tuple[bool, str, dict[str, Any]]:
+    clean_token = str(token or "").strip()
+    with CODEX_RATE_LIMIT_RESET_APPROVAL_LOCK:
+        _prune_rate_limit_reset_approvals()
+        approval = CODEX_RATE_LIMIT_RESET_APPROVALS.get(clean_token)
+        if not approval or approval.get("state") not in {"pending", "consuming"}:
+            return False, "Reset approval expired; submit the prompt again.", {}
+        approval["state"] = "consuming"
+        idempotency_key = str(approval["idempotency_key"])
+    if stored_codex_auth_mode() != "chatgpt":
+        return False, "Codex is no longer signed in with ChatGPT.", {}
+    try:
+        result, limits = _codex_app_server_exchange(
+            "account/rateLimitResetCredit/consume",
+            {"idempotencyKey": idempotency_key},
+            followup_read=True,
+        )
+        outcome = str(result.get("outcome") or "")
+        capacity = _persist_app_server_rate_limits(limits)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        with CODEX_RATE_LIMIT_RESET_APPROVAL_LOCK:
+            if clean_token in CODEX_RATE_LIMIT_RESET_APPROVALS:
+                CODEX_RATE_LIMIT_RESET_APPROVALS[clean_token]["state"] = "pending"
+        return False, summarize_text(str(exc), 240), {}
+    success = outcome in {"reset", "alreadyRedeemed"}
+    with CODEX_RATE_LIMIT_RESET_APPROVAL_LOCK:
+        if success:
+            CODEX_RATE_LIMIT_RESET_APPROVALS.pop(clean_token, None)
+        elif clean_token in CODEX_RATE_LIMIT_RESET_APPROVALS:
+            CODEX_RATE_LIMIT_RESET_APPROVALS[clean_token]["state"] = "pending"
+    append_audit_event(
+        event_type="chat.usage-limit-reset-consumed"
+        if success
+        else "chat.usage-limit-reset-unavailable",
+        summary=(
+            "Operator-approved usage-limit reset completed."
+            if success
+            else "Operator-approved usage-limit reset was not available."
+        ),
+        detail=f"Codex app-server outcome: {outcome or 'unknown'}.",
+        severity="info" if success else "warn",
+        actor_type="operator",
+        actor_ip=actor_ip,
+        thread_id=read_text(THREAD_ID_PATH),
+        payload={"outcome": outcome},
+    )
+    detail = {
+        "reset": "One earned reset was used. Retrying the ChatGPT subscription route.",
+        "alreadyRedeemed": "That reset was already applied. Retrying the subscription route.",
+        "nothingToReset": "No current rate-limit window is eligible for a reset.",
+        "noCredit": "No earned usage-limit reset is available.",
+    }.get(outcome, "Codex returned an unknown reset result.")
+    return success, detail, capacity
+
+
 def codex_account_capacity_forecast(
     entries: list[dict[str, Any]] | None = None,
     *,
@@ -20200,6 +20683,735 @@ def bedrock_health_snapshot(
     }
 
 
+KPI_PROFILE_FOCUS = {
+    "operations": "service health, blocked work, queue pressure, and stale handoffs",
+    "research": "accepted research, blocked searches, queue age, and fresh results",
+    "media": "active media work, queue pressure, failures, and output freshness",
+    "delivery": "release readiness, validation failures, blocked work, and freshness",
+    "executive": "current health, material exceptions, freshness, and decision backlog",
+    "general": "current health, queue pressure, completion rate, and local processing",
+}
+KPI_PROFILE_INSTANCES = {
+    "operations": {
+        "cloudagent",
+        "control-plane",
+        "diamond-roc",
+        "infra",
+        "networking",
+        "norman",
+        "uplink",
+        "uscache",
+        "usbhome",
+    },
+    "research": {
+        "earlybird",
+        "eyebat",
+        "glimpser",
+        "market-sizing",
+        "scout",
+        "theseus",
+    },
+    "media": {"artmonster", "autocamera", "dj", "studio", "tv"},
+    "delivery": {
+        "castle",
+        "compere",
+        "gold-book",
+        "mls",
+        "panelbot",
+        "platinum-standard",
+        "publisher",
+        "tmi-dashboards",
+    },
+    "executive": {"housebot", "leadership-kpis", "parkergale", "phone-ops"},
+}
+
+
+def kpi_profile_name() -> str:
+    slug = str(AGENT_SLUG or SESSION or "").strip().lower()
+    for profile, instances in KPI_PROFILE_INSTANCES.items():
+        if slug in instances:
+            return profile
+    return "general"
+
+
+def _kpi_meter(
+    meter_id: str,
+    label: str,
+    value: Any,
+    *,
+    tone: str = "ok",
+    detail: str = "",
+    source: str = "local status",
+    updated_at: int = 0,
+) -> dict[str, Any]:
+    return {
+        "id": meter_id,
+        "label": label,
+        "value": value,
+        "tone": tone,
+        "detail": detail,
+        "source": source,
+        "updated_at": updated_at or now_ts(),
+        "stale_after_seconds": max(90, KPI_DGX_REFRESH_SECONDS * 2),
+    }
+
+
+def configured_kpi_app_probes() -> list[dict[str, Any]]:
+    """Return bounded, operator-configured probes plus this TUI's own app route."""
+
+    query = "?" + urlencode({"token": TOKEN}) if TOKEN else ""
+    probes: list[dict[str, Any]] = [
+        {
+            "id": "engine",
+            "label": "engine",
+            "url": f"http://127.0.0.1:{PORT}/health{query}",
+            "required": True,
+            "expect_health": True,
+            "allow_auth_denied": False,
+        }
+    ]
+    scheme, authority = canonical_origin_components()
+    if authority:
+        probes.append(
+            {
+                "id": "route",
+                "label": "route",
+                "url": f"{scheme}://{authority}/health",
+                "required": True,
+                "expect_health": False,
+                "allow_auth_denied": True,
+            }
+        )
+    try:
+        configured = json.loads(KPI_APP_PROBES_JSON) if KPI_APP_PROBES_JSON else []
+    except json.JSONDecodeError:
+        configured = []
+    if not isinstance(configured, list):
+        configured = []
+    for index, raw in enumerate(configured[:4]):
+        item = {"url": raw} if isinstance(raw, str) else raw
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        label = re.sub(r"[^a-zA-Z0-9 ._-]+", "", str(item.get("label") or "app"))
+        probes.append(
+            {
+                "id": f"attached-{index + 1}",
+                "label": (label.strip() or "app")[:40],
+                "url": url,
+                "required": item.get("required") is not False,
+                "expect_health": item.get("expect_health") is not False,
+                "allow_auth_denied": bool(item.get("allow_auth_denied")),
+            }
+        )
+    return probes[:6]
+
+
+def _request_kpi_app_component(
+    target: dict[str, Any],
+) -> tuple[bool, str, int]:
+    url = str(target.get("url") or "")
+    try:
+        request = urllib_request.Request(
+            url,
+            headers={"Accept": "application/json", "User-Agent": "norman-kpi/1.0"},
+        )
+        kwargs: dict[str, Any] = {"timeout": KPI_APP_PROBE_TIMEOUT_SECONDS}
+        if url.startswith("https://"):
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            kwargs["context"] = context
+        with urllib_request.urlopen(request, **kwargs) as response:
+            http_status = int(response.getcode() or 0)
+            body = response.read(65536).decode("utf-8", "replace")
+        ok = 200 <= http_status < 400
+        status = f"http-{http_status}"
+        if ok and target.get("expect_health"):
+            try:
+                payload = json.loads(body or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            health_status = str(payload.get("status") or "").strip().lower()
+            ok = health_status in {"ok", "healthy", "ready"}
+            status = health_status or "invalid-health"
+        return ok, status, http_status
+    except urllib_error.HTTPError as exc:
+        http_status = int(exc.code or 0)
+        ok = bool(target.get("allow_auth_denied")) and http_status in {401, 403}
+        status = "reachable-auth" if ok else f"http-{http_status}"
+        return ok, status, http_status
+    except Exception:
+        return False, "unreachable", 0
+
+
+def _probe_kpi_app_component(target: dict[str, Any]) -> dict[str, Any]:
+    started = time.monotonic()
+    ok = False
+    status = "unreachable"
+    http_status = 0
+    for _attempt in range(2):
+        ok, status, http_status = _request_kpi_app_component(target)
+        if status != "unreachable":
+            break
+    return {
+        "id": str(target.get("id") or "app"),
+        "label": str(target.get("label") or "app"),
+        "required": target.get("required") is not False,
+        "ok": ok,
+        "status": status,
+        "http_status": http_status,
+        "latency_ms": max(0, int((time.monotonic() - started) * 1000)),
+    }
+
+
+def refresh_kpi_app_health() -> dict[str, Any]:
+    """Refresh this TUI's web-app checks without invoking a model provider."""
+
+    result = {
+        "schema": "norman.tui.app-health.v1",
+        "checked_at": now_ts(),
+        "components": [
+            _probe_kpi_app_component(target) for target in configured_kpi_app_probes()
+        ],
+        "read_only": True,
+        "cloud_fallback": False,
+    }
+    write_json(KPI_APP_HEALTH_PATH, result)
+    return result
+
+
+def _kpi_app_health_worker() -> None:
+    global KPI_APP_REFRESH_ACTIVE
+    try:
+        refresh_kpi_app_health()
+    finally:
+        with KPI_APP_LOCK:
+            KPI_APP_REFRESH_ACTIVE = False
+
+
+def maybe_schedule_kpi_app_health() -> bool:
+    global KPI_APP_REFRESH_ACTIVE
+    health = read_json(KPI_APP_HEALTH_PATH, {})
+    checked_at = (
+        _coerce_int(health.get("checked_at")) if isinstance(health, dict) else 0
+    )
+    components = health.get("components", []) if isinstance(health, dict) else []
+    healthy = bool(components) and all(
+        not isinstance(item, dict)
+        or not bool(item.get("required", True))
+        or bool(item.get("ok"))
+        for item in components
+    )
+    refresh_seconds = (
+        KPI_DGX_REFRESH_SECONDS if healthy else max(15, min(60, KPI_INTERVAL_SECONDS))
+    )
+    if now_ts() - checked_at < refresh_seconds:
+        return False
+    with KPI_APP_LOCK:
+        if KPI_APP_REFRESH_ACTIVE:
+            return False
+        KPI_APP_REFRESH_ACTIVE = True
+    threading.Thread(
+        target=_kpi_app_health_worker,
+        daemon=True,
+        name="tui-kpi-app-health",
+    ).start()
+    return True
+
+
+def app_health_kpi_meters() -> list[dict[str, Any]]:
+    health = read_json(KPI_APP_HEALTH_PATH, {})
+    if not isinstance(health, dict):
+        return []
+    checked_at = _coerce_int(health.get("checked_at"))
+    components = [
+        item for item in health.get("components") or [] if isinstance(item, dict)
+    ]
+    if checked_at <= 0 or not components:
+        return []
+    required = [item for item in components if item.get("required") is not False]
+    failed_required = [item for item in required if not item.get("ok")]
+    failed_optional = [
+        item
+        for item in components
+        if item.get("required") is False and not item.get("ok")
+    ]
+    up = sum(bool(item.get("ok")) for item in components)
+    max_latency = max(_coerce_int(item.get("latency_ms")) for item in components)
+    failed_labels = [str(item.get("label") or "component") for item in failed_required]
+    tone = "alert" if failed_required else "warn" if failed_optional else "ok"
+    detail = (
+        "Web app engine and front-door route are reachable."
+        if not failed_required and not failed_optional
+        else "Unavailable: "
+        + ", ".join(
+            failed_labels
+            + [str(item.get("label") or "component") for item in failed_optional]
+        )
+    )
+    stale_after = max(90, KPI_DGX_REFRESH_SECONDS * 2)
+    return [
+        {
+            **_kpi_meter(
+                "app-health",
+                "Web app",
+                f"{up}/{len(components)} up",
+                tone=tone,
+                detail=detail,
+                source="local app probes",
+                updated_at=checked_at,
+            ),
+            "stale_after_seconds": stale_after,
+        },
+        {
+            **_kpi_meter(
+                "app-latency",
+                "App latency",
+                f"{max_latency}ms",
+                tone="warn" if max_latency >= 1000 else "ok",
+                detail="Slowest response among the app engine, route, and configured attachments.",
+                source="local app probes",
+                updated_at=checked_at,
+            ),
+            "stale_after_seconds": stale_after,
+        },
+    ]
+
+
+def refresh_kpi_infra_health() -> dict[str, Any]:
+    """Probe Norman's local compute fabric without invoking any model provider."""
+
+    checked_at = now_ts()
+    nodes: list[dict[str, Any]] = []
+    for node_id, role, url in KPI_INFRA_HEALTH_TARGETS:
+        ok = False
+        status = "unreachable"
+        started = time.monotonic()
+        try:
+            request = urllib_request.Request(
+                url,
+                headers={"Accept": "application/json", "User-Agent": "norman-kpi/1.0"},
+            )
+            with urllib_request.urlopen(
+                request, timeout=KPI_INFRA_PROBE_TIMEOUT_SECONDS
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8", "replace") or "{}")
+            status = str(payload.get("status") or "").strip().lower()
+            ok = status in {"ok", "healthy", "ready"}
+            if not status:
+                status = "ok" if ok else "unknown"
+        except Exception:
+            status = "unreachable"
+        nodes.append(
+            {
+                "id": node_id,
+                "role": role,
+                "ok": ok,
+                "status": status,
+                "latency_ms": max(0, int((time.monotonic() - started) * 1000)),
+            }
+        )
+    result = {
+        "schema": "norman.tui.infra-health.v1",
+        "checked_at": checked_at,
+        "nodes": nodes,
+        "read_only": True,
+        "cloud_fallback": False,
+    }
+    write_json(KPI_INFRA_HEALTH_PATH, result)
+    return result
+
+
+def _kpi_infra_health_worker() -> None:
+    global KPI_INFRA_REFRESH_ACTIVE
+    try:
+        refresh_kpi_infra_health()
+    finally:
+        with KPI_INFRA_LOCK:
+            KPI_INFRA_REFRESH_ACTIVE = False
+
+
+def maybe_schedule_kpi_infra_health() -> bool:
+    global KPI_INFRA_REFRESH_ACTIVE
+    if str(AGENT_SLUG or "").strip().lower() != "norman":
+        return False
+    health = read_json(KPI_INFRA_HEALTH_PATH, {})
+    checked_at = (
+        _coerce_int(health.get("checked_at")) if isinstance(health, dict) else 0
+    )
+    if now_ts() - checked_at < KPI_DGX_REFRESH_SECONDS:
+        return False
+    with KPI_INFRA_LOCK:
+        if KPI_INFRA_REFRESH_ACTIVE:
+            return False
+        KPI_INFRA_REFRESH_ACTIVE = True
+    threading.Thread(
+        target=_kpi_infra_health_worker,
+        daemon=True,
+        name="tui-kpi-infra-health",
+    ).start()
+    return True
+
+
+def norman_infra_kpi_meters() -> list[dict[str, Any]]:
+    if str(AGENT_SLUG or "").strip().lower() != "norman":
+        return []
+    health = read_json(KPI_INFRA_HEALTH_PATH, {})
+    if not isinstance(health, dict):
+        return []
+    checked_at = _coerce_int(health.get("checked_at"))
+    if checked_at <= 0:
+        return []
+    nodes = [item for item in health.get("nodes") or [] if isinstance(item, dict)]
+    dgx = [item for item in nodes if item.get("role") == "DGX"]
+    fallback = [item for item in nodes if item.get("role") == "fallback"]
+    dgx_up = sum(bool(item.get("ok")) for item in dgx)
+    fallback_up = sum(bool(item.get("ok")) for item in fallback)
+    all_up = sum(bool(item.get("ok")) for item in nodes)
+    down_names = [str(item.get("id") or "node") for item in nodes if not item.get("ok")]
+    stale_after = max(90, KPI_DGX_REFRESH_SECONDS * 2)
+    return [
+        {
+            **_kpi_meter(
+                "infra-dgx",
+                "DGX",
+                f"{dgx_up}/{len(dgx)} up",
+                tone="ok" if dgx and dgx_up == len(dgx) else "alert",
+                detail=(
+                    "Both DGX Spark resident workers are reachable."
+                    if dgx and dgx_up == len(dgx)
+                    else "DGX worker unavailable: "
+                    + ", ".join(
+                        str(item.get("id") or "worker")
+                        for item in dgx
+                        if not item.get("ok")
+                    )
+                ),
+                source="local node probes",
+                updated_at=checked_at,
+            ),
+            "stale_after_seconds": stale_after,
+        },
+        {
+            **_kpi_meter(
+                "infra-mac",
+                "Mac fallback",
+                "Up" if fallback_up == len(fallback) and fallback else "Down",
+                tone="ok" if fallback_up == len(fallback) and fallback else "alert",
+                detail="Mac mini Norllama fallback is reachable."
+                if fallback_up
+                else "Mac mini fallback is not reachable.",
+                source="local node probes",
+                updated_at=checked_at,
+            ),
+            "stale_after_seconds": stale_after,
+        },
+        {
+            **_kpi_meter(
+                "infra-network",
+                "Network",
+                "Good" if nodes and all_up == len(nodes) else "Issue",
+                tone="ok" if nodes and all_up == len(nodes) else "alert",
+                detail=(
+                    "Norllama front door and all compute nodes are reachable."
+                    if nodes and all_up == len(nodes)
+                    else "Unreachable: " + ", ".join(down_names)
+                ),
+                source="local network probes",
+                updated_at=checked_at,
+            ),
+            "stale_after_seconds": stale_after,
+        },
+    ]
+
+
+def build_local_kpi_candidates(
+    snapshot: dict[str, Any], metrics: dict[str, Any], *, observed_at: int
+) -> list[dict[str, Any]]:
+    """Build bounded, read-only KPI facts before the DGX ranking pass."""
+
+    resource = (
+        snapshot.get("resource_meter")
+        if isinstance(snapshot.get("resource_meter"), dict)
+        else {}
+    )
+    candidates = norman_infra_kpi_meters()
+    candidates.extend(app_health_kpi_meters())
+    candidates.extend(normalize_kpi_meters(resource.get("kpi_meters"), limit=4))
+    services = [
+        item for item in snapshot.get("services") or [] if isinstance(item, dict)
+    ]
+    required = [item for item in services if item.get("required") is not False]
+    unhealthy = [
+        item
+        for item in required
+        if str(item.get("state") or "").strip().lower() != "active"
+    ]
+    queue_depth = max(0, _coerce_int(metrics.get("queue_depth")))
+    turns = max(0, _coerce_int(metrics.get("turns")))
+    successes = max(0, _coerce_int(metrics.get("successful_turns")))
+    success_rate = round((successes / turns) * 100) if turns else 100
+    local_rate = max(
+        0.0, min(100.0, _coerce_float(metrics.get("route_local_turn_rate_24h")))
+    )
+    avoided = max(0, _coerce_int(metrics.get("route_cloud_tokens_avoided_24h")))
+    bbs = snapshot.get("bbs") if isinstance(snapshot.get("bbs"), dict) else {}
+    bbs_counts = bbs.get("counts") if isinstance(bbs.get("counts"), dict) else {}
+    bbs_attention = sum(
+        max(0, _coerce_int(bbs_counts.get(key)))
+        for key in ("actionable_urgent", "actionable_high", "needs_ack")
+    )
+    generic = [
+        _kpi_meter(
+            "health",
+            "Health",
+            "Watch" if unhealthy else "Good",
+            tone="warn" if unhealthy else "ok",
+            detail=(
+                f"{len(unhealthy)} of {len(required)} required services need attention."
+                if unhealthy
+                else f"{len(required)} required services are active."
+            ),
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "queue",
+            "Queue",
+            queue_depth,
+            tone="warn" if queue_depth else "ok",
+            detail="Operator prompts waiting in this TUI.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "success",
+            "Success",
+            f"{success_rate}%",
+            tone="warn" if turns and success_rate < 90 else "ok",
+            detail=f"{successes} successful turns out of {turns} recorded turns.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "turn-time",
+            "Turn time",
+            format_duration_label(max(0, _coerce_int(metrics.get("avg_turn_seconds")))),
+            tone="warn" if _coerce_int(metrics.get("avg_turn_seconds")) > 900 else "ok",
+            detail="Average completed turn duration from the local usage ledger.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "local-share",
+            "DGX/local",
+            f"{round(local_rate)}%",
+            tone="ok" if local_rate >= 60 else "warn" if turns else "ok",
+            detail="Share of recent turns handled by local or local-assisted routes.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "tokens-avoided",
+            "Tokens saved",
+            avoided,
+            detail="Estimated cloud tokens avoided during the last 24 hours.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "bbs-attention",
+            "BBS",
+            bbs_attention,
+            tone="warn" if bbs_attention else "ok",
+            detail="Urgent, high-priority, or acknowledgement-needed BBS items visible here.",
+            updated_at=observed_at,
+        ),
+    ]
+    seen = {str(item.get("id") or "") for item in candidates}
+    candidates.extend(item for item in generic if item["id"] not in seen)
+    return candidates[:10]
+
+
+def load_kpi_dgx_ranking() -> dict[str, Any]:
+    payload = read_json(KPI_DGX_RANKING_PATH, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _kpi_ranking_ids(response_text: Any, allowed: set[str]) -> list[str]:
+    text = re.sub(r"(?is)<think>.*?</think>", "", str(response_text or "")).strip()
+    match = re.search(r"\[[\s\S]*?\]", text)
+    if not match:
+        return []
+    try:
+        values = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+    selected: list[str] = []
+    for value in values if isinstance(values, list) else []:
+        meter_id = str(value or "").strip()
+        if meter_id in allowed and meter_id not in selected:
+            selected.append(meter_id)
+    return selected[:4]
+
+
+def top_kpi_meters(
+    candidates: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    ranking = load_kpi_dgx_ranking()
+    allowed = {str(item.get("id") or "") for item in candidates}
+    selected_ids = [
+        str(value)
+        for value in ranking.get("selected_ids") or []
+        if str(value) in allowed
+    ]
+    by_id = {str(item.get("id") or ""): item for item in candidates}
+    pinned_ids = (
+        ["infra-dgx", "infra-mac", "infra-network", "app-health"]
+        if str(AGENT_SLUG or "").strip().lower() == "norman"
+        else ["app-health"]
+    )
+    ordered = [by_id[meter_id] for meter_id in pinned_ids if meter_id in by_id]
+    ordered.extend(
+        by_id[meter_id]
+        for meter_id in selected_ids
+        if meter_id in by_id and by_id[meter_id] not in ordered
+    )
+    ordered.extend(item for item in candidates if item not in ordered)
+    processor = {
+        "mode": "local-dgx",
+        "status": str(ranking.get("status") or "warming"),
+        "model": str(ranking.get("model") or LOCAL_PLANNER_AUTOMATIC_MODEL),
+        "ranked_at": _coerce_int(ranking.get("ranked_at")),
+        "cloud_fallback": False,
+    }
+    return ordered[:4], processor
+
+
+def _kpi_dgx_ranking_worker(candidates: list[dict[str, Any]], profile: str) -> None:
+    global KPI_DGX_RANKING_ACTIVE
+    ranked_at = now_ts()
+    result = {
+        "schema": "norman.tui.kpi-dgx-ranking.v1",
+        "ranked_at": ranked_at,
+        "status": "unavailable",
+        "model": LOCAL_PLANNER_AUTOMATIC_MODEL,
+        "selected_ids": [],
+        "cloud_fallback": False,
+    }
+    try:
+        refresh_kpi_app_health()
+        fresh_app = app_health_kpi_meters()
+        fresh_app_ids = {str(item.get("id") or "") for item in fresh_app}
+        candidates = fresh_app + [
+            item
+            for item in candidates
+            if str(item.get("id") or "") not in fresh_app_ids
+        ]
+        if str(AGENT_SLUG or "").strip().lower() == "norman":
+            refresh_kpi_infra_health()
+            fresh_infra = norman_infra_kpi_meters()
+            fresh_ids = {str(item.get("id") or "") for item in fresh_infra}
+            candidates = fresh_infra + [
+                item
+                for item in candidates
+                if str(item.get("id") or "") not in fresh_ids
+            ]
+        automatic_models = globals().get("local_automatic_text_models")
+        model = (
+            (automatic_models() or [""])[0] if callable(automatic_models) else ""
+        ) or str(globals().get("WORKING_RECAP_LOCAL_MODEL") or "")
+        endpoint_resolver = globals().get("local_llm_candidate_endpoints")
+        endpoints = (
+            endpoint_resolver(model, foreground=False)
+            if model and callable(endpoint_resolver)
+            else list(globals().get("WORKING_RECAP_LOCAL_ENDPOINTS") or [])
+        )
+        prompt = json.dumps(
+            {
+                "task": "Select the four most useful KPI ids for an operator's compact TUI bar. Return only a JSON array of ids, most important first.",
+                "console": AGENT_SLUG,
+                "profile": profile,
+                "focus": KPI_PROFILE_FOCUS.get(profile, KPI_PROFILE_FOCUS["general"]),
+                "candidates": [
+                    {
+                        key: item.get(key)
+                        for key in ("id", "label", "value", "tone", "detail")
+                    }
+                    for item in candidates
+                ],
+                "constraints": {"count": 4, "read_only": True, "cloud_fallback": False},
+            },
+            separators=(",", ":"),
+        )
+        allowed = {str(item.get("id") or "") for item in candidates}
+        for endpoint in endpoints:
+            try:
+                local_generate = globals().get("local_llm_generate_once")
+                if callable(local_generate):
+                    payload, _, _ = local_generate(
+                        endpoint,
+                        model,
+                        prompt,
+                        timeout_seconds=KPI_DGX_TIMEOUT_SECONDS,
+                        max_output_tokens=96,
+                        num_ctx=4096,
+                        work_class="background",
+                        work_source="tui-kpi-ranker",
+                    )
+                else:
+                    recap_generate = globals().get("working_recap_local_generate")
+                    if not callable(recap_generate):
+                        continue
+                    payload = recap_generate(
+                        endpoint,
+                        model,
+                        prompt,
+                        timeout_seconds=KPI_DGX_TIMEOUT_SECONDS,
+                        max_output_tokens=96,
+                        source="tui-kpi-ranker",
+                    )
+            except Exception:
+                continue
+            response_reader = globals().get("local_llm_response_text")
+            if not callable(response_reader):
+                response_reader = globals().get("working_recap_local_response_text")
+            response_text = (
+                response_reader(payload) if callable(response_reader) else ""
+            )
+            selected_ids = _kpi_ranking_ids(response_text, allowed)
+            if selected_ids:
+                result.update(status="ranked", model=model, selected_ids=selected_ids)
+                break
+        write_json(KPI_DGX_RANKING_PATH, result)
+    finally:
+        with KPI_DGX_LOCK:
+            KPI_DGX_RANKING_ACTIVE = False
+
+
+def maybe_schedule_kpi_dgx_ranking(snapshot: dict[str, Any]) -> bool:
+    global KPI_DGX_RANKING_ACTIVE
+    if not KPI_DGX_ENABLED:
+        return False
+    kpis = snapshot.get("kpis") if isinstance(snapshot.get("kpis"), dict) else {}
+    candidates = [
+        item for item in kpis.get("ranking_candidates") or [] if isinstance(item, dict)
+    ]
+    if not candidates:
+        return False
+    previous = load_kpi_dgx_ranking()
+    if now_ts() - _coerce_int(previous.get("ranked_at")) < KPI_DGX_REFRESH_SECONDS:
+        return False
+    with KPI_DGX_LOCK:
+        if KPI_DGX_RANKING_ACTIVE:
+            return False
+        KPI_DGX_RANKING_ACTIVE = True
+    threading.Thread(
+        target=_kpi_dgx_ranking_worker,
+        args=(candidates, kpi_profile_name()),
+        daemon=True,
+        name="tui-kpi-dgx-ranker",
+    ).start()
+    return True
+
+
 def default_kpi_snapshot() -> dict[str, Any]:
     return {
         "schema": "norman.tui.kpis.v1",
@@ -20218,6 +21430,15 @@ def default_kpi_snapshot() -> dict[str, Any]:
         "last_pane_hash": "",
         "state_entered_at": 0,
         "signals": [],
+        "profile": kpi_profile_name(),
+        "top_meters": [],
+        "ranking_candidates": [],
+        "processor": {
+            "mode": "local-dgx",
+            "status": "warming",
+            "model": LOCAL_PLANNER_AUTOMATIC_MODEL,
+            "cloud_fallback": False,
+        },
         "sentinel": {
             "schema": "norman.tui.sentinel.v1",
             "mode": SENTINEL_MODE,
@@ -20347,6 +21568,7 @@ def persist_subscription_probe_exhaustion(
         return False
 
     observed_at = now_ts()
+    previous_capacity = codex_account_capacity_snapshot()
     payload = {
         **default_codex_account_capacity(),
         "source": "interactive_usage",
@@ -20355,6 +21577,9 @@ def persist_subscription_probe_exhaustion(
         "observed_at": observed_at,
         "last_probe_at": observed_at,
         "last_error": summarize_text(observed_error, 160),
+        "usage_limit_resets_available": previous_capacity.get(
+            "usage_limit_resets_available"
+        ),
     }
     _persist_codex_account_capacity(payload)
     append_audit_event(
@@ -21231,6 +22456,12 @@ def build_kpi_snapshot(
         "signals": signals,
         "metrics": metrics,
     }
+    candidates = build_local_kpi_candidates(snapshot, metrics, observed_at=now)
+    top_meters, processor = top_kpi_meters(candidates)
+    payload["profile"] = kpi_profile_name()
+    payload["top_meters"] = top_meters
+    payload["ranking_candidates"] = candidates
+    payload["processor"] = processor
     payload["sentinel"] = build_sentinel_state(snapshot, payload)
     return payload
 
@@ -22539,6 +23770,20 @@ def live_turn_with_event(
     return normalize_live_turn(live)
 
 
+def record_live_turn_phase(phase: str) -> None:
+    if phase not in {"checking_runtime", "preparing_context", "waiting_model"}:
+        return
+    with STATUS_LOCK:
+        meta = load_status_meta()
+        if not meta.get("pending"):
+            return
+        live = normalize_live_turn(meta.get("live_turn"))
+        live["phase"] = phase
+        live["phase_started_at"] = now_ts()
+        meta["live_turn"] = live
+        save_status_meta(meta)
+
+
 def record_live_turn_event(event: dict[str, Any], *, kind: str = "") -> None:
     if not isinstance(event, dict):
         return
@@ -23090,6 +24335,351 @@ def active_codex_process_alive() -> bool:
     return codex_runtime_pid_alive(_coerce_int(meta.get("active_child_pid")))
 
 
+LOCAL_CLI_DISCOVERY_CACHE_LOCK = threading.Lock()
+LOCAL_CLI_DISCOVERY_CACHE: dict[str, Any] = {"observed_at": 0, "payload": {}}
+LOCAL_CLI_DISCOVERY_REFRESHING = False
+LOCAL_CLI_DISCOVERY_TTL_SECONDS = max(
+    1,
+    _coerce_int(os.environ.get("NORMAN_LOCAL_CLI_DISCOVERY_TTL_SECONDS", "3")) or 3,
+)
+LOCAL_CLI_DISCOVERY_LIMIT = max(
+    1,
+    min(
+        128,
+        _coerce_int(os.environ.get("NORMAN_LOCAL_CLI_DISCOVERY_LIMIT", "64")) or 64,
+    ),
+)
+LOCAL_CLI_DISCOVERY_HOST = os.environ.get(
+    "NORMAN_LOCAL_CLI_DISCOVERY_HOST",
+    "hal" if AGENT_NAME.strip().lower() == "norman" else "",
+).strip()
+LOCAL_CLI_DISCOVERY_ENABLED = os.environ.get(
+    "NORMAN_LOCAL_CLI_DISCOVERY_ENABLED",
+    "1" if AGENT_NAME.strip().lower() == "norman" else "0",
+).strip().lower() in {"1", "true", "yes", "on"}
+
+REMOTE_LOCAL_CLI_DISCOVERY_SCRIPT = r"""
+import json
+import os
+import pathlib
+import subprocess
+
+allowed = {
+    "CODEX_THREAD_ID",
+    "NORMAN_CODEX_AGENT_NAME",
+    "HOUSEBOT_CODEX_AGENT_NAME",
+    "TMUX",
+    "TMUX_PANE",
+}
+owner_uid = os.getuid()
+rows = []
+proc = subprocess.run(
+    ["ps", "-eo", "uid=,pid=,ppid=,etimes=,tty=,comm="],
+    capture_output=True,
+    text=True,
+    check=False,
+)
+for line in (proc.stdout or "").splitlines():
+    parts = line.split(None, 5)
+    if len(parts) != 6:
+        continue
+    uid_text, pid_text, ppid_text, age_text, tty, command = parts
+    if not (uid_text.isdigit() and int(uid_text) == owner_uid and pid_text.isdigit() and command.lower() == "codex"):
+        continue
+    proc_dir = pathlib.Path("/proc") / pid_text
+    try:
+        cwd = os.readlink(proc_dir / "cwd")
+    except OSError:
+        cwd = ""
+    environment = {}
+    try:
+        raw_items = (proc_dir / "environ").read_bytes().split(b"\0")
+    except OSError:
+        raw_items = []
+    for raw in raw_items:
+        key_raw, separator, value_raw = raw.partition(b"=")
+        key = key_raw.decode("utf-8", errors="ignore")
+        if separator and key in allowed:
+            environment[key] = value_raw.decode("utf-8", errors="replace").strip()
+    rows.append({
+        "pid": int(pid_text),
+        "ppid": int(ppid_text) if ppid_text.isdigit() else 0,
+        "age_seconds": int(age_text) if age_text.isdigit() else 0,
+        "tty": "" if tty == "?" else tty,
+        "cwd": cwd,
+        "environment": environment,
+    })
+print(json.dumps(rows, separators=(",", ":")))
+"""
+
+
+def _allowed_proc_environment(proc_dir: Path) -> dict[str, str]:
+    allowed = {
+        "CODEX_THREAD_ID",
+        "NORMAN_CODEX_AGENT_NAME",
+        "HOUSEBOT_CODEX_AGENT_NAME",
+        "TMUX",
+        "TMUX_PANE",
+    }
+    try:
+        raw_items = (proc_dir / "environ").read_bytes().split(b"\0")
+    except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
+        return {}
+    values: dict[str, str] = {}
+    for raw in raw_items:
+        key_raw, separator, value_raw = raw.partition(b"=")
+        if not separator:
+            continue
+        key = key_raw.decode("utf-8", errors="ignore")
+        if key not in allowed:
+            continue
+        values[key] = value_raw.decode("utf-8", errors="replace").strip()
+    return values
+
+
+def _remote_local_cli_rows(host: str) -> tuple[list[dict[str, Any]], str]:
+    clean_host = str(host or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", clean_host):
+        return [], "invalid discovery host"
+    try:
+        proc = subprocess.run(
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=3",
+                clean_host,
+                "python3 -",
+            ],
+            input=REMOTE_LOCAL_CLI_DISCOVERY_SCRIPT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=6,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return [], "remote discovery unavailable"
+    if proc.returncode != 0:
+        return [], "remote discovery unavailable"
+    try:
+        payload = json.loads(proc.stdout or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return [], "remote discovery returned invalid data"
+    if not isinstance(payload, list):
+        return [], "remote discovery returned invalid data"
+    return [item for item in payload if isinstance(item, dict)], ""
+
+
+def discover_local_cli_sessions(
+    *, proc_root: Path = Path("/proc"), uid: int | None = None
+) -> dict[str, Any]:
+    """Return one safe, read-only observation for each live local Codex CLI."""
+    owner_uid = os.getuid() if uid is None else int(uid)
+    observed_at = now_ts()
+    source_host = LOCAL_CLI_DISCOVERY_HOST or HOST_NAME
+    discovery_error = ""
+    process_rows: list[dict[str, Any]] = []
+    use_remote = (
+        bool(LOCAL_CLI_DISCOVERY_HOST)
+        and LOCAL_CLI_DISCOVERY_HOST != HOST_NAME
+        and proc_root == Path("/proc")
+        and uid is None
+    )
+    if use_remote:
+        process_rows, discovery_error = _remote_local_cli_rows(LOCAL_CLI_DISCOVERY_HOST)
+    else:
+        try:
+            proc = subprocess.run(
+                ["ps", "-eo", "uid=,pid=,ppid=,etimes=,tty=,comm="],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            proc = subprocess.CompletedProcess([], 1, "", "")
+        if proc.returncode != 0:
+            discovery_error = "local discovery unavailable"
+        else:
+            for line in (proc.stdout or "").splitlines():
+                parts = line.split(None, 5)
+                if len(parts) != 6:
+                    continue
+                uid_text, pid_text, ppid_text, age_text, tty, command = parts
+                if not (
+                    uid_text.isdigit()
+                    and int(uid_text) == owner_uid
+                    and pid_text.isdigit()
+                    and command.strip().lower() == "codex"
+                ):
+                    continue
+                pid = int(pid_text)
+                proc_dir = proc_root / str(pid)
+                try:
+                    cwd = os.readlink(proc_dir / "cwd")
+                except (
+                    FileNotFoundError,
+                    PermissionError,
+                    ProcessLookupError,
+                    OSError,
+                ):
+                    cwd = ""
+                process_rows.append(
+                    {
+                        "pid": pid,
+                        "ppid": int(ppid_text) if ppid_text.isdigit() else 0,
+                        "age_seconds": int(age_text) if age_text.isdigit() else 0,
+                        "tty": "" if tty == "?" else tty,
+                        "cwd": cwd,
+                        "environment": _allowed_proc_environment(proc_dir),
+                    }
+                )
+    sessions: list[dict[str, Any]] = []
+    for row in process_rows:
+        pid = _coerce_int(row.get("pid"))
+        if pid <= 0:
+            continue
+        cwd = str(row.get("cwd") or "")
+        environment = (
+            row.get("environment") if isinstance(row.get("environment"), dict) else {}
+        )
+        environment = {
+            str(key): str(value)
+            for key, value in environment.items()
+            if key
+            in {
+                "CODEX_THREAD_ID",
+                "NORMAN_CODEX_AGENT_NAME",
+                "HOUSEBOT_CODEX_AGENT_NAME",
+                "TMUX",
+                "TMUX_PANE",
+            }
+        }
+        agent_name = (
+            environment.get("NORMAN_CODEX_AGENT_NAME")
+            or environment.get("HOUSEBOT_CODEX_AGENT_NAME")
+            or ""
+        ).strip()
+        thread_id = environment.get("CODEX_THREAD_ID", "").strip()
+        tmux_value = environment.get("TMUX", "").strip()
+        tmux_socket = tmux_value.split(",", 1)[0] if tmux_value else ""
+        workspace = Path(cwd).name if cwd else "Unknown workspace"
+        if not workspace:
+            workspace = cwd or "Filesystem root"
+        managed = bool(agent_name or tmux_socket)
+        age_seconds = max(0, _coerce_int(row.get("age_seconds")))
+        sessions.append(
+            {
+                "key": str(pid),
+                "pid": pid,
+                "ppid": _coerce_int(row.get("ppid")),
+                "workspace": workspace,
+                "cwd": cwd,
+                "tty": str(row.get("tty") or ""),
+                "age_seconds": age_seconds,
+                "thread_id": thread_id,
+                "agent_name": agent_name,
+                "managed": managed,
+                "observer_state": "managed" if managed else "observed",
+                "control": "tmux" if tmux_socket else "read-only",
+                "tmux_socket": Path(tmux_socket).name if tmux_socket else "",
+                "tmux_pane": environment.get("TMUX_PANE", "").strip(),
+            }
+        )
+    sessions.sort(
+        key=lambda item: (
+            bool(item.get("managed")),
+            int(item.get("age_seconds") or 0),
+            int(item.get("pid") or 0),
+        )
+    )
+    sessions = sessions[:LOCAL_CLI_DISCOVERY_LIMIT]
+    loose_count = sum(1 for item in sessions if not item.get("managed"))
+    managed_count = len(sessions) - loose_count
+    return {
+        "enabled": True,
+        "available": not bool(discovery_error),
+        "host": source_host,
+        "observed_at": observed_at,
+        "count": len(sessions),
+        "loose_count": loose_count,
+        "managed_count": managed_count,
+        "items": sessions,
+        "mode": "observe-only",
+        "detail": (
+            "Live local Codex CLIs are auto-observed; direct PTYs remain operator-controlled."
+            if not discovery_error
+            else discovery_error
+        ),
+    }
+
+
+def _refresh_local_cli_sessions_cache() -> None:
+    global LOCAL_CLI_DISCOVERY_REFRESHING
+    try:
+        payload = discover_local_cli_sessions()
+        with LOCAL_CLI_DISCOVERY_CACHE_LOCK:
+            LOCAL_CLI_DISCOVERY_CACHE["observed_at"] = now_ts()
+            LOCAL_CLI_DISCOVERY_CACHE["payload"] = payload
+    finally:
+        with LOCAL_CLI_DISCOVERY_CACHE_LOCK:
+            LOCAL_CLI_DISCOVERY_REFRESHING = False
+
+
+def local_cli_sessions_snapshot(*, force: bool = False) -> dict[str, Any]:
+    global LOCAL_CLI_DISCOVERY_REFRESHING
+    if not LOCAL_CLI_DISCOVERY_ENABLED:
+        return {
+            "enabled": False,
+            "available": False,
+            "host": LOCAL_CLI_DISCOVERY_HOST or HOST_NAME,
+            "observed_at": now_ts(),
+            "count": 0,
+            "loose_count": 0,
+            "managed_count": 0,
+            "items": [],
+            "mode": "disabled",
+        }
+    observed_at = now_ts()
+    with LOCAL_CLI_DISCOVERY_CACHE_LOCK:
+        cached_at = _coerce_int(LOCAL_CLI_DISCOVERY_CACHE.get("observed_at"))
+        cached = LOCAL_CLI_DISCOVERY_CACHE.get("payload")
+        needs_refresh = (
+            force
+            or not cached
+            or (observed_at - cached_at >= LOCAL_CLI_DISCOVERY_TTL_SECONDS)
+        )
+        if needs_refresh and not LOCAL_CLI_DISCOVERY_REFRESHING:
+            LOCAL_CLI_DISCOVERY_REFRESHING = True
+            try:
+                threading.Thread(
+                    target=_refresh_local_cli_sessions_cache,
+                    name="local-cli-discovery",
+                    daemon=True,
+                ).start()
+            except RuntimeError:
+                LOCAL_CLI_DISCOVERY_REFRESHING = False
+        payload = (
+            dict(cached)
+            if isinstance(cached, dict) and cached
+            else {
+                "enabled": True,
+                "available": False,
+                "host": LOCAL_CLI_DISCOVERY_HOST or HOST_NAME,
+                "observed_at": 0,
+                "count": 0,
+                "loose_count": 0,
+                "managed_count": 0,
+                "items": [],
+                "mode": "observe-only",
+                "detail": "Discovering local CLI sessions",
+            }
+        )
+        payload["refreshing"] = LOCAL_CLI_DISCOVERY_REFRESHING
+        return payload
+
+
 def prompt_runtime_alive() -> bool:
     return (
         prompt_thread_alive()
@@ -23114,12 +24704,22 @@ def local_status_preflight_available() -> bool:
     return bool(local_planner_preflight_readiness().get("ready"))
 
 
+def prompt_requests_media_work(prompt: Any) -> bool:
+    """Keep visual artifact requests on the normal model/tool path."""
+    lower = prompt_core_request(str(prompt or "")).lower()
+    return bool(
+        re.search(
+            r"\b(?:image|images|picture|pictures|photo|photos|artwork|"
+            r"asset|assets|attachment|attachments|render|embed|inline|download)\b",
+            lower,
+        )
+    )
+
+
 def deterministic_status_prompt_allowed(
     prompt: str, attachments: list[dict[str, Any]], *, route_lock: bool = False
 ) -> bool:
     if route_lock or normalize_attachments(attachments):
-        return False
-    if prompt_runtime_alive():
         return False
     core = prompt_core_request(prompt)
     if not core:
@@ -23130,10 +24730,16 @@ def deterministic_status_prompt_allowed(
         return False
     if prompt_requests_investigation(core):
         return False
+    if prompt_requests_media_work(core):
+        return False
+    # A requested command is not answered by the console's own status snapshot.
+    if re.search(r"\b(?:ssh|run|execute|command|shell)\b", core, re.IGNORECASE):
+        return False
     return (
         prompt_is_explicit_status_request(core)
         and prompt_is_quick_status_request(core)
         and route_receipt_requested_action(core) == "status"
+        and not prompt_runtime_alive()
     )
 
 
@@ -23174,8 +24780,8 @@ def deterministic_command_prompt_allowed(
     return bool(
         not route_lock
         and not normalize_attachments(attachments)
-        and not prompt_runtime_alive()
         and deterministic_command_request(prompt)
+        and not prompt_runtime_alive()
     )
 
 
@@ -23217,51 +24823,33 @@ def execute_deterministic_command(argv: list[str]) -> tuple[str, bool]:
 
 
 def deterministic_status_response(prompt: str, *, fast_snapshot: bool = False) -> str:
-    """Build a zero-token status response from current TUI state.
-
-    Web acknowledgements use the bounded live overlay so a status request cannot
-    block behind the full diagnostics snapshot. Direct callers retain the full
-    snapshot by default.
-    """
+    """Build a concise, user-facing status response without runtime diagnostics."""
     snapshot = _live_status_overlay() if fast_snapshot else current_snapshot()
     state = str(snapshot.get("state") or "unknown").strip() or "unknown"
-    pending = "yes" if snapshot.get("pending") else "no"
-    status_message = summarize_text(snapshot.get("status_message"), 180) or "n/a"
-    selected_runtime = str(snapshot.get("selected_runtime") or "").strip() or "unknown"
-    selected_model = str(snapshot.get("selected_model") or "").strip() or "unknown"
-    last_runtime = str(snapshot.get("last_runtime") or "").strip() or "unknown"
-    last_model = str(snapshot.get("last_model") or "").strip() or "unknown"
-    last_error = summarize_text(snapshot.get("last_error"), 220)
-    last_response = summarize_text(snapshot.get("last_response"), 220)
-    response_note = last_error or last_response or "no visible response recorded"
-    route_receipts = snapshot.get("route_receipts")
-    if isinstance(route_receipts, dict):
-        receipt_status = str(route_receipts.get("status") or "unknown").strip()
-        receipt_count = _coerce_int(route_receipts.get("receipt_count"))
-        receipt_note = f"{receipt_status}, {receipt_count} receipts"
-    else:
-        receipt_note = "not reported"
-    planner_readiness = snapshot.get("local_planner_readiness")
-    if isinstance(planner_readiness, dict):
-        planner_note = summarize_text(
-            planner_readiness.get("reason")
-            or planner_readiness.get("status")
-            or planner_readiness.get("model")
-            or "",
-            180,
+    pending = bool(snapshot.get("pending"))
+    needs_attention = bool(snapshot.get("last_error")) or state in {
+        "error",
+        "failed",
+        "degraded",
+    }
+    if pending:
+        summary = "A request is still in progress."
+        next_step = "I will post the result here when it is ready."
+    elif needs_attention:
+        summary = "The last request needs attention."
+        next_step = (
+            "Open the runtime details for diagnostics, or send a focused follow-up."
         )
     else:
-        planner_note = ""
-    if not planner_note:
-        planner_note = "local planner readiness is not loaded in this snapshot"
-    requested = summarize_text(prompt, 120)
+        summary = "Bridge is ready and no request is running."
+        next_step = "Send the next focused request when you are ready."
     return "\n".join(
         [
-            f"- State: {state}; pending: {pending}; status: {status_message}.",
-            f"- Selected route: {selected_runtime}/{selected_model}; last turn: {last_runtime}/{last_model}.",
-            f"- Last visible result: {response_note}.",
-            f"- Local planner availability: {planner_note}; route receipts: {receipt_note}.",
-            f"- Next: continue from `{requested}` with a scoped prompt if more work is needed; this status used deterministic TUI state, not a cloud/model call.",
+            "Bridge status",
+            "",
+            f"- {summary}",
+            f"- {next_step}",
+            "- This was an instant local status check; no model was called.",
         ]
     )
 
@@ -25077,7 +26665,10 @@ def schedule_web_only_restart(
 
     def _restart_web_service() -> None:
         time.sleep(max(0.05, float(delay_seconds)))
-        proc = run(["systemctl", "restart", WEB_SERVICE])
+        command = ["systemctl", "restart", WEB_SERVICE]
+        if os.geteuid() != 0:
+            command = ["sudo", "-n", *command]
+        proc = run(command)
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             update_status_meta(
@@ -26931,6 +28522,7 @@ def _execute_codex_prompt(
                 }
             ),
         )
+    record_live_turn_phase("checking_runtime")
     release_preflight = codex_launch_preflight(normalized_service_tier)
     if not release_preflight["allowed"]:
         blocked_message = str(
@@ -27000,6 +28592,7 @@ def _execute_codex_prompt(
         and codex_profile_v2_for_service_tier(normalized_service_tier)
     ):
         session_id = ""
+    record_live_turn_phase("preparing_context")
     context_pack_plan = (
         bedrock_context_pack_plan(
             service_tier=normalized_service_tier,
@@ -27225,6 +28818,7 @@ def _execute_codex_prompt(
         start_new_session=True,
     )
     set_active_codex_process(popen)
+    record_live_turn_phase("waiting_model")
 
     def _observe_stdout_line(line: str) -> None:
         nonlocal checkpoint_interrupted, deadline_checkpoint_interrupted
@@ -29278,6 +30872,33 @@ def _prompt_worker(
                     break
                 if not is_rate_limit_error(error_text):
                     break
+                retry_meta = load_status_meta()
+                if not empty_reply_retry_allowed(retry_meta):
+                    error_text = (
+                        "Provider rate limit hit after tool or file activity. "
+                        "I stopped instead of replaying work that may already have run."
+                    )
+                    append_audit_event(
+                        event_type="chat.rate-limit-no-retry",
+                        summary="Provider rate limit hit after side effects; retry skipped.",
+                        detail=(
+                            "Retry skipped because the failed turn observed tool or "
+                            "file activity, so repeating the prompt could duplicate "
+                            "side effects."
+                        ),
+                        severity="warn",
+                        actor_type="system",
+                        thread_id=thread_id,
+                        payload={
+                            "previous_prompt_preview": summarize_text(prompt, 240),
+                            "live_turn": retry_meta.get("live_turn"),
+                            "runtime": normalized_runtime,
+                            "model": normalized_model,
+                            "service_tier": normalized_service_tier,
+                            "job_budget": normalized_budget,
+                        },
+                    )
+                    break
                 rate_limit_attempt += 1
                 if rate_limit_attempt >= WEB_PROMPT_RATE_LIMIT_MAX_ATTEMPTS:
                     error_text = rate_limit_exhausted_message(
@@ -29435,7 +31056,7 @@ def _prompt_worker(
                 else provider_recovery_response
                 if provider_recovery_response and not response
                 else error_text
-                if (timed_out or rate_limited) and not response
+                if error_text and not response
                 else response or "[no response returned]"
             )
             write_text(LAST_RESPONSE_PATH, visible_response)
@@ -30390,6 +32011,36 @@ def _prompt_worker(
         )
 
 
+def recorded_operator_submission(
+    prompt: str, attachments: Any, submission_id: Any
+) -> tuple[str, int]:
+    """Recognize exact retries from durable state before repeating admission work."""
+    identifier = normalize_submission_id(submission_id)
+    if not identifier:
+        return "", 0
+    incoming = prompt_attachment_signature(normalize_attachments(attachments or []))
+    # Read-only fast path; misses fall through to the locked admission checks.
+    meta = load_status_meta()
+    if (
+        meta.get("pending")
+        and meta.get("running_submission_id") == identifier
+        and meta.get("running_request_source") == "operator"
+        and str(meta.get("running_prompt") or "").strip() == prompt
+        and prompt_attachment_signature(meta.get("running_attachments")) == incoming
+    ):
+        return "running", 0
+    for position, item in enumerate(normalize_queue(meta.get("queued_prompts")), 1):
+        if (
+            item.get("submission_id") == identifier
+            and item.get("source") == "operator"
+            and not item.get("relay_callback")
+            and str(item.get("prompt") or "").strip() == prompt
+            and prompt_attachment_signature(item.get("attachments")) == incoming
+        ):
+            return "queued", position
+    return "", 0
+
+
 def start_web_prompt(
     prompt: str,
     speed: str,
@@ -30409,10 +32060,21 @@ def start_web_prompt(
     escalation_reason: str = "",
     reauthorization_reason: str = "",
     actor_ip: str = "",
+    usage_limit_reset_bypass: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     clean = prompt.strip()
     if not clean:
         return False, current_snapshot()
+    if source == "operator" and not relay_callback:
+        recorded_state, recorded_position = recorded_operator_submission(
+            clean, attachments, submission_id
+        )
+        if recorded_state:
+            snapshot = _live_status_overlay()
+            snapshot["deduplicated_prompt"] = True
+            snapshot["recorded_submission_state"] = recorded_state
+            snapshot["recorded_queue_position"] = recorded_position
+            return True, snapshot
     guard = host_pressure_guard_snapshot()
     if host_pressure_guard_blocks_new_work(guard):
         detail = host_pressure_guard_message(guard)
@@ -30506,6 +32168,26 @@ def start_web_prompt(
         base_model = normalize_runtime_model(
             base_runtime, configured_runtime_model(base_runtime)
         )
+    reset_capacity = codex_account_capacity_snapshot()
+    if (
+        not usage_limit_reset_bypass
+        and not route_lock
+        and base_runtime == "codex"
+        and requested_service_tier in {"auto", "default"}
+        and reset_capacity.get("fresh")
+        and reset_capacity.get("state") == "blocked"
+        and reset_capacity.get("auth_mode") == "chatgpt"
+        and stored_codex_auth_mode() == "chatgpt"
+        and _coerce_int(reset_capacity.get("usage_limit_resets_available")) > 0
+    ):
+        offer = create_rate_limit_reset_approval(reset_capacity, actor_ip=actor_ip)
+        snapshot = current_snapshot()
+        snapshot["usage_limit_reset_approval"] = offer
+        snapshot["usage_limit_reset_approval_error"] = (
+            "ChatGPT subscription capacity is exhausted. Approve an earned reset "
+            "or keep it and continue to the configured fallback."
+        )
+        return False, snapshot
     service_tier_recovery: dict[str, Any] = {}
     if requested_runtime == "codex" and requested_service_tier in DIRECT_SERVICE_TIERS:
         service_tier_recovery = direct_service_tier_usage_limit_recovery(
@@ -30724,6 +32406,21 @@ def start_web_prompt(
         reauthorization_reason=normalized_reauthorization_reason,
         checkpoint_intent=checkpoint_intent,
     )
+    fresh_thread_rotation = rotate_idle_provider_thread_for_operator_prompt(
+        session_admission,
+        prompt=clean,
+        source=normalized_source,
+        actor_ip=actor_ip,
+    )
+    if fresh_thread_rotation:
+        session_admission = session_budget_admission(
+            model=normalized_model,
+            reasoning_effort=effective_reasoning_effort,
+            escalation_reason=normalized_escalation_reason,
+            reauthorization_reason=normalized_reauthorization_reason,
+            checkpoint_intent=checkpoint_intent,
+        )
+        session_admission["fresh_thread_rotation"] = fresh_thread_rotation
     append_session_admission_audit(
         session_admission,
         prompt=clean,
@@ -31212,6 +32909,7 @@ def current_snapshot() -> dict[str, Any]:
     if (
         auth.get("required") is False
         and _contains_codex_ready_prompt(pane)
+        and not str(last_error or "").strip()
         and not prompt_thread_alive()
         and not latest_history_requires_reauth
     ):
@@ -31498,6 +33196,7 @@ def current_snapshot() -> dict[str, Any]:
         },
         "codex_account_capacity": codex_account_capacity,
         "route_receipts": route_receipts,
+        "local_cli_sessions": local_cli_sessions_snapshot(),
         "latest_work_classification": route_receipts.get(
             "latest_work_classification", {}
         ),
@@ -31842,6 +33541,9 @@ def _live_status_overlay() -> dict[str, Any]:
         "running_submission_id": normalize_submission_id(
             meta.get("running_submission_id")
         ),
+        "running_console_runtime_job_id": str(
+            meta.get("running_console_runtime_job_id") or ""
+        ),
         "queue_depth": len(queue),
         "queued_prompts": _transport_snapshot_value(queue),
         "queue_interlace_mode": normalize_queue_interlace_mode(
@@ -32003,12 +33705,15 @@ def status_snapshot() -> dict[str, Any]:
 
 def status_snapshot_collector_loop() -> None:
     while True:
+        maybe_schedule_kpi_app_health()
         refreshed = refresh_status_snapshot_cache(blocking=True)
         if refreshed:
             with STATUS_SNAPSHOT_CACHE_LOCK:
                 snapshot = STATUS_SNAPSHOT_CACHE.get("data")
             if isinstance(snapshot, dict):
                 emit_kaizen_tui_snapshot(snapshot)
+                maybe_schedule_kpi_infra_health()
+                maybe_schedule_kpi_dgx_ranking(snapshot)
         time.sleep(STATUS_SNAPSHOT_REFRESH_SECONDS)
 
 
@@ -32193,7 +33898,14 @@ def _contains_openai_auth_error(text: str) -> bool:
 
 
 def _contains_codex_auth_failure(text: str) -> bool:
-    return _contains_token_reuse_error(text) or _contains_openai_auth_error(text)
+    clean = str(text or "").lower()
+    return (
+        _contains_token_reuse_error(clean)
+        or _contains_openai_auth_error(clean)
+        or "invalid_refresh_token" in clean
+        or "could not validate your refresh token" in clean
+        or "your access token could not be refreshed" in clean
+    )
 
 
 def _contains_codex_cli_upgrade_error(text: str) -> bool:
@@ -32217,35 +33929,20 @@ def _contains_openai_transport_error(text: str) -> bool:
 
 
 def _contains_cert_workflow_error(text: str) -> bool:
-    clean = str(text or "").lower()
-    if not clean:
-        return False
-    cert_terms = (
-        "certificate_verify_failed",
-        "certbot",
-        "acme",
-        "x509",
-        "make_cert",
-        "cert queue",
-        "cert-worker",
-        "cert_enqueue",
-    )
-    if any(term in clean for term in cert_terms):
-        return True
-    has_certish = any(term in clean for term in ("certificate", "ssl", "tls"))
-    has_failure = any(
-        term in clean
-        for term in (
-            "error",
-            "failed",
-            "invalid",
-            "expired",
-            "mismatch",
-            "verify",
-            "handshake",
+    """Require a certificate failure, not a tool name or unrelated log error."""
+    for line in str(text or "").lower().splitlines():
+        if "certificate_verify_failed" in line:
+            return True
+        cert = re.search(
+            r"\b(?:certificate|ssl|tls|certbot|acme|x509|make_cert|cert-worker|cert_enqueue)\b",
+            line,
         )
-    )
-    return has_certish and has_failure
+        failure = re.search(
+            r"\b(?:error|failed|failure|invalid|expired|mismatch|unable|cannot)\b", line
+        )
+        if cert and failure:
+            return True
+    return False
 
 
 def _contains_update_interstitial(text: str) -> bool:
@@ -35541,6 +37238,10 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response(status_snapshot())
             return
 
+        if parsed.path == "/api/local-cli-sessions":
+            self.json_response(local_cli_sessions_snapshot(force=True))
+            return
+
         if parsed.path == "/api/children":
             try:
                 children = child_agent_broker().list_children()
@@ -35744,6 +37445,51 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             self.send_error(HTTPStatus.FORBIDDEN, "missing or invalid token")
+            return
+
+        if parsed.path == "/api/rate-limit-reset/consume":
+            approval_token = (params.get("approval_token") or [""])[0]
+            ok, detail, capacity = consume_rate_limit_reset_approval(
+                approval_token, actor_ip=self.request_client_ip()
+            )
+            self.json_response(
+                {
+                    "ok": ok,
+                    "detail": detail,
+                    "capacity": capacity,
+                    "snapshot": current_snapshot(),
+                },
+                status=HTTPStatus.OK if ok else HTTPStatus.CONFLICT,
+            )
+            return
+
+        if parsed.path == "/api/rate-limit-reset/offer":
+            capacity = codex_account_capacity_snapshot()
+            if not (
+                capacity.get("fresh")
+                and capacity.get("state") == "blocked"
+                and capacity.get("auth_mode") == "chatgpt"
+                and stored_codex_auth_mode() == "chatgpt"
+                and _coerce_int(capacity.get("usage_limit_resets_available")) > 0
+            ):
+                self.json_response(
+                    {
+                        "ok": False,
+                        "error": "A usage reset is not currently eligible.",
+                        "snapshot": current_snapshot(),
+                    },
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
+            self.json_response(
+                {
+                    "ok": True,
+                    "usage_limit_reset_approval": create_rate_limit_reset_approval(
+                        capacity, actor_ip=self.request_client_ip()
+                    ),
+                    "snapshot": current_snapshot(),
+                }
+            )
             return
 
         if parsed.path == "/api/children":
@@ -36233,6 +37979,31 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path in {"/ask", "/api/ask"}:
             actor_ip = self.request_client_ip()
+            reset_decision = (
+                str((params.get("usage_limit_reset_decision") or [""])[0])
+                .strip()
+                .lower()
+            )
+            reset_approval_token = (
+                params.get("usage_limit_reset_approval_token") or [""]
+            )[0]
+            usage_limit_reset_bypass = False
+            if reset_decision:
+                if (
+                    reset_decision != "fallback"
+                    or not authorize_rate_limit_reset_fallback(
+                        reset_approval_token, actor_ip=actor_ip
+                    )
+                ):
+                    self.json_response(
+                        {
+                            "error": "Reset approval expired; submit the prompt again.",
+                            "snapshot": current_snapshot(),
+                        },
+                        status=HTTPStatus.CONFLICT,
+                    )
+                    return
+                usage_limit_reset_bypass = True
             attachments = load_draft_attachments()
             message = (params.get("message", [""])[0]).strip()
             submission_id = normalize_submission_id(
@@ -36281,6 +38052,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             raw_runtime = (params.get("runtime") or [""])[0]
             raw_model = (params.get("model") or [""])[0]
+            bridge_direct = coerce_boolish((params.get("bridge_direct") or [""])[0])
             route_lock = coerce_boolish(
                 (params.get("route_lock") or params.get("strict_route") or [""])[0]
             )
@@ -36335,7 +38107,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if not message:
                 message = build_attachment_lead_message(attachments)
-            if deterministic_command_prompt_allowed(
+            if not bridge_direct and deterministic_command_prompt_allowed(
                 message, attachments, route_lock=route_lock
             ):
                 snapshot = complete_deterministic_command_prompt(
@@ -36376,7 +38148,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.redirect_root(params)
                 return
-            if deterministic_status_prompt_allowed(
+            if not bridge_direct and deterministic_status_prompt_allowed(
                 message, attachments, route_lock=route_lock
             ):
                 snapshot = complete_deterministic_status_prompt(
@@ -36436,6 +38208,7 @@ class Handler(BaseHTTPRequestHandler):
                 escalation_reason=escalation_reason,
                 reauthorization_reason=reauthorization_reason,
                 actor_ip=actor_ip,
+                usage_limit_reset_bypass=usage_limit_reset_bypass,
             )
             deduplicated_prompt = bool(snapshot.get("deduplicated_prompt"))
             if accepted and not deduplicated_prompt:
@@ -36497,7 +38270,8 @@ class Handler(BaseHTTPRequestHandler):
                 if queued and queue_position <= 0:
                     queue_position = queue_depth
                 error_text = str(
-                    snapshot.get("session_admission_error")
+                    snapshot.get("usage_limit_reset_approval_error")
+                    or snapshot.get("session_admission_error")
                     or snapshot.get("pressure_guard_error")
                     or "a web prompt is already running"
                 )
@@ -36513,6 +38287,9 @@ class Handler(BaseHTTPRequestHandler):
                         "submission_state": submission_state,
                         "queue_position": queue_position,
                         "session_admission": snapshot.get("session_admission") or {},
+                        "usage_limit_reset_approval": snapshot.get(
+                            "usage_limit_reset_approval"
+                        ),
                         "snapshot": snapshot,
                         "error": "" if accepted else error_text,
                     },
@@ -37326,7 +39103,7 @@ class Handler(BaseHTTPRequestHandler):
                     last_marker = marker
                     last_sent = now
                 elif (now - last_sent) >= STREAM_IDLE_SECONDS:
-                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.write(b"event: heartbeat\ndata: {}\n\n")
                     self.wfile.flush()
                     last_sent = now
                 time.sleep(
@@ -37394,12 +39171,14 @@ class Handler(BaseHTTPRequestHandler):
             client_ip=request_client_ip,
         )
         relay_targets_json = script_json(
-            build_relay_targets(
-                token=token_value_raw,
-                profile=active_profile,
-                request_host=request_host,
-                route_mode=route_preference,
-                client_ip=request_client_ip,
+            browser_relay_targets(
+                build_relay_targets(
+                    token=token_value_raw,
+                    profile=active_profile,
+                    request_host=request_host,
+                    route_mode=route_preference,
+                    client_ip=request_client_ip,
+                )
             )
         )
         theme_toggle_target = profile_for_mode(active_profile, opposite_mode)
@@ -37797,7 +39576,7 @@ class Handler(BaseHTTPRequestHandler):
             route=route_preference,
             prefix=path_prefix,
         )
-        token_value = script_json(TOKEN)
+        token_value = script_json(local_token_value)
         active_profile_name_json = script_json(active_profile)
         active_profile_label_json = script_json(active_profile_label)
         default_response_speed_json = script_json(DEFAULT_RESPONSE_SPEED)
@@ -37823,7 +39602,7 @@ class Handler(BaseHTTPRequestHandler):
   <title>{html.escape(CONSOLE_TAB_TITLE)}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Poppins:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" media="print" onload="this.media='all'" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Poppins:wght@400;500;600;700&display=swap">
   {favicon_links_html(self.request_path_prefix())}
   <style>
     :root {{
@@ -39150,6 +40929,10 @@ class Handler(BaseHTTPRequestHandler):
       top: var(--topbar-menu-top, 54px);
       right: var(--topbar-menu-right, 12px);
       width: min(320px, calc(100vw - 18px));
+      max-height: calc(100vh - var(--topbar-menu-top, 54px) - 12px);
+      max-height: calc(100dvh - var(--topbar-menu-top, 54px) - 12px - env(safe-area-inset-bottom, 0px));
+      overflow-y: auto;
+      overscroll-behavior: contain;
       padding: 10px;
       display: flex;
       flex-direction: column;
@@ -40559,6 +42342,20 @@ class Handler(BaseHTTPRequestHandler):
       height: 100%;
       border-radius: inherit;
       background: linear-gradient(90deg, color-mix(in srgb, var(--usage-tone) 68%, transparent), var(--usage-tone));
+    }}
+    .usage-reset-button {{
+      min-height: 20px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      color: color-mix(in srgb, var(--agent-accent) 76%, var(--text));
+      border-color: color-mix(in srgb, var(--agent-accent) 24%, var(--border));
+      background: color-mix(in srgb, var(--agent-accent) 7%, var(--surface));
+      font-size: 0.61rem;
+      font-weight: 650;
+      white-space: nowrap;
+    }}
+    .usage-reset-button[data-eligible="true"] {{
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--agent-accent) 8%, transparent);
     }}
     .context-save-button {{
       min-height: 18px;
@@ -47101,6 +48898,111 @@ class Handler(BaseHTTPRequestHandler):
       scrollbar-gutter: stable;
       -webkit-overflow-scrolling: touch;
     }}
+    .local-cli-observer {{
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border-radius: 15px;
+      border: 1px solid color-mix(in srgb, var(--agent-accent) 24%, var(--border));
+      background:
+        radial-gradient(circle at 94% 0%, color-mix(in srgb, var(--agent-accent) 12%, transparent), transparent 44%),
+        color-mix(in srgb, var(--surface-2) 54%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+    }}
+    .local-cli-observer-head {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }}
+    .local-cli-observer-title {{
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      color: var(--text);
+      font-size: 0.78rem;
+      font-weight: 760;
+    }}
+    .local-cli-observer-title::before {{
+      content: "";
+      width: 7px;
+      height: 7px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: var(--ok);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 13%, transparent);
+    }}
+    .local-cli-observer[data-available="false"] .local-cli-observer-title::before {{
+      background: var(--warn);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 13%, transparent);
+    }}
+    .local-cli-observer-count,
+    .local-cli-session-state {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 20px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+      background: color-mix(in srgb, var(--surface) 78%, transparent);
+      color: var(--muted);
+      font-size: 0.62rem;
+      font-weight: 720;
+      white-space: nowrap;
+    }}
+    .local-cli-observer-copy {{
+      color: var(--muted);
+      font-size: 0.68rem;
+      line-height: 1.42;
+    }}
+    .local-cli-session-list {{
+      display: grid;
+      gap: 6px;
+    }}
+    .local-cli-session {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+      padding: 8px 9px;
+      border-radius: 11px;
+      border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+      background: color-mix(in srgb, var(--surface) 58%, transparent);
+    }}
+    .local-cli-session-main {{
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }}
+    .local-cli-session-name {{
+      min-width: 0;
+      overflow: hidden;
+      color: var(--text);
+      font-size: 0.74rem;
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .local-cli-session-meta {{
+      min-width: 0;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 0.64rem;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .local-cli-session[data-observer-state="observed"] .local-cli-session-state {{
+      border-color: color-mix(in srgb, var(--warn) 30%, var(--border));
+      color: color-mix(in srgb, var(--warn) 68%, var(--text));
+    }}
+    .local-cli-session[data-observer-state="managed"] .local-cli-session-state {{
+      border-color: color-mix(in srgb, var(--ok) 26%, var(--border));
+      color: color-mix(in srgb, var(--ok) 58%, var(--text));
+    }}
     .switcher-item {{
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -50448,6 +52350,554 @@ class Handler(BaseHTTPRequestHandler):
         padding-inline: 9px;
       }}
     }}
+    .usage-limit-reset-dialog {{
+      width: min(460px, calc(100vw - 32px));
+      padding: 0;
+      border: 1px solid color-mix(in srgb, var(--agent-accent) 34%, var(--border));
+      border-radius: 14px;
+      color: var(--text);
+      background: var(--surface);
+      box-shadow: 0 24px 80px rgba(8, 12, 18, 0.32);
+    }}
+    .usage-limit-reset-dialog::backdrop {{
+      background: rgba(8, 12, 18, 0.58);
+      backdrop-filter: blur(4px);
+    }}
+    .usage-limit-reset-card {{
+      display: grid;
+      gap: 14px;
+      padding: 22px;
+    }}
+    .usage-limit-reset-card h2,
+    .usage-limit-reset-card p {{
+      margin: 0;
+    }}
+    .usage-limit-reset-count {{
+      color: var(--agent-accent);
+      font-weight: 700;
+    }}
+    .usage-limit-reset-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 4px;
+    }}
+    /*
+     * Responsive surface contract. This is intentionally the final visual
+     * layer so menus, sheets, forms, and dialogs share one interaction model.
+     */
+    :is(
+      .status-action-panel,
+      .topbar-menu,
+      .operator-action-palette,
+      .composer-upload-menu,
+      .composer-toolbar-panels,
+      .switcher-panel,
+      .settings-panel,
+      .notices-panel,
+      .system-panel,
+      .usage-limit-reset-dialog
+    ) {{
+      border-color: color-mix(in srgb, var(--border-strong) 54%, var(--agent-accent)) !important;
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, white 1%), color-mix(in srgb, var(--surface-2) 94%, black 2%)) !important;
+      box-shadow:
+        0 24px 64px rgba(7, 11, 18, 0.22),
+        0 4px 14px rgba(7, 11, 18, 0.10),
+        inset 0 1px 0 color-mix(in srgb, white 7%, transparent) !important;
+      backdrop-filter: blur(20px) saturate(118%);
+    }}
+    :is(
+      .status-action-panel,
+      .topbar-menu,
+      .operator-action-palette,
+      .composer-upload-menu,
+      .composer-toolbar-panels,
+      .switcher-panel,
+      .settings-panel,
+      .notices-panel,
+      .system-panel,
+      .usage-limit-reset-dialog,
+      .system-card,
+      .connector-access,
+      .bbs-summary-card
+    ) {{
+      border-radius: 14px !important;
+    }}
+    :is(.settings-head, .notices-head, .switcher-head, .system-panel-head) {{
+      align-items: center;
+      min-width: 0;
+    }}
+    :is(.settings-head, .notices-head, .switcher-head, .system-panel-head) h2 {{
+      letter-spacing: -0.018em;
+    }}
+    :is(
+      .settings-panel,
+      .notices-panel,
+      .switcher-panel,
+      .system-panel,
+      .composer-toolbar-panels,
+      .operator-action-palette
+    ) :is(input, select, textarea) {{
+      box-sizing: border-box;
+      max-width: 100%;
+      border: 1px solid color-mix(in srgb, var(--border-strong) 76%, var(--agent-accent));
+      border-radius: 8px !important;
+      background: color-mix(in srgb, var(--surface) 90%, var(--surface-2));
+      color: var(--text);
+      transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    }}
+    :is(
+      .settings-panel,
+      .notices-panel,
+      .switcher-panel,
+      .system-panel,
+      .composer-toolbar-panels,
+      .operator-action-palette
+    ) :is(input, select, textarea):focus-visible {{
+      border-color: color-mix(in srgb, var(--agent-accent) 82%, var(--border-strong));
+      outline: none;
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--agent-accent) 20%, transparent);
+      background: var(--surface);
+    }}
+    :is(.topbar-menu-links, .status-action-controls, .composer-upload-menu) :is(button, .button-link),
+    .operator-action-palette button {{
+      min-height: 38px;
+      border-radius: 8px !important;
+    }}
+    :is(.topbar-menu-links, .composer-upload-menu) :is(button, .button-link) {{
+      justify-content: flex-start;
+      text-align: left;
+    }}
+    .system-card {{
+      border-color: color-mix(in srgb, var(--border) 46%, transparent);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 48%, transparent), transparent 70%),
+        color-mix(in srgb, var(--surface-2) 54%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+    }}
+    .connector-access-app {{
+      min-height: 34px;
+      border-radius: 8px !important;
+    }}
+    .usage-limit-reset-card {{
+      line-height: 1.48;
+    }}
+    .usage-limit-reset-card h2 {{
+      font-size: clamp(1.1rem, 2vw, 1.32rem);
+      letter-spacing: -0.025em;
+    }}
+    .usage-limit-reset-actions button {{
+      min-height: 40px;
+      border-radius: 8px !important;
+    }}
+    /* Second-pass hierarchy and density cleanup. */
+    .message.empty {{
+      align-self: center;
+      width: min(560px, calc(100% - 24px));
+      max-width: 560px;
+      margin-top: clamp(18px, 8vh, 72px);
+      padding: 16px 18px;
+      border-style: solid;
+      border-color: color-mix(in srgb, var(--agent-accent) 16%, var(--border));
+      border-radius: 12px;
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 36%, transparent), transparent),
+        color-mix(in srgb, var(--surface-2) 42%, transparent);
+      color: color-mix(in srgb, var(--muted) 86%, var(--text));
+      line-height: 1.45;
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 3%, transparent);
+    }}
+    .settings-body,
+    .notifications-list,
+    .switcher-list,
+    .system-panel-body,
+    .operator-action-palette-list {{
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--agent-accent) 28%, var(--border)) transparent;
+    }}
+    :is(
+      .settings-body,
+      .notifications-list,
+      .switcher-list,
+      .system-panel-body,
+      .operator-action-palette-list
+    )::-webkit-scrollbar {{
+      width: 7px;
+      height: 7px;
+    }}
+    :is(
+      .settings-body,
+      .notifications-list,
+      .switcher-list,
+      .system-panel-body,
+      .operator-action-palette-list
+    )::-webkit-scrollbar-thumb {{
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--agent-accent) 28%, var(--border));
+    }}
+    .settings-card {{
+      border-color: color-mix(in srgb, var(--border-strong) 44%, transparent);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 30%, transparent), transparent 72%),
+        color-mix(in srgb, var(--surface-2) 46%, transparent);
+    }}
+    .settings-label {{
+      color: color-mix(in srgb, var(--text) 76%, var(--muted));
+      font-weight: 720;
+      letter-spacing: 0.055em;
+    }}
+    .settings-note {{
+      color: color-mix(in srgb, var(--muted) 88%, var(--text));
+    }}
+    .setting-pill.active {{
+      border-color: color-mix(in srgb, var(--agent-accent) 58%, var(--border-strong));
+      background: color-mix(in srgb, var(--agent-accent) 14%, var(--surface-3));
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, white 4%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--agent-accent) 10%, transparent);
+    }}
+    .topbar-menu-shortcuts {{
+      border-top: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+      padding-top: 10px;
+    }}
+    @media (min-width: 641px) {{
+      .status-action-panel {{
+        width: min(32rem, calc(100vw - 32px));
+      }}
+      .topbar-menu {{
+        width: min(350px, calc(100vw - 24px));
+      }}
+      .switcher-panel {{
+        width: min(450px, calc(100vw - 24px));
+        max-height: calc(100dvh - 94px);
+        overflow: hidden;
+      }}
+      .settings-panel {{
+        width: min(590px, calc(100vw - 24px));
+      }}
+      .system-panel {{
+        width: min(720px, 54vw);
+      }}
+      .switcher-list {{
+        max-height: min(56dvh, 590px);
+        overflow-y: auto;
+      }}
+    }}
+    @media (max-width: 640px) {{
+      :root {{
+        --mobile-sheet-gutter: 8px;
+      }}
+      .topbar {{
+        padding-left: max(4px, env(safe-area-inset-left));
+        padding-right: max(4px, env(safe-area-inset-right));
+      }}
+      .chat-summary-bar {{
+        overflow-x: auto;
+        overscroll-behavior-inline: contain;
+        scrollbar-width: none;
+        scroll-snap-type: x proximity;
+      }}
+      .chat-summary-bar::-webkit-scrollbar {{
+        display: none;
+      }}
+      .chat-summary-bar > * {{
+        flex: 0 0 auto;
+        scroll-snap-align: start;
+      }}
+      :is(.system-panel, .settings-panel, .notices-panel, .switcher-panel) {{
+        top: auto !important;
+        right: var(--mobile-sheet-gutter) !important;
+        bottom: 0 !important;
+        left: var(--mobile-sheet-gutter) !important;
+        width: auto !important;
+        max-height: calc(100dvh - max(16px, env(safe-area-inset-top))) !important;
+        border-bottom: 0 !important;
+        border-radius: 18px 18px 0 0 !important;
+        transform: translateY(14px);
+      }}
+      body:is(.system-open, .settings-open, .notices-open, .switcher-open)
+      :is(.system-panel, .settings-panel, .notices-panel, .switcher-panel) {{
+        transform: translateY(0);
+      }}
+      :is(.system-panel-body, .settings-body, .notifications-list, .switcher-list) {{
+        padding-bottom: calc(18px + env(safe-area-inset-bottom));
+        scroll-padding-bottom: calc(18px + env(safe-area-inset-bottom));
+      }}
+      :is(.settings-head, .notices-head, .switcher-head, .system-panel-head) {{
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        padding-top: 10px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
+        background: color-mix(in srgb, var(--surface) 94%, transparent);
+        backdrop-filter: blur(14px);
+      }}
+      .settings-card {{
+        gap: 9px;
+        padding: 12px;
+      }}
+      .settings-row {{
+        grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+      }}
+      .message.empty {{
+        width: min(520px, calc(100% - 20px));
+        margin-top: clamp(14px, 6vh, 44px);
+        padding: 14px 16px;
+        font-style: normal;
+      }}
+      .topbar-menu {{
+        top: calc(48px + env(safe-area-inset-top));
+        right: max(6px, env(safe-area-inset-right));
+        bottom: auto !important;
+        left: max(6px, env(safe-area-inset-left));
+        width: auto;
+        height: auto !important;
+        max-height: calc(100dvh - 60px - env(safe-area-inset-top));
+        overflow-y: auto;
+        border-radius: 14px !important;
+      }}
+      .topbar-menu-links {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
+      .topbar-menu-meta {{
+        position: sticky;
+        top: -10px;
+        z-index: 1;
+        margin: -2px -2px 0;
+        padding: 4px 2px 8px;
+        background: color-mix(in srgb, var(--surface) 90%, transparent);
+        backdrop-filter: blur(12px);
+      }}
+      .status-action-panel {{
+        position: fixed;
+        top: calc(48px + env(safe-area-inset-top));
+        right: max(6px, env(safe-area-inset-right));
+        left: max(6px, env(safe-area-inset-left));
+        width: auto;
+        max-height: calc(100dvh - 60px - env(safe-area-inset-top));
+        overflow-y: auto;
+      }}
+      .status-action-controls {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .status-action-controls .utility-button {{
+        width: 100%;
+        min-height: 44px;
+      }}
+      .operator-action-palette {{
+        right: 4px;
+        left: 4px;
+        width: auto;
+        max-height: min(62dvh, 470px);
+      }}
+      .operator-action-palette button,
+      .composer-upload-item {{
+        min-height: 44px;
+      }}
+      .composer-toolbar-panels {{
+        right: 0;
+        left: 0;
+        width: auto;
+        max-height: min(70dvh, 580px);
+        padding: 10px;
+      }}
+      :is(
+        .settings-panel,
+        .notices-panel,
+        .switcher-panel,
+        .system-panel,
+        .composer-toolbar-panels,
+        .operator-action-palette
+      ) :is(input, select, textarea) {{
+        min-height: 44px;
+        font-size: 16px;
+      }}
+      .system-card {{
+        padding: 12px 10px;
+        border-radius: 12px !important;
+      }}
+      .connector-access-apps {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .usage-limit-reset-dialog {{
+        width: calc(100vw - 16px);
+        max-width: none;
+        margin: auto 8px 0;
+        border-bottom: 0;
+        border-radius: 18px 18px 0 0 !important;
+      }}
+      .usage-limit-reset-card {{
+        gap: 12px;
+        padding: 20px 16px calc(16px + env(safe-area-inset-bottom));
+      }}
+      .usage-limit-reset-actions {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .usage-limit-reset-actions button {{
+        width: 100%;
+        min-height: 46px;
+      }}
+      #usage-limit-reset-approve {{ order: 1; }}
+      #usage-limit-reset-fallback {{ order: 2; }}
+      #usage-limit-reset-cancel {{ order: 3; }}
+    }}
+    @media (hover: none), (pointer: coarse) {{
+      :is(
+        .topbar-menu,
+        .status-action-panel,
+        .switcher-panel,
+        .settings-panel,
+        .notices-panel,
+        .system-panel,
+        .operator-action-palette,
+        .composer-toolbar-panels
+      ) :is(button, .button-link, [role="button"]) {{
+        min-height: 44px;
+      }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      :is(
+        .status-action-panel,
+        .topbar-menu,
+        .operator-action-palette,
+        .composer-upload-menu,
+        .composer-toolbar-panels,
+        .switcher-panel,
+        .settings-panel,
+        .notices-panel,
+        .system-panel,
+        .usage-limit-reset-dialog
+      ) {{
+        scroll-behavior: auto;
+        transition-duration: 0.01ms !important;
+      }}
+    }}
+    /* Keep transient controls quick to paint and quick to reach on touchscreens. */
+    :is(button, .button-link, [role="button"]) {{
+      touch-action: manipulation;
+    }}
+    :is(
+      .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+      .topbar-menu, .status-action-panel, .operator-action-palette,
+      .composer-upload-menu, .composer-toolbar-panels
+    ) {{
+      transition-duration: 100ms;
+    }}
+    @media (max-width: 640px), (pointer: coarse) {{
+      :is(
+        .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+        .topbar-menu, .status-action-panel, .operator-action-palette,
+        .composer-upload-menu, .composer-toolbar-panels,
+        .settings-backdrop, .switcher-backdrop, .notices-backdrop, .system-backdrop
+      ) {{
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+      }}
+    }}
+    /* Matte surface finish: static, low-contrast detail at the panel edge. */
+    :root {{
+      --finish-grain: 0.022;
+      --finish-sheen: 0.045;
+      --finish-fiber: 0.012;
+    }}
+    :is(
+      .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+      .topbar-menu, .status-action-panel, .operator-action-palette,
+      .composer-upload-menu, .composer-toolbar-panels, .usage-limit-reset-dialog
+    ) {{
+      background-color: var(--surface);
+      background-image:
+        radial-gradient(ellipse at 12% 0%, color-mix(in srgb, var(--agent-accent) 5%, transparent), transparent 62%),
+        linear-gradient(165deg, rgb(255 255 255 / var(--finish-sheen)), transparent 38%),
+        repeating-linear-gradient(115deg, rgb(255 255 255 / var(--finish-fiber)) 0 1px, transparent 1px 7px),
+        radial-gradient(circle, rgb(255 255 255 / var(--finish-grain)) 0.5px, transparent 0.8px);
+      background-size: 100% 100%, 100% 100%, 100% 100%, 5px 7px;
+      background-repeat: no-repeat, no-repeat, no-repeat, repeat;
+      background-position: 0 0, 0 0, 0 0, 1px 2px;
+      background-blend-mode: normal;
+      box-shadow:
+        inset 0 1px 0 rgb(255 255 255 / 0.07),
+        inset 0 -1px 0 rgb(0 0 0 / 0.12),
+        0 12px 36px rgb(0 0 0 / 0.22);
+    }}
+    :is(.settings-card, .system-card, .local-cli-session) {{
+      background-image: linear-gradient(165deg, rgb(255 255 255 / 0.025), transparent 48%);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.035);
+    }}
+    @media (max-width: 640px), (pointer: coarse) {{
+      :root {{
+        --finish-grain: 0.012;
+        --finish-sheen: 0.03;
+        --finish-fiber: 0;
+      }}
+      body .microtexture-thread-field {{
+        opacity: calc(var(--microtexture-thread-opacity) * 0.6);
+      }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      body .microtexture-thread-field {{
+        display: none;
+      }}
+    }}
+    @media (prefers-contrast: more), (forced-colors: active) {{
+      :is(
+        .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+        .topbar-menu, .status-action-panel, .operator-action-palette,
+        .composer-upload-menu, .composer-toolbar-panels, .usage-limit-reset-dialog,
+        .settings-card, .system-card, .local-cli-session
+      ) {{
+        background-image: none;
+        box-shadow: none;
+      }}
+    }}
+/* Conversation layout polish: keep navigation compact and reading comfortable. */
+body[data-agent-slug] .topbar {{ gap: 16px; padding: 12px 20px; background-image: none !important; }}
+body[data-agent-slug] .topbar .brand {{ min-width: 0; flex: 1 1 auto; }}
+body[data-agent-slug] .topbar .brand-line {{ flex-wrap: wrap; gap: 8px 12px; }}
+body[data-agent-slug] .topbar .brand-title {{ font-size: 19px; line-height: 1.3; letter-spacing: -.02em; }}
+body[data-agent-slug] .topbar .topbar-version,
+body[data-agent-slug] .topbar-actions :is(#prime-home-button, #directory-home-button) {{ display: none !important; }}
+body[data-agent-slug] .topbar-actions {{ flex: 0 0 auto; gap: 8px; align-items: center; }}
+body[data-agent-slug] .topbar-actions > :is(button, a) {{ min-height: 44px; border-radius: 12px; }}
+body[data-agent-slug] .header-connection-state {{ display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font: 500 12px/1.4 var(--font-ui, system-ui); white-space: nowrap; }}
+body[data-agent-slug] .header-connection-state::before {{ content: ''; width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: currentColor; }}
+body[data-agent-slug] .header-connection-state[data-connected="true"]::before {{ background: var(--ok, #429676); }}
+body[data-agent-slug] .topbar .status-copy {{ font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }}
+body[data-agent-slug] .conversation {{ width: min(100%, 860px); margin-inline: auto; gap: 28px; }}
+body[data-agent-slug] .message {{ min-width: 0; }}
+body[data-agent-slug] .message.assistant .message-body {{ max-width: 76ch; font-size: 16px; line-height: 1.75; letter-spacing: .005em; }}
+body[data-agent-slug] .message-body > :first-child {{ margin-top: 0; }}
+body[data-agent-slug] .message-body > :last-child {{ margin-bottom: 0; }}
+body[data-agent-slug] .message-body :is(p, ul, ol, blockquote) {{ margin-block: 0 1em; }}
+body[data-agent-slug] .message-body li + li {{ margin-top: .35em; }}
+body[data-agent-slug] .message-body :is(h1, h2, h3) {{ line-height: 1.35; letter-spacing: -.015em; margin-block: 1.5em .65em; }}
+body[data-agent-slug] .message-body :is(pre, table) {{ max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }}
+body[data-agent-slug] .message-body table {{ display: block; }}
+body[data-agent-slug] .message-head {{ align-items: baseline; gap: 8px; flex-wrap: wrap; }}
+body[data-agent-slug] .message-meta {{ font-size: 11px; line-height: 1.5; }}
+body[data-agent-slug] .message-actions {{ gap: 8px; flex-wrap: wrap; }}
+body[data-agent-slug] :is(button, a, textarea):focus-visible {{ outline: 2px solid var(--agent-accent, #7186a5); outline-offset: 3px; }}
+@media (max-width: 640px) {{
+  body[data-agent-slug] .topbar {{ padding: 10px 12px; gap: 8px; align-items: flex-start; }}
+  body[data-agent-slug] .topbar .brand-line {{ gap: 6px 8px; }}
+  body[data-agent-slug] .topbar .brand-title {{ font-size: 17px; }}
+  body[data-agent-slug] .topbar-actions {{ gap: 4px; flex-wrap: nowrap; max-width: none; }}
+  body[data-agent-slug] .topbar-actions > :is(button, a) {{ min-width: 44px; min-height: 44px; padding-inline: 10px; }}
+  body[data-agent-slug] .header-connection-state {{ font-size: 11px; }}
+  body[data-agent-slug] .conversation {{ gap: 22px; }}
+  body[data-agent-slug] .message.assistant .message-body {{ font-size: 16px; line-height: 1.7; }}
+  body[data-agent-slug] .message.user {{ max-width: 94%; }}
+  body[data-agent-slug] .message-head {{ row-gap: 4px; }}
+  body[data-agent-slug] :is(.message-actions button, .message .inline-action) {{ min-height: 44px; }}
+}}
+@media (prefers-reduced-motion: reduce) {{
+  body[data-agent-slug] :is(.topbar, .message, .topbar-menu, .composer-input-shell) {{ animation: none !important; transition: none !important; scroll-behavior: auto !important; }}
+}}
+
   </style>
 </head>
 <body data-agent-slug="{html.escape(AGENT_SLUG)}" data-agent-group="{
@@ -50464,6 +52914,7 @@ class Handler(BaseHTTPRequestHandler):
             html.escape(initial_run_label)
         }</span>
           <span id="bedrock-health-badge" class="bedrock-health-badge idle" title="Bedrock health has not been checked yet." hidden>Bedrock</span>
+          <span id="header-connection-state" class="header-connection-state" role="status">Connecting…</span>
           <span class="topbar-version" title="Console UI version">v{
             html.escape(UI_VERSION)
         }</span>
@@ -50573,7 +53024,7 @@ class Handler(BaseHTTPRequestHandler):
         </button>
       </div>
     </section>
-    <div id="topbar-menu" class="topbar-menu surface" aria-hidden="true">
+    <div id="topbar-menu" class="topbar-menu surface" aria-hidden="true" inert>
           <div class="topbar-menu-meta">
             <span class="version-chip" title="Console UI version">UI v{
             html.escape(UI_VERSION)
@@ -50694,6 +53145,7 @@ class Handler(BaseHTTPRequestHandler):
             " hidden" if not initial_usage_meter["has_fill"] else ""
         }><span class="usage-meter-fill"></span></span>
             </span>
+            <button id="usage-reset-button" type="button" class="ghost usage-reset-button" data-icon="↻" hidden>Resets</button>
             <button id="context-save-button" type="button" class="ghost context-save-button" title="Create a concise handoff, then continue in a fresh thread" hidden>Create handoff</button>
             <span id="route-chip" class="meta-chip subtle" data-icon="{
             html.escape(icon_for_label(active_route_mode, "⇄"))
@@ -50976,7 +53428,7 @@ class Handler(BaseHTTPRequestHandler):
         }"></textarea>
               <span id="response-summary" class="response-summary visually-hidden">Think Std · Reply Balanced</span>
               <div class="composer-send-cluster" aria-label="Prompt submit controls">
-                <button id="ask-button" type="submit" class="primary composer-send composer-send-queue" data-icon="→" title="Queue prompt. Press Enter to queue and Shift+Enter for a new line." data-tooltip="Queue prompt. Enter queues; Shift+Enter inserts a new line." aria-label="Queue prompt"><span id="ask-button-label" class="composer-send-label">Queue</span></button>
+                <button id="ask-button" type="submit" class="primary composer-send composer-send-queue" data-icon="→" title="Send message. Press Enter to send and Shift+Enter for a new line." data-tooltip="Send message. Enter sends; Shift+Enter inserts a new line." aria-label="Send message"><span id="ask-button-label" class="composer-send-label">Send</span></button>
                 <button id="interrupt-submit-button" type="button" class="ghost composer-send composer-send-interrupt" data-icon="↑" title="Interrupt at the next safe checkpoint" data-tooltip="Interrupt at the next safe checkpoint" aria-label="Interrupt at the next safe checkpoint"><span class="composer-send-label">Interrupt</span></button>
               </div>
             </div>
@@ -50984,6 +53436,19 @@ class Handler(BaseHTTPRequestHandler):
           </form>
         </div>
       </main>
+
+      <dialog id="usage-limit-reset-dialog" class="usage-limit-reset-dialog" aria-labelledby="usage-limit-reset-title" aria-describedby="usage-limit-reset-detail">
+        <div class="usage-limit-reset-card">
+          <h2 id="usage-limit-reset-title">Use an earned usage reset?</h2>
+          <p id="usage-limit-reset-detail">Your ChatGPT subscription limit is reached. Norman can use one reset before switching to the configured paid fallback.</p>
+          <p><span id="usage-limit-reset-count" class="usage-limit-reset-count"></span><span id="usage-limit-reset-hint"></span></p>
+          <div class="usage-limit-reset-actions">
+            <button id="usage-limit-reset-cancel" type="button" class="ghost">Cancel</button>
+            <button id="usage-limit-reset-fallback" type="button" class="ghost">Keep reset · use fallback</button>
+            <button id="usage-limit-reset-approve" type="button" class="primary">Use one reset</button>
+          </div>
+        </div>
+      </dialog>
 
       <div id="switcher-backdrop" class="switcher-backdrop"></div>
       <div id="system-backdrop" class="system-backdrop"></div>
@@ -51551,6 +54016,7 @@ class Handler(BaseHTTPRequestHandler):
     const PROMPT_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
     const PROMPT_SUBMISSION_STORAGE_KEY = `${{AGENT_LABEL.toLowerCase().replace(/[^a-z0-9]+/g, "-")}}-console-submission-v1:${{window.location.hostname}}${{window.location.pathname}}`;
     const PROMPT_SUBMISSION_MAX_AGE_MS = 1000 * 60 * 60 * 12;
+    const PROMPT_SUBMISSION_RECONCILE_GRACE_MS = 1000 * 30;
     const SWITCHER_STORAGE_KEY = "agent-console-switcher-v1";
     const SWITCHER_STATE_PARAM = "fleet";
     const SWITCHER_RECENTS_LIMIT = 8;
@@ -51934,6 +54400,7 @@ class Handler(BaseHTTPRequestHandler):
         promptCostEstimate: "",
         systemMetrics: "",
         services: "",
+        localCliSessions: "",
       }},
       inlinePreviewCache: {{}},
       audioContext: null,
@@ -51980,6 +54447,12 @@ class Handler(BaseHTTPRequestHandler):
       promptFileInput: document.getElementById("prompt-file-input"),
       askForm: document.getElementById("ask-form"),
       askButton: document.getElementById("ask-button"),
+      usageLimitResetDialog: document.getElementById("usage-limit-reset-dialog"),
+      usageLimitResetCount: document.getElementById("usage-limit-reset-count"),
+      usageLimitResetHint: document.getElementById("usage-limit-reset-hint"),
+      usageLimitResetApprove: document.getElementById("usage-limit-reset-approve"),
+      usageLimitResetFallback: document.getElementById("usage-limit-reset-fallback"),
+      usageLimitResetCancel: document.getElementById("usage-limit-reset-cancel"),
       interruptSubmitButton: document.getElementById("interrupt-submit-button"),
       composerUploadButton: document.getElementById("composer-upload-button"),
       composerUploadMenu: document.getElementById("composer-upload-menu"),
@@ -52007,6 +54480,7 @@ class Handler(BaseHTTPRequestHandler):
       usageMeterPlan: document.getElementById("usage-meter-plan"),
       usageMeterMetered: document.getElementById("usage-meter-metered"),
       usageMeterTrack: document.getElementById("usage-meter-track"),
+      usageResetButton: document.getElementById("usage-reset-button"),
       contextSaveButton: document.getElementById("context-save-button"),
       systemSummary: document.getElementById("system-summary"),
       systemRuntimeMetrics: document.getElementById("system-runtime-metrics"),
@@ -53363,14 +55837,24 @@ class Handler(BaseHTTPRequestHandler):
 
     let controlTooltipHydrationFrame = 0;
     let controlTooltipObserver = null;
+    const controlTooltipHydrationRoots = new Set();
 
-    function scheduleControlTooltipHydration() {{
+    function scheduleControlTooltipHydration(root = document.body) {{
+      if (root instanceof Element) {{
+        controlTooltipHydrationRoots.add(root);
+      }}
       if (controlTooltipHydrationFrame) {{
         return;
       }}
       controlTooltipHydrationFrame = window.requestAnimationFrame(() => {{
         controlTooltipHydrationFrame = 0;
-        hydrateControlTooltips(document.body);
+        const roots = Array.from(controlTooltipHydrationRoots).filter((node) => node.isConnected);
+        controlTooltipHydrationRoots.clear();
+        for (const node of roots) {{
+          if (!roots.some((other) => other !== node && other.contains(node))) {{
+            hydrateControlTooltips(node);
+          }}
+        }}
       }});
     }}
 
@@ -53383,22 +55867,21 @@ class Handler(BaseHTTPRequestHandler):
         return;
       }}
       controlTooltipObserver = new MutationObserver((mutations) => {{
-        if (
-          mutations.some((mutation) =>
-            Array.from(mutation.addedNodes).some(
-              (node) =>
-                node instanceof Element
-                && (
-                  node.matches(CONTROL_TOOLTIP_SELECTOR)
-                  || node.querySelector?.(CONTROL_TOOLTIP_SELECTOR)
-                )
-            )
-          )
-        ) {{
-          scheduleControlTooltipHydration();
+        for (const mutation of mutations) {{
+          for (const node of mutation.addedNodes) {{
+            if (node instanceof Element) {{
+              scheduleControlTooltipHydration(node);
+            }} else if (node.nodeType === Node.TEXT_NODE) {{
+              const control = node.parentElement?.closest(CONTROL_TOOLTIP_SELECTOR);
+              if (control) {{
+                scheduleControlTooltipHydration(control);
+              }}
+            }}
+          }}
         }}
       }});
       controlTooltipObserver.observe(document.body, {{ childList: true, subtree: true }});
+      scheduleControlTooltipHydration();
     }}
 
     function defaultCompletionBell() {{
@@ -53707,7 +56190,11 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function containsCodexAuthFailure(value) {{
-      return containsTokenReuseError(value) || containsOpenAIAuthError(value);
+      const text = String(value || "").toLowerCase();
+      return containsTokenReuseError(text) || containsOpenAIAuthError(text)
+        || text.includes("invalid_refresh_token")
+        || text.includes("could not validate your refresh token")
+        || text.includes("your access token could not be refreshed");
     }}
 
     function containsCodexCliUpgradeError(value) {{
@@ -53740,30 +56227,11 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function containsCertWorkflowError(value) {{
-      const text = String(value || "").toLowerCase();
-      if (!text) return false;
-      if (
-        text.includes("certificate_verify_failed")
-        || text.includes("certbot")
-        || text.includes("acme")
-        || text.includes("x509")
-        || text.includes("make_cert")
-        || text.includes("cert queue")
-        || text.includes("cert-worker")
-        || text.includes("cert_enqueue")
-      ) {{
-        return true;
-      }}
-      const hasCertish = text.includes("certificate") || text.includes("ssl") || text.includes("tls");
-      const hasFailure =
-        text.includes("error")
-        || text.includes("failed")
-        || text.includes("invalid")
-        || text.includes("expired")
-        || text.includes("mismatch")
-        || text.includes("verify")
-        || text.includes("handshake");
-      return hasCertish && hasFailure;
+      return String(value || "").toLowerCase().split(/\\n/).some((line) => (
+        line.includes("certificate_verify_failed")
+        || (/\\b(certificate|ssl|tls|certbot|acme|x509|make_cert|cert-worker|cert_enqueue)\\b/.test(line)
+          && /\\b(error|failed|failure|invalid|expired|mismatch|unable|cannot)\\b/.test(line))
+      ));
     }}
 
     function isPlaceholderAssistantResponse(value) {{
@@ -54471,27 +56939,47 @@ class Handler(BaseHTTPRequestHandler):
       return String(relay?.target_connector_name || relay?.target || relay?.relay_id || "Switchboard").trim() || "Switchboard";
     }}
 
+    const storageMemory = new Map();
+    const storagePending = new Set();
+
     function safeStorageGet(key) {{
+      if (storagePending.has(key)) {{
+        const value = storageMemory.get(key) ?? null;
+        try {{
+          if (value === null) window.localStorage.removeItem(key);
+          else window.localStorage.setItem(key, value);
+          storagePending.delete(key);
+        }} catch (_) {{ /* Retry persistence on the next read without losing memory state. */ }}
+        return value;
+      }}
       try {{
-        return window.localStorage.getItem(key);
+        const value = window.localStorage.getItem(key);
+        storageMemory.set(key, value);
+        return value;
       }} catch (_) {{
-        return null;
+        return storageMemory.get(key) ?? null;
       }}
     }}
 
     function safeStorageSet(key, value) {{
+      storageMemory.set(key, String(value));
+      storagePending.add(key);
       try {{
         window.localStorage.setItem(key, value);
+        storagePending.delete(key);
       }} catch (_) {{
-        // Ignore unavailable storage and continue with in-memory preferences.
+        // Retain drafts and receipt IDs in this tab when browser storage is blocked or full.
       }}
     }}
 
     function safeStorageRemove(key) {{
+      storageMemory.set(key, null);
+      storagePending.add(key);
       try {{
         window.localStorage.removeItem(key);
+        storagePending.delete(key);
       }} catch (_) {{
-        // Ignore unavailable storage and continue with in-memory state.
+        // A memory tombstone prevents an old stored receipt from reappearing.
       }}
     }}
 
@@ -54747,7 +57235,8 @@ class Handler(BaseHTTPRequestHandler):
         return false;
       }}
       const submission = loadPromptSubmission();
-      if (submission && promptReceiptMatches(draft, submission.value)) {{
+      if (submission && promptReceiptMatches(draft, submission.value)
+        && !["sending", "reconciling"].includes(String(submission.state || ""))) {{
         clearPromptDraft();
         return false;
       }}
@@ -54814,7 +57303,9 @@ class Handler(BaseHTTPRequestHandler):
           safeStorageRemove(PROMPT_SUBMISSION_STORAGE_KEY);
           return null;
         }}
-        if (submittedAt > 0 && Date.now() - submittedAt > PROMPT_SUBMISSION_MAX_AGE_MS) {{
+        // Time alone cannot prove an identified request was never accepted.
+        if (!String(payload?.submissionId || "").trim()
+          && submittedAt > 0 && Date.now() - submittedAt > PROMPT_SUBMISSION_MAX_AGE_MS) {{
           safeStorageRemove(PROMPT_SUBMISSION_STORAGE_KEY);
           return null;
         }}
@@ -54967,20 +57458,24 @@ class Handler(BaseHTTPRequestHandler):
         }}
 
         function snapshotCompletedPromptSubmission(snapshot, value) {{
-          if (!snapshot || !value) {{
-            return false;
-          }}
-      if (historyEntries(snapshot).some((item) => promptReceiptMatches(item?.prompt, value))) {{
-        return true;
-      }}
-      const response = String(snapshot.last_response || "").trim();
-      const finalResponse = response
-        && response !== "[waiting for reply]"
-        && response !== "[no response yet]"
-        && !isPlaceholderAssistantResponse(response);
-      return !snapshot.pending
-        && finalResponse
-        && promptReceiptMatches(snapshot.last_prompt, value);
+      const receipt = loadPromptSubmission();
+      if (!snapshot || !value || !receipt) return false;
+      const matches = (item) => {{
+        if (!promptReceiptMatches(item?.prompt, value)) return false;
+        const response = String(item.response || "").trim();
+        const complete = Boolean(item.error || (item.attachments || []).length
+          || (response && !isPlaceholderAssistantResponse(response)));
+        if (!complete) return false;
+        if (item.submission_id && receipt.submissionId) return item.submission_id === receipt.submissionId;
+        const raw = item.started_at;
+        const started = typeof raw === "number" ? raw * (raw < 1e12 ? 1000 : 1) : Date.parse(raw);
+        return receipt.submittedAt > 0 && started >= receipt.submittedAt - 5000;
+      }};
+      if (historyEntries(snapshot).some(matches)) return true;
+      return !snapshot.pending && matches({{
+        prompt: snapshot.last_prompt, response: snapshot.last_response,
+        started_at: snapshot.last_started_at,
+      }});
     }}
 
     function reconcilePromptSubmission(snapshot = state.snapshot) {{
@@ -54995,7 +57490,7 @@ class Handler(BaseHTTPRequestHandler):
       }}
       if (
         snapshotIncludesSubmissionId(snapshot, receipt.submissionId)
-        || snapshotIncludesPromptSubmission(snapshot, value)
+        || (!receipt.submissionId && snapshotIncludesPromptSubmission(snapshot, value))
       ) {{
         const draft = loadPromptDraft();
         if (draft && promptReceiptMatches(draft, value)) {{
@@ -55009,6 +57504,21 @@ class Handler(BaseHTTPRequestHandler):
           }});
         }}
         return true;
+      }}
+      const receiptState = String(receipt.state || "").trim().toLowerCase();
+      const reconcileAgeMs = Math.max(0, Date.now() - Number(receipt.submittedAt || 0));
+      if (
+        receiptState === "reconciling"
+        && receipt.submittedAt > 0
+        && reconcileAgeMs >= PROMPT_SUBMISSION_RECONCILE_GRACE_MS
+        && !snapshot.pending
+      ) {{
+        restoreRejectedPrompt(value);
+        setOperatorReceipt(
+          "Delivery is still unconfirmed. Your draft is restored; retry checks the same submission without duplicating it.",
+          "warning"
+        );
+        return false;
       }}
       return true;
     }}
@@ -55321,6 +57831,91 @@ class Handler(BaseHTTPRequestHandler):
       return items;
     }}
 
+    function localCliAgeLabel(value) {{
+      const seconds = Math.max(0, Number(value || 0));
+      if (seconds < 60) {{
+        return `${{Math.floor(seconds)}}s`;
+      }}
+      if (seconds < 3600) {{
+        return `${{Math.floor(seconds / 60)}}m`;
+      }}
+      if (seconds < 86400) {{
+        return `${{Math.floor(seconds / 3600)}}h`;
+      }}
+      return `${{Math.floor(seconds / 86400)}}d`;
+    }}
+
+    function renderLocalCliObserverHtml(payload) {{
+      if (!payload?.enabled) {{
+        return "";
+      }}
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      const count = Number(payload.count || items.length || 0);
+      const looseCount = Number(payload.loose_count || 0);
+      const managedCount = Number(payload.managed_count || 0);
+      const host = String(payload.host || "Hal");
+      const available = payload.available !== false;
+      const summary = !available
+        ? "Observer unavailable; Norman will retry automatically"
+        : count
+        ? `${{looseCount}} loose · ${{managedCount}} managed · observation only`
+        : "No local Codex CLIs detected right now.";
+      const sessions = items.map((item) => {{
+        const managed = Boolean(item?.managed);
+        const stateLabel = managed ? "Managed" : "Observed";
+        const name = String(item?.agent_name || item?.workspace || "Local CLI");
+        const tty = String(item?.tty || "no TTY");
+        const age = localCliAgeLabel(item?.age_seconds);
+        const thread = String(item?.thread_id || "");
+        const threadLabel = thread ? ` · thread ${{thread.slice(0, 8)}}` : "";
+        const pid = Number(item?.pid || 0);
+        const cwd = String(item?.cwd || "");
+        return `
+          <div class="local-cli-session" data-observer-state="${{managed ? "managed" : "observed"}}" title="${{escapeHtml(cwd)}}">
+            <div class="local-cli-session-main">
+              <span class="local-cli-session-name">${{escapeHtml(name)}}</span>
+              <span class="local-cli-session-meta">${{escapeHtml(`${{tty}} · ${{age}} · PID ${{pid}}${{threadLabel}}`)}}</span>
+            </div>
+            <span class="local-cli-session-state">${{stateLabel}}</span>
+          </div>
+        `;
+      }}).join("");
+      return `
+        <section class="local-cli-observer" data-available="${{available ? "true" : "false"}}" aria-label="Local Codex CLI observer">
+          <div class="local-cli-observer-head">
+            <span class="local-cli-observer-title">${{escapeHtml(host)}} local CLIs</span>
+            <span class="local-cli-observer-count">${{count}} live</span>
+          </div>
+          <div class="local-cli-observer-copy">${{escapeHtml(summary)}}. Direct PTYs stay operator-controlled.</div>
+          ${{sessions ? `<div class="local-cli-session-list">${{sessions}}</div>` : ""}}
+        </section>
+      `;
+    }}
+
+    function refreshLocalCliObserver(snapshot) {{
+      if (!document.body.classList.contains("switcher-open")) {{
+        return;
+      }}
+      const payload = snapshot?.local_cli_sessions || {{}};
+      const renderKey = JSON.stringify({{
+        enabled: Boolean(payload.enabled),
+        available: payload.available !== false,
+        host: String(payload.host || ""),
+        count: Number(payload.count || 0),
+        looseCount: Number(payload.loose_count || 0),
+        managedCount: Number(payload.managed_count || 0),
+        detail: String(payload.detail || ""),
+        items: (Array.isArray(payload.items) ? payload.items : []).map((item) => ({{
+          ...item, age_seconds: localCliAgeLabel(item.age_seconds),
+        }})),
+      }});
+      if (state.renderCache.localCliSessions === renderKey) {{
+        return;
+      }}
+      state.renderCache.localCliSessions = renderKey;
+      renderSwitcher();
+    }}
+
     function renderSwitcher() {{
       if (!state.switcher) {{
         return;
@@ -55366,18 +57961,23 @@ class Handler(BaseHTTPRequestHandler):
         </button>
       `).join("");
       const items = switcherViewItems();
+      const localCliPayload = state.snapshot?.local_cli_sessions || {{}};
+      const localCliHtml = renderLocalCliObserverHtml(localCliPayload);
+      const localCliCount = localCliPayload?.enabled
+        ? Number(localCliPayload.count || 0)
+        : 0;
       const viewLabel = viewOptions.find((item) => item.slug === state.switcher.activeView)?.label || "All";
       const groupLabel = groupOptions.find((item) => item.slug === state.switcher.activeGroup)?.label || "All";
       el.switcherNote.textContent = items.length
-        ? `${{viewLabel}} · ${{groupLabel}} · ${{items.length}} agent${{items.length === 1 ? "" : "s"}}`
+        ? `${{viewLabel}} · ${{groupLabel}} · ${{items.length}} agent${{items.length === 1 ? "" : "s"}}${{localCliPayload?.enabled ? ` · ${{localCliCount}} local CLI${{localCliCount === 1 ? "" : "s"}}` : ""}}`
         : `${{viewLabel}} · ${{groupLabel}} · no agents match right now`;
       if (!items.length) {{
-        el.switcherList.innerHTML = '<div class="switcher-empty">Nothing matches this view. Clear the search or switch groups.</div>';
+        el.switcherList.innerHTML = `${{localCliHtml}}<div class="switcher-empty">Nothing matches this view. Clear the search or switch groups.</div>`;
         refreshConsoleNavLinkHrefs();
         hydrateControlTooltips(el.switcherPanel);
         return;
       }}
-      el.switcherList.innerHTML = items.map((item) => `
+      el.switcherList.innerHTML = localCliHtml + items.map((item) => `
         <article class="switcher-item${{item.current ? " is-current" : ""}}">
           <a class="switcher-link" href="${{escapeHtml(buildSwitcherHref(item.href, item.key))}}" data-switcher-link="${{escapeHtml(item.key)}}">
             <div class="switcher-item-title-row">
@@ -56427,14 +59027,25 @@ class Handler(BaseHTTPRequestHandler):
 
     function setTopbarMenuOpen(open) {{
       const shouldOpen = Boolean(open);
+      const focusWasInside = el.topbarMenu.contains(document.activeElement);
       if (shouldOpen) {{
         setOperatorActionPaletteOpen(false);
-        syncTopbarMenuPosition();
+        setSwitcherOpen(false);
+        setSettingsOpen(false);
+        setNoticesOpen(false);
+        setSystemOpen(false);
         setStatusActionOpen(false);
+        syncTopbarMenuPosition();
       }}
       document.body.classList.toggle("topbar-menu-open", shouldOpen);
+      el.topbarMenu.inert = !shouldOpen;
       el.topbarMenu.setAttribute("aria-hidden", shouldOpen ? "false" : "true");
       el.topbarMenuButton.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+      if (shouldOpen && !focusWasInside) {{
+        el.topbarMenu.querySelector('button:not(:disabled), a[href]:not([aria-disabled="true"])')?.focus({{ preventScroll: true }});
+      }} else if (!shouldOpen && focusWasInside) {{
+        el.topbarMenuButton.focus({{ preventScroll: true }});
+      }}
     }}
 
     function setStatusActionOpen(open) {{
@@ -56480,6 +59091,9 @@ class Handler(BaseHTTPRequestHandler):
       }}
       document.body.classList.toggle("switcher-open", shouldOpen);
       el.switcherPanel.setAttribute("aria-hidden", shouldOpen ? "false" : "true");
+      if (shouldOpen) {{
+        refreshLocalCliObserver(state.snapshot);
+      }}
       if (shouldOpen && isDesktopLayout()) {{
         window.setTimeout(() => {{
           el.switcherSearchInput.focus();
@@ -56493,6 +59107,12 @@ class Handler(BaseHTTPRequestHandler):
       state.transportConnected = Boolean(connected);
       el.transportStateMenu.textContent = label;
       el.transportStateMenu.dataset.connected = connected ? "true" : "false";
+      const headerConnection = document.getElementById("header-connection-state");
+      if (headerConnection) {{
+        headerConnection.textContent = connected ? "Live" : "Not connected";
+        headerConnection.dataset.connected = connected ? "true" : "false";
+        headerConnection.title = state.transportLabel;
+      }}
       if (state.snapshot) {{
         renderComposerActiveWork(state.snapshot);
         renderStatusCapsules(state.snapshot);
@@ -60661,6 +63281,9 @@ class Handler(BaseHTTPRequestHandler):
 
     function usageMeterState(snapshot) {{
       const usage = snapshot && typeof snapshot === "object" ? snapshot.usage || {{}} : {{}};
+      const capacity = snapshot && typeof snapshot?.codex_account_capacity === "object"
+        ? snapshot.codex_account_capacity
+        : {{}};
       const billing = usage && typeof usage === "object" && usage.billing && typeof usage.billing === "object"
         ? usage.billing
         : {{}};
@@ -60690,6 +63313,13 @@ class Handler(BaseHTTPRequestHandler):
       const meteredLabel = `Metered ${{meteredUsd > 0 ? "~" : ""}}${{formatCompactUsd(meteredUsd)}}`;
       const cycleLabel = String(cycle.label || "current calendar month").trim();
       const timezoneLabel = String(cycle.timezone || "local").trim();
+      const resetCount = Math.max(0, Number(capacity.usage_limit_resets_available || 0));
+      const resetEligible = Boolean(
+        resetCount > 0
+        && capacity.fresh
+        && String(capacity.state || "") === "blocked"
+        && String(capacity.auth_mode || "") === "chatgpt"
+      );
       const title = [
         `Monthly usage (${{cycleLabel}}${{timezoneLabel ? `, ${{timezoneLabel}}` : ""}})`,
         hasAllowance
@@ -60708,6 +63338,8 @@ class Handler(BaseHTTPRequestHandler):
         fill: hasAllowance ? Math.max(0, Math.min(100, Math.round(usedPct))) : 0,
         hasFill: hasAllowance,
         title,
+        resetCount,
+        resetEligible,
       }};
     }}
 
@@ -60724,6 +63356,8 @@ class Handler(BaseHTTPRequestHandler):
         fill: Number(meter.fill || 0),
         hasFill: Boolean(meter.hasFill),
         title: String(meter.title || ""),
+        resetCount: Number(meter.resetCount || 0),
+        resetEligible: Boolean(meter.resetEligible),
       }});
       if (state.renderCache.usageMeter === renderKey) {{
         return;
@@ -60738,6 +63372,16 @@ class Handler(BaseHTTPRequestHandler):
       el.usageMeterMetered.textContent = meter.meteredLabel;
       if (el.usageMeterTrack) {{
         el.usageMeterTrack.hidden = !meter.hasFill;
+      }}
+      if (el.usageResetButton) {{
+        el.usageResetButton.hidden = meter.resetCount <= 0;
+        el.usageResetButton.disabled = !meter.resetEligible;
+        el.usageResetButton.dataset.eligible = meter.resetEligible ? "true" : "false";
+        el.usageResetButton.textContent = `Resets ×${{meter.resetCount}}`;
+        el.usageResetButton.title = meter.resetEligible
+          ? `${{meter.resetCount}} earned reset${{meter.resetCount === 1 ? " is" : "s are"}} available. Approve one now.`
+          : `${{meter.resetCount}} earned reset${{meter.resetCount === 1 ? "" : "s"}} available; use is enabled when a limit is reached.`;
+        el.usageResetButton.setAttribute("aria-label", el.usageResetButton.title);
       }}
     }}
 
@@ -61599,6 +64243,41 @@ class Handler(BaseHTTPRequestHandler):
         .slice(0, 4);
     }}
 
+    function normalizeTopKpiMeters(snapshot) {{
+      const kpis = snapshot?.kpis && typeof snapshot.kpis === "object" ? snapshot.kpis : {{}};
+      const rawMeters = Array.isArray(kpis.top_meters) ? kpis.top_meters : [];
+      if (!rawMeters.length) return [];
+      const processor = kpis.processor && typeof kpis.processor === "object" ? kpis.processor : {{}};
+      const processorStatus = String(processor.status || "warming").trim().toLowerCase();
+      const processorMeta = processorStatus === "ranked" ? "DGX ranked" : "local fallback";
+      return rawMeters.map((item, index) => {{
+        if (!item || typeof item !== "object" || !String(item.label || "").trim()) return null;
+        const source = String(item.source || "local status").trim();
+        const detail = String(item.detail || "").trim();
+        const updatedAt = parseKpiTimestampSeconds(item.updated_at);
+        const staleAfter = Math.max(0, Number(item.stale_after_seconds || 0));
+        const stale = updatedAt > 0 && staleAfter > 0 && (Date.now() / 1000) - updatedAt > staleAfter;
+        let tone = normalizeKpiTone(item.tone);
+        if (stale && (tone === "ok" || tone === "active")) tone = "warn";
+        return {{
+          id: String(item.id || `top-kpi-${{index}}`),
+          label: String(item.label || "KPI").trim(),
+          value: item.value === null || item.value === undefined || item.value === "" ? "n/a" : String(item.value),
+          meta: stale ? `${{processorMeta}} · stale` : processorMeta,
+          tone,
+          title: [
+            detail,
+            `Source · ${{source}}`,
+            `Processor · local DGX / ${{String(processor.model || "resident Qwen").trim()}}`,
+            "Cloud fallback · disabled",
+            stale ? "Source data is stale." : "",
+          ].filter(Boolean).join(" · "),
+          action: "system",
+        }};
+      }}).filter(Boolean).slice(0, 4);
+    }}
+
+
     function normalizeBbsTone(value) {{
       const clean = String(value || "").trim().toLowerCase();
       if (clean === "alert" || clean === "error") return "alert";
@@ -62379,7 +65058,8 @@ class Handler(BaseHTTPRequestHandler):
         action: issue ? "system" : "notices",
       }});
 
-      const adapterCapsules = normalizeResourceKpiMeters(snapshot);
+      const topKpis = normalizeTopKpiMeters(snapshot);
+      const adapterCapsules = topKpis.length ? topKpis : normalizeResourceKpiMeters(snapshot);
       if (adapterCapsules.length) {{
         const adapterIds = new Set(adapterCapsules.map((item) => String(item.id || "")));
         const fallbackCapsules = capsules.filter((item) => !adapterIds.has(String(item.id || "")));
@@ -65056,7 +67736,11 @@ class Handler(BaseHTTPRequestHandler):
       if (!text) {{
         return false;
       }}
-      return looksLikeLowValueRawError(text) || text.length > 220 || /\\r?\\n/.test(text);
+      return containsCodexAuthFailure(text) || containsRateLimitError(text)
+        || containsUsageLimitError(text) || containsCodexRouteMismatchError(text)
+        || containsCodexCliUpgradeError(text) || containsCertWorkflowError(text)
+        || containsOpenAITransportError(text)
+        || looksLikeLowValueRawError(text) || text.length > 220 || /\\r?\\n/.test(text);
     }}
 
     function renderErrorMarkup(value) {{
@@ -65074,7 +67758,7 @@ class Handler(BaseHTTPRequestHandler):
       return `
         <div class="error-inline-summary">${{escapeHtml(summarizeErrorText(text))}}</div>
         <details class="error-details">
-          <summary>Raw</summary>
+          <summary>Technical details</summary>
           <pre>${{escapeHtml(text)}}</pre>
         </details>
       `;
@@ -66130,7 +68814,7 @@ class Handler(BaseHTTPRequestHandler):
           : liveProfile;
         const liveAgentLabel = String(AGENT_LABEL || "Assistant").trim() || "Assistant";
         const elapsed = activityElapsed(snapshot);
-        const modelState = snapshot.model_process_alive ? "model process alive" : "waiting for model process";
+        const modelState = liveProgressStageCopy(snapshot);
         const usageCopy = usageSummaryForActiveWork(snapshot);
         const workingRecap = workingRecapForSnapshot(snapshot);
         const liveExpanded = liveStatusExpanded(snapshot, elapsed)
@@ -66363,6 +69047,17 @@ class Handler(BaseHTTPRequestHandler):
 
     function sentenceFragment(value, limit = 150) {{
       return summarizePrompt(String(value || "").replace(/[.。]+$/g, ""), limit);
+    }}
+
+    function liveProgressStageCopy(snapshot) {{
+      if (!snapshot?.pending) return "";
+      const live = liveTurnForSnapshot(snapshot);
+      const current = Number(live.started_at || 0) >= Number(snapshot.last_started_at || 0);
+      const phase = current ? String(live.phase || "") : "";
+      if (phase === "checking_runtime") return "Checking runtime readiness";
+      if (phase === "preparing_context") return "Preparing conversation context";
+      if (phase === "waiting_model") return "Waiting for the model’s next update";
+      return "Request accepted; waiting for a progress update";
     }}
 
     function liveStatusExpanded(snapshot, elapsed) {{
@@ -67393,6 +70088,10 @@ class Handler(BaseHTTPRequestHandler):
       const attachmentBusy = state.attachmentBusy || hasActiveUploadTrayItems();
       const busy = Boolean(isBusy) || attachmentBusy || state.promptSubmitInFlight;
       const replyActive = webReplyActive(state.snapshot);
+      const receipt = loadPromptSubmission();
+      const checkingDelivery = receipt
+        && ["sending", "reconciling"].includes(String(receipt.state || ""))
+        && promptReceiptMatches(el.promptInput.value, receipt.value);
       el.askButton.disabled = busy;
       if (el.interruptSubmitButton) {{
         el.interruptSubmitButton.disabled = busy || !replyActive;
@@ -67416,9 +70115,9 @@ class Handler(BaseHTTPRequestHandler):
         setAskButtonState(
           state.snapshot.pending
             ? "Queue next prompt behind the current reply. Active work continues above the input."
-            : "Queue prompt. Press Enter to queue and Shift+Enter for a new line.",
+            : "Send message. Press Enter to send and Shift+Enter for a new line.",
           "→",
-          state.snapshot.pending ? "Queue" : "Queue prompt"
+          checkingDelivery ? "Check delivery" : state.snapshot.pending ? "Queue" : "Send"
         );
         setInterruptSubmitState(
           interruptConfirming
@@ -67531,15 +70230,29 @@ class Handler(BaseHTTPRequestHandler):
         : "Preparing live console state. Detailed local health and service state is loading.";
     }}
 
+    function sendingPromptPhase(receipt, now = Date.now()) {{
+      const submittedAt = Number(receipt?.submittedAt || 0);
+      const elapsed = submittedAt > 0 ? Math.max(0, now - submittedAt) : 0;
+      return {{
+        meta: "Waiting for confirmation",
+        body: elapsed >= 10000
+          ? "Confirmation is taking longer than usual. Your message is kept here while we wait; you don’t need to send it again."
+          : "Your message is being sent. Waiting for the server to confirm it was accepted.",
+      }};
+    }}
+
+    function scheduleSubmissionFeedback(submissionId) {{
+      return window.setTimeout(() => {{
+        const receipt = loadPromptSubmission();
+        if (state.promptSubmitInFlight && receipt?.submissionId === submissionId && receipt.state === "sending") {{
+          setOperatorReceipt(sendingPromptPhase(receipt).body, "info", {{ timeoutMs: ACTION_REQUEST_TIMEOUT_MS + 3000 }});
+        }}
+      }}, 10000);
+    }}
+
     function routePreparationReceipt(runtime, model, serviceTier, queued = false) {{
-      const route = [
-        String(runtime || "").trim(),
-        String(serviceTier || "").trim(),
-        String(model || "").trim(),
-      ].filter(Boolean).join(" · ");
       return [
-        `Preparing route: ${{route || "selected runtime"}}.`,
-        "Applying route policy before acceptance.",
+        "Sending your message. Waiting for confirmation.",
         queued ? "Current work continues while this prompt waits." : "",
       ].filter(Boolean).join(" ");
     }}
@@ -67706,6 +70419,7 @@ class Handler(BaseHTTPRequestHandler):
       }}
       syncNotifications(snapshot);
       state.snapshot = snapshot;
+      refreshLocalCliObserver(snapshot);
       const terminalReceipt = terminalOperatorReceipt(previousSnapshot, snapshot);
       if (terminalReceipt) {{
         setOperatorReceipt(terminalReceipt.message, terminalReceipt.tone);
@@ -67939,7 +70653,6 @@ class Handler(BaseHTTPRequestHandler):
       renderSystemRuntimeMetrics(snapshot);
       renderConnectorAccess(snapshot);
 
-      hydrateControlTooltips();
       observeControlTooltips();
       scheduleComposerReserve();
       setBusyButtons(false);
@@ -67965,7 +70678,17 @@ class Handler(BaseHTTPRequestHandler):
         controller.abort();
       }}, Math.max(1000, Number(timeoutMs) || ACTION_REQUEST_TIMEOUT_MS));
       try {{
-        return await fetch(url, {{ ...options, signal: controller.signal }});
+        const response = await fetch(url, {{ ...options, signal: controller.signal }});
+        // These callers consume finite API replies, never event streams. Keep the
+        // deadline active until the entire reply arrives, including submission receipts.
+        const body = await response.arrayBuffer();
+        const buffered = new Response([204, 205, 304].includes(response.status) ? null : body, {{
+          status: response.status, statusText: response.statusText, headers: response.headers,
+        }});
+        Object.defineProperties(buffered, {{
+          url: {{ value: response.url }}, redirected: {{ value: response.redirected }},
+        }});
+        return buffered;
       }} catch (err) {{
         if (timedOut) {{
           throw new Error(`request timed out after ${{Math.ceil(timeoutMs / 1000)}}s`);
@@ -67979,7 +70702,16 @@ class Handler(BaseHTTPRequestHandler):
       }}
     }}
 
-    async function fetchStatus() {{
+    let statusRequest = null;
+
+    function fetchStatus() {{
+      if (!statusRequest) {{
+        statusRequest = fetchStatusOnce().finally(() => {{ statusRequest = null; }});
+      }}
+      return statusRequest;
+    }}
+
+    async function fetchStatusOnce() {{
       const res = await fetchWithDeadline(
         `${{clientPath("/api/status")}}?token=${{encodeURIComponent(TOKEN)}}`,
         {{ cache: "no-store" }},
@@ -68177,10 +70909,16 @@ class Handler(BaseHTTPRequestHandler):
       }}
       if (res.status === 401 || res.status === 403) {{
         triggerAuthRefresh("Authentication expired. Reloading console…");
-        throw new Error("authentication required");
+        const error = new Error("authentication required");
+        error.httpStatus = res.status;
+        error.responseData = data;
+        throw error;
       }}
       if (!res.ok) {{
-        throw new Error(data.error || `request failed (${{res.status}})`);
+        const error = new Error(data.error || `request failed (${{res.status}})`);
+        error.httpStatus = res.status;
+        error.responseData = data;
+        throw error;
       }}
       return data;
     }}
@@ -70007,7 +72745,20 @@ class Handler(BaseHTTPRequestHandler):
       state.pollTimer = window.setTimeout(refreshStatus, nextDelay);
     }}
 
+    function armStreamWatchdog(stream) {{
+      clearTimeout(state.streamWatchdogTimer);
+      state.streamWatchdogTimer = window.setTimeout(() => {{
+        if (state.stream !== stream) return;
+        disconnectStream();
+        setTransportState("Reconnecting · checking status…", false);
+        schedulePoll(1);
+        scheduleStreamReconnect(1800);
+      }}, Math.max(45000, Number("{STREAM_IDLE_SECONDS}") * 3000));
+    }}
+
     function disconnectStream() {{
+      clearTimeout(state.streamWatchdogTimer);
+      state.streamWatchdogTimer = 0;
       clearTimeout(state.streamReconnectTimer);
       state.streamReconnectTimer = 0;
       if (state.stream) {{
@@ -70060,11 +72811,17 @@ class Handler(BaseHTTPRequestHandler):
       state.streamReconnectTimer = 0;
       const stream = new EventSource(`${{clientPath("/api/stream")}}?token=${{encodeURIComponent(TOKEN)}}`);
       state.stream = stream;
+      armStreamWatchdog(stream);
+      stream.addEventListener("heartbeat", () => {{
+        if (state.stream === stream) armStreamWatchdog(stream);
+      }});
       setTransportState("Connecting…", false);
 
       stream.addEventListener("snapshot", (event) => {{
+        if (state.stream !== stream) return;
         try {{
           const snapshot = JSON.parse(event.data);
+          armStreamWatchdog(stream);
           state.streamConnected = true;
           setTransportState(snapshot.pending ? "Live · waiting" : "Live", true);
           if (!state.transportAcknowledged) {{
@@ -70076,11 +72833,15 @@ class Handler(BaseHTTPRequestHandler):
           clearTimeout(state.pollTimer);
           render(snapshot);
         }} catch (_) {{
-          // Ignore malformed event payloads and let the fallback polling recover.
+          disconnectStream();
+          setTransportState("Reconnecting · checking status…", false);
+          schedulePoll(1);
+          scheduleStreamReconnect(1800);
         }}
       }});
 
       stream.onerror = () => {{
+        if (state.stream !== stream) return;
         disconnectStream();
         setTransportState(document.hidden ? "Background" : "Reconnecting…", false);
         if (!document.hidden) {{
@@ -70277,6 +73038,76 @@ class Handler(BaseHTTPRequestHandler):
       return assessment;
     }}
 
+    function requestUsageLimitResetDecision(offer, options = {{}}) {{
+      return new Promise((resolve) => {{
+        const dialog = el.usageLimitResetDialog;
+        if (!dialog || typeof dialog.showModal !== "function") {{
+          resolve("cancel");
+          return;
+        }}
+        const available = Math.max(0, Number(offer?.available_count || 0));
+        el.usageLimitResetCount.textContent = `${{available}} reset${{available === 1 ? "" : "s"}} available`;
+        el.usageLimitResetHint.textContent = offer?.reset_hint
+          ? ` · normal reset ${{offer.reset_hint}}`
+          : "";
+        el.usageLimitResetFallback.hidden = options.allowFallback === false;
+        let settled = false;
+        const finish = (decision) => {{
+          if (settled) return;
+          settled = true;
+          el.usageLimitResetApprove.onclick = null;
+          el.usageLimitResetFallback.onclick = null;
+          el.usageLimitResetCancel.onclick = null;
+          el.usageLimitResetFallback.hidden = false;
+          dialog.oncancel = null;
+          if (dialog.open) dialog.close();
+          resolve(decision);
+        }};
+        el.usageLimitResetApprove.onclick = () => finish("approve");
+        el.usageLimitResetFallback.onclick = () => finish("fallback");
+        el.usageLimitResetCancel.onclick = () => finish("cancel");
+        dialog.oncancel = (event) => {{
+          event.preventDefault();
+          finish("cancel");
+        }};
+        dialog.showModal();
+        el.usageLimitResetApprove.focus();
+      }});
+    }}
+
+    async function handleUsageResetButton() {{
+      if (!el.usageResetButton || el.usageResetButton.disabled) return;
+      el.usageResetButton.disabled = true;
+      try {{
+        const offered = await postForm("/api/rate-limit-reset/offer", {{}});
+        const offer = offered?.usage_limit_reset_approval;
+        if (!offer?.token) throw new Error("No reset approval was returned.");
+        const decision = await requestUsageLimitResetDecision(
+          offer,
+          {{ allowFallback: false }}
+        );
+        if (decision !== "approve") {{
+          setOperatorReceipt("Reset kept. No routing change was made.", "info");
+          return;
+        }}
+        const result = await postForm("/api/rate-limit-reset/consume", {{
+          approval_token: offer.token,
+        }});
+        if (result.snapshot) render(result.snapshot);
+        setOperatorReceipt(result.detail || "One earned reset was applied.", "success");
+      }} catch (err) {{
+        setOperatorReceipt(
+          String(err?.responseData?.error || err?.responseData?.detail || err?.message || "The reset action failed."),
+          "warning"
+        );
+      }} finally {{
+        if (el.usageResetButton) {{
+          el.usageResetButton.disabled = el.usageResetButton.dataset.eligible !== "true";
+        }}
+        schedulePoll(800);
+      }}
+    }}
+
     async function submitAsk(event, options = {{}}) {{
       event.preventDefault();
       const requestedInterlaceMode = normalizeInterlaceMode(options.interlaceMode || "queue");
@@ -70398,10 +73229,13 @@ class Handler(BaseHTTPRequestHandler):
       persistPromptSubmission(message, {{
         state: "sending",
         submissionId,
-        submittedAt: priorReceipt?.submittedAt || Date.now(),
+        submittedAt: priorReceipt?.submissionId === submissionId
+          ? priorReceipt.submittedAt || Date.now()
+          : Date.now(),
       }});
       clearSubmittedComposer();
       render(state.snapshot);
+      const submissionFeedbackTimer = scheduleSubmissionFeedback(submissionId);
       try {{
         const result = await postForm("/api/ask", {{
           message,
@@ -70414,6 +73248,8 @@ class Handler(BaseHTTPRequestHandler):
           interlace_mode: requestedInterlaceMode,
           runtime,
           model,
+          usage_limit_reset_decision: options.usageLimitResetDecision || "",
+          usage_limit_reset_approval_token: options.usageLimitResetApprovalToken || "",
         }});
         if (result.accepted) {{
           const acceptedSubmissionId = String(result.submission_id || submissionId).trim();
@@ -70472,12 +73308,72 @@ class Handler(BaseHTTPRequestHandler):
           pulseComposerShell("soft");
         }}
       }} catch (err) {{
+        const httpStatus = Number(err?.httpStatus || 0);
+        if (httpStatus >= 400 && httpStatus < 500) {{
+          clearPromptSubmission();
+          const resetOffer = err?.responseData?.usage_limit_reset_approval;
+          if (resetOffer?.token) {{
+            restoreRejectedPrompt(draftValue);
+            setOperatorReceipt(
+              "ChatGPT capacity is exhausted. Waiting for your reset decision.",
+              "warning"
+            );
+            const decision = await requestUsageLimitResetDecision(resetOffer);
+            if (decision === "approve") {{
+              try {{
+                const resetResult = await postForm("/api/rate-limit-reset/consume", {{
+                  approval_token: resetOffer.token,
+                }});
+                if (resetResult.snapshot) render(resetResult.snapshot);
+                setOperatorReceipt(resetResult.detail || "Reset applied. Retrying…", "success");
+                window.setTimeout(() => submitAsk(
+                  {{ preventDefault() {{}} }},
+                  {{ safetyConfirmed: true }}
+                ), 0);
+              }} catch (resetError) {{
+                const resetText = String(
+                  resetError?.responseData?.detail
+                  || resetError?.responseData?.error
+                  || resetError?.message
+                  || "The reset could not be applied."
+                );
+                setOperatorReceipt(resetText, "warning");
+              }}
+            }} else if (decision === "fallback") {{
+              setOperatorReceipt("Keeping the reset. Continuing to the configured fallback…", "info");
+              window.setTimeout(() => submitAsk(
+                {{ preventDefault() {{}} }},
+                {{
+                  safetyConfirmed: true,
+                  usageLimitResetDecision: "fallback",
+                  usageLimitResetApprovalToken: resetOffer.token,
+                }}
+              ), 0);
+            }} else {{
+              setOperatorReceipt("Send cancelled. Your prompt and reset were kept.", "info");
+            }}
+            setBusyButtons(false);
+            return;
+          }}
+          const rejectedText = String(
+            err?.responseData?.error || err?.message || "The prompt was rejected."
+          );
+          restoreRejectedPrompt(draftValue);
+          setOperatorReceipt(rejectedText, "warning");
+          playInteractionTone("soft", {{ force: true }});
+          pulseComposerShell("soft");
+          setBusyButtons(false);
+          return;
+        }}
         persistPromptSubmission(message, {{
           state: "reconciling",
           submissionId,
-          submittedAt: priorReceipt?.submittedAt || Date.now(),
+          submittedAt: priorReceipt?.submissionId === submissionId
+          ? priorReceipt.submittedAt || Date.now()
+          : Date.now(),
         }});
-        const unknownText = "Submit outcome unknown. Checking whether the console accepted it; do not resend yet.";
+        restoreRejectedPrompt(draftValue);
+        const unknownText = "Delivery is unconfirmed. Your draft is saved. Check delivery retries the same submission safely.";
         setOperatorReceipt(unknownText, "warning", {{ timeoutMs: 15000 }});
         playInteractionTone("soft", {{ force: true }});
         pulseComposerShell("soft");
@@ -70488,6 +73384,7 @@ class Handler(BaseHTTPRequestHandler):
         }}, 650);
         setBusyButtons(false);
       }} finally {{
+        window.clearTimeout(submissionFeedbackTimer);
         state.promptSubmitInFlight = false;
         state.promptSubmitSignature = "";
         setBusyButtons(false);
@@ -71225,6 +74122,11 @@ class Handler(BaseHTTPRequestHandler):
 
     bindTactileControls();
     el.askForm.addEventListener("submit", submitAsk);
+    if (el.usageResetButton) {{
+      el.usageResetButton.addEventListener("click", () => {{
+        void handleUsageResetButton();
+      }});
+    }}
     if (el.interruptSubmitButton) {{
       el.interruptSubmitButton.addEventListener("click", (event) => {{
         event.preventDefault();
@@ -71797,10 +74699,13 @@ class Handler(BaseHTTPRequestHandler):
       if (event.key !== "Escape") {{
         return false;
       }}
+      const headerMenuWasOpen = document.body.classList.contains("topbar-menu-open");
       if (dismissTransientChrome()) {{
         event.preventDefault();
         event.stopPropagation();
-        focusPromptInputAtEnd();
+        if (!headerMenuWasOpen) {{
+          focusPromptInputAtEnd();
+        }}
         return true;
       }}
       const submission = loadPromptSubmission();
@@ -71988,17 +74893,28 @@ class Handler(BaseHTTPRequestHandler):
     el.interruptLatestButton.addEventListener("click", () => fireAction("/api/queue/interrupt-latest", "Upgrading latest queued prompt to interruption…"));
     el.interruptButton.addEventListener("click", () => fireAction("/api/interrupt", "Interrupting tmux session…"));
     el.restartButton.addEventListener("click", () => fireAction("/api/restart", "Restarting the interactive session…"));
+    let composerInputFrame = 0;
+    let composerInputDetailsTimer = 0;
     el.promptInput.addEventListener("input", () => {{
       playInteractionTone("type");
       clearInterruptSubmitConfirm();
-      autoresize(el.promptInput);
-      updateComposerToolbar(state.snapshot);
-      renderOperatorFocus(state.snapshot);
-      renderSuggestions(state.snapshot);
-      renderPromptSafetyRail();
-      renderPromptCostEstimate(state.snapshot);
       persistPromptDraft(el.promptInput.value);
-      scheduleComposerReserve();
+      if (!composerInputFrame) {{
+        composerInputFrame = window.requestAnimationFrame(() => {{
+          composerInputFrame = 0;
+          autoresize(el.promptInput);
+          updateComposerToolbar(state.snapshot);
+          renderPromptSafetyRail();
+          scheduleComposerReserve();
+        }});
+      }}
+      window.clearTimeout(composerInputDetailsTimer);
+      composerInputDetailsTimer = window.setTimeout(() => {{
+        composerInputDetailsTimer = 0;
+        renderOperatorFocus(state.snapshot);
+        renderSuggestions(state.snapshot);
+        renderPromptCostEstimate(state.snapshot);
+      }}, 120);
     }});
     el.tmuxInput.addEventListener("keydown", (event) => {{
       maybeKillInputLine(event);
