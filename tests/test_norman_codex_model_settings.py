@@ -6523,7 +6523,13 @@ def test_bbs_relay_prompt_starts_when_console_is_idle(monkeypatch, tmp_path) -> 
     ):
         return "Relay work completed.", "", "thread-relay", module.default_usage_entry()
 
-    monkeypatch.setattr(module.urllib_request, "urlopen", fake_urlopen)
+    # urllib.request is shared by every imported console module. A background
+    # recap from another test must not enter this relay's callback recorder.
+    monkeypatch.setattr(
+        module,
+        "urllib_request",
+        SimpleNamespace(Request=urllib.request.Request, urlopen=fake_urlopen),
+    )
     monkeypatch.setattr(module, "_execute_codex_prompt", fake_execute)
 
     accepted, snapshot = module.start_web_prompt(
@@ -6585,7 +6591,11 @@ def test_bbs_relay_prompt_queues_when_console_is_busy(monkeypatch, tmp_path) -> 
         requests.append((request, timeout))
         return FakeResponse()
 
-    monkeypatch.setattr(module.urllib_request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        module,
+        "urllib_request",
+        SimpleNamespace(Request=urllib.request.Request, urlopen=fake_urlopen),
+    )
     module.ensure_state_dir()
     module.update_status_meta(
         pending=True,
