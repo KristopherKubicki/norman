@@ -36749,14 +36749,23 @@ def _initial_conversation_html(
     return "".join(items)
 
 
+def safe_header_value(value: object) -> str:
+    """Strip HTTP line delimiters before handing metadata to the HTTP server."""
+    return str(value).replace("\r", "").replace("\n", "")
+
+
+def safe_header_name(value: str) -> str:
+    """Validate upstream header names before they reach a response sink."""
+    clean = safe_header_value(value)
+    if clean != value or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", clean):
+        raise ValueError("invalid HTTP response header name")
+    return clean
+
+
 class Handler(BaseHTTPRequestHandler):
     def send_header(self, keyword: str, value: str) -> None:
         """Keep untrusted metadata inside a single HTTP response header."""
-        if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", keyword):
-            raise ValueError("invalid HTTP response header name")
-        # Upstreams and filenames can contain line breaks; never emit a new header.
-        clean_value = str(value).replace("\r", "").replace("\n", "")
-        super().send_header(keyword, clean_value)
+        super().send_header(safe_header_name(keyword), safe_header_value(value))
 
     def render_browser_auth_callback_result(
         self,
@@ -36963,7 +36972,7 @@ class Handler(BaseHTTPRequestHandler):
         encoded = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Content-Length", safe_header_value(str(len(encoded))))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(encoded)
@@ -36972,7 +36981,7 @@ class Handler(BaseHTTPRequestHandler):
         encoded = favicon_svg_markup(AGENT_SLUG).encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "image/svg+xml")
-        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Content-Length", safe_header_value(str(len(encoded))))
         self.send_header("Cache-Control", "public, max-age=604800, immutable")
         self.end_headers()
         self.wfile.write(encoded)
@@ -36981,7 +36990,7 @@ class Handler(BaseHTTPRequestHandler):
         encoded = favicon_ico_bytes(AGENT_SLUG)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "image/x-icon")
-        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Content-Length", safe_header_value(str(len(encoded))))
         self.send_header("Cache-Control", "public, max-age=604800, immutable")
         self.end_headers()
         self.wfile.write(encoded)
@@ -37041,7 +37050,9 @@ class Handler(BaseHTTPRequestHandler):
         cookie[AUTH_COOKIE_NAME]["path"] = cookie_path_for_prefix(prefix)
         cookie[AUTH_COOKIE_NAME]["max-age"] = str(AUTH_COOKIE_MAX_AGE)
         cookie[AUTH_COOKIE_NAME]["samesite"] = "Lax"
-        self.send_header("Set-Cookie", cookie.output(header="").strip())
+        self.send_header(
+            "Set-Cookie", safe_header_value(cookie.output(header="").strip())
+        )
 
     def maybe_send_auth_cookie(self, params: dict[str, list[str]]) -> None:
         if self.should_persist_auth_cookie(params):
@@ -37112,7 +37123,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header(
             "Location",
-            self.canonical_request_url(parsed, params, include_token=include_token),
+            safe_header_value(
+                self.canonical_request_url(parsed, params, include_token=include_token)
+            ),
         )
         self.end_headers()
 
@@ -37121,7 +37134,9 @@ class Handler(BaseHTTPRequestHandler):
     ) -> None:
         self.send_response(HTTPStatus.SEE_OTHER)
         self.maybe_send_auth_cookie(params)
-        self.send_header("Location", self.clean_request_url(parsed, params))
+        self.send_header(
+            "Location", safe_header_value(self.clean_request_url(parsed, params))
+        )
         self.end_headers()
 
     def do_GET(self) -> None:
@@ -37146,7 +37161,7 @@ class Handler(BaseHTTPRequestHandler):
         if profile_alias_href:
             self.send_response(HTTPStatus.SEE_OTHER)
             self.maybe_send_auth_cookie(params)
-            self.send_header("Location", profile_alias_href)
+            self.send_header("Location", safe_header_value(profile_alias_href))
             self.end_headers()
             return
 
@@ -37415,7 +37430,7 @@ class Handler(BaseHTTPRequestHandler):
             if verification_url:
                 self.send_response(HTTPStatus.SEE_OTHER)
                 self.maybe_send_auth_cookie(params)
-                self.send_header("Location", verification_url)
+                self.send_header("Location", safe_header_value(verification_url))
                 self.end_headers()
                 return
             self.redirect_root(params)
@@ -38635,7 +38650,7 @@ class Handler(BaseHTTPRequestHandler):
         encoded = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Content-Length", safe_header_value(str(len(encoded))))
         query_params = parse_qs(urlparse(self.path).query)
         self.maybe_send_auth_cookie(query_params)
         try:
@@ -38756,7 +38771,7 @@ class Handler(BaseHTTPRequestHandler):
         encoded = body.encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Content-Length", safe_header_value(str(len(encoded))))
         self.send_header("Cache-Control", "no-store")
         self.maybe_send_auth_cookie(params)
         self.end_headers()
@@ -39015,7 +39030,7 @@ class Handler(BaseHTTPRequestHandler):
         encoded = body.encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Content-Length", safe_header_value(str(len(encoded))))
         self.send_header("Cache-Control", "no-store")
         self.maybe_send_auth_cookie(params)
         self.end_headers()
@@ -39042,7 +39057,9 @@ class Handler(BaseHTTPRequestHandler):
                     end = min(file_size - 1, int(raw_end)) if raw_end else file_size - 1
                 if start > end or start >= file_size:
                     self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
-                    self.send_header("Content-Range", f"bytes */{file_size}")
+                    self.send_header(
+                        "Content-Range", safe_header_value(f"bytes */{file_size}")
+                    )
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     return
@@ -39050,13 +39067,17 @@ class Handler(BaseHTTPRequestHandler):
         content_length = (end - start + 1) if file_size else 0
         with path.open("rb") as handle:
             self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(content_length))
+            self.send_header("Content-Type", safe_header_value(content_type))
+            self.send_header("Content-Length", safe_header_value(str(content_length)))
             self.send_header("Accept-Ranges", "bytes")
             if status == HTTPStatus.PARTIAL_CONTENT:
-                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                self.send_header(
+                    "Content-Range",
+                    safe_header_value(f"bytes {start}-{end}/{file_size}"),
+                )
             self.send_header(
-                "Content-Disposition", f'{disposition}; filename="{path.name}"'
+                "Content-Disposition",
+                safe_header_value(f'{disposition}; filename="{path.name}"'),
             )
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -39153,7 +39174,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         self.send_response(HTTPStatus.SEE_OTHER)
         self.maybe_send_auth_cookie(params)
-        self.send_header("Location", target)
+        self.send_header("Location", safe_header_value(target))
         self.end_headers()
 
     def render_index(self, params: dict[str, list[str]]) -> None:
@@ -75318,7 +75339,7 @@ body[data-agent-slug] :is(button, a, textarea):focus-visible {{ outline: 2px sol
         encoded = body.encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Content-Length", safe_header_value(str(len(encoded))))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
@@ -75474,7 +75495,7 @@ body[data-agent-slug] :is(button, a, textarea):focus-visible {{ outline: 2px sol
         encoded = body.encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Content-Length", safe_header_value(str(len(encoded))))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")

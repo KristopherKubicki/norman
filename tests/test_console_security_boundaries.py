@@ -81,6 +81,7 @@ def test_capture_url_is_a_single_positional_argument(console, tmp_path):
     calls = []
 
     def run(cmd, **kwargs):
+        assert kwargs.get("shell", False) is False
         calls.append(cmd)
         output = next(
             arg.split("=", 1)[1] for arg in cmd if arg.startswith("--screenshot=")
@@ -116,7 +117,9 @@ def test_capture_url_is_a_single_positional_argument(console, tmp_path):
 @pytest.mark.parametrize("path", (*CONSOLES, GATEWAY))
 def test_response_headers_cannot_split_the_response(path):
     module = load_definitions(
-        path, ["Handler"], {"BaseHTTPRequestHandler": BaseHTTPRequestHandler, "re": re}
+        path,
+        ["Handler", "safe_header_value", "safe_header_name"],
+        {"BaseHTTPRequestHandler": BaseHTTPRequestHandler, "re": re},
     )
     handler = object.__new__(module.Handler)
     handler.request_version = "HTTP/1.1"
