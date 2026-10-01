@@ -112,5 +112,6 @@ def test_attachment_storage_uses_unique_files_and_preserves_display_names(
     paths = [Path(entry["path"]) for entry in (first, second)]
     assert paths[0] != paths[1]
     assert all(path.parent == root for path in paths)
+    assert all(path.suffix == ".txt" for path in paths)
     assert [path.read_bytes() for path in paths] == [b"first", b"second"]
     assert not (tmp_path / "outside.txt").exists()

@@ -17614,15 +17614,16 @@ def create_draft_attachment(
         kind, content_type=content_type, name=name
     )
     token = next_attachment_token(existing, normalized_kind)
-    suffix = Path(name).suffix.lower()
+    requested_suffix = Path(name).suffix.lower()
+    # Use a trusted extension while preserving preview types for unknown names.
+    suffix = next(
+        (known for known in mimetypes.types_map if known == requested_suffix), ""
+    )
     if not suffix:
-        guessed = mimetypes.guess_extension(
+        suffix = mimetypes.guess_extension(
             str(content_type or "").split(";", 1)[0].strip().lower()
-        )
-        suffix = guessed or (".txt" if normalized_kind == "text" else "")
-    # Pick a trusted extension and let the OS create a unique file atomically.
-    # The original display name remains in metadata, never in the storage path.
-    suffix = next((known for known in mimetypes.types_map if known == suffix), "")
+        ) or (".txt" if normalized_kind == "text" else "")
+    # Original display names remain in metadata, never in the storage path.
     with tempfile.NamedTemporaryFile(
         mode="wb",
         prefix="attachment-",
