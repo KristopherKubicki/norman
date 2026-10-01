@@ -44,6 +44,18 @@ Current hardware roles:
   `llm.[INTERNAL_DOMAIN]`; direct worker addresses are backend/diagnostic
   addresses, not the normal client contract.
 
+## Local Coding Capacity
+
+The local coding lane remains available for detached local-model and
+operations work. It is not a `codex-work` route: Control Plane and other
+routed Codex sessions use GPT-5.6 Terra through the Norman bridge.
+
+Use `/v1/norman/capacity?model=norman-code` only to diagnose the legacy local
+coding alias and worker mesh. It probes mesh metadata without warming a model.
+Do not use its result to approve, block, or fail over a Terra Codex session.
+For routed Codex, use `codex --verify` to validate the authenticated Terra
+gateway route.
+
 ## Norman Front Door
 
 The live front door is rendered by:
@@ -226,8 +238,11 @@ python3 scripts/render_mac_mini_llm_launchd.py \
 ```
 
 The gateway source deployed at `/Users/k/norllama/norllama_gateway.py` is
-repo-owned at `scripts/norllama/norllama_gateway.py`. Use the deploy helper to
-copy that exact source and restart the front-door service:
+repo-owned at `scripts/norllama/norllama_gateway.py`. Its route-policy runtime
+is deployed from `app/services/norllama/route_policy.py` and
+`app/services/norllama/route_policy_artifact.py` as the same bundle. Use the
+deploy helper to stage, compile, validate, publish, and restart the front-door
+service:
 
 ```bash
 scripts/norllama/deploy_gateway.sh --mac-only
@@ -239,9 +254,30 @@ When the Spark peer services should receive the same gateway code, use:
 scripts/norllama/deploy_gateway.sh --all
 ```
 
-The Spark restart path uses `sudo -n systemctl restart norllama-gateway.service`;
-if passwordless sudo is not configured, copy/compile still works but the worker
-restart must be brokered by the operator.
+The helper validates the staged policy with the staged runtime before it writes
+to a worker. It also waits for `/healthz`, `/readyz`, and `/v1/models` after
+each restart. The Spark restart path uses `sudo -n systemctl restart
+norllama-gateway.service`; if passwordless sudo is not configured, the bundle
+is not treated as deployed until an operator-approved restart completes.
+
+### Route Policy Refresh
+
+Each Norllama worker reads its own `route_policy.json`, but refresh policy from
+the controller rather than independent worker crontabs. The fleet command
+generates one policy, validates it with each worker runtime, promotes it without
+restarting either gateway or ASR, and restores already-promoted workers if a
+later promotion fails:
+
+```bash
+python3 scripts/norllama/refresh_fleet_route_policy.py --apply
+```
+
+Install `norllama-fleet-policy-refresh.timer` on the controller. It refreshes
+every six hours, well before the seven-day policy expiry. Pair it with
+`norllama-fleet-health.timer` and `norllama-fleet-alerts.path`; the health
+report checks all gateway readiness endpoints, route-policy eligibility,
+service restart counts, and memory pressure for the Mac mini plus both Spark
+workers.
 
 That keeps the fast path native on macOS while still giving you a small,
 controllable service boundary. If stricter control is needed later, use this

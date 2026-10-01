@@ -1,0 +1,12 @@
+[Unit]
+Description=Sample Norman local host pressure every 15 seconds
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15s
+AccuracySec=1s
+Persistent=true
+Unit=norman-tui-local-host-pressure-guard.service
+
+[Install]
+WantedBy=timers.target

@@ -253,7 +253,7 @@ async def create_routing_rule(
 ) -> RoutingRuleOut:
     app_settings = get_settings()
     if getattr(app_settings, "safety_shadow_rules_default", False):
-        rule = rule.copy(update={"is_active": False})
+        rule = rule.model_copy(update={"is_active": False})
 
     if (
         rule.connector_id
@@ -402,7 +402,7 @@ async def get_routing_event_trace(
     latest_job = routing_crud.get_latest_job_for_event(db, event.id)
     decision = "matched_rule" if rule else ("fallback_bot" if bot else "no_bot")
     return RoutingTraceOut(
-        event=RoutingEventOut.from_orm(event),
+        event=RoutingEventOut.model_validate(event),
         source_connector=_connector_trace(
             source_connector,
             connector_id=event.connector_id,

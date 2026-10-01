@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -98,7 +98,7 @@ async def test_process_routing_job_raises_on_delivery_failure(db, monkeypatch):
         status="pending",
         attempts=0,
         max_attempts=3,
-        next_attempt_at=datetime.utcnow(),
+        next_attempt_at=datetime.now(UTC),
         payload={"text": "hello"},
         normalized={"text": "hello"},
     )
@@ -188,7 +188,7 @@ async def test_circuit_breaker_opens_after_failures(db, monkeypatch):
             status="pending",
             attempts=0,
             max_attempts=3,
-            next_attempt_at=datetime.utcnow(),
+            next_attempt_at=datetime.now(UTC),
             payload={"text": "hello"},
             normalized={"text": "hello"},
         )

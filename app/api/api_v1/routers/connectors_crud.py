@@ -94,8 +94,7 @@ def _find_connector_reference(
         raise HTTPException(
             status_code=400,
             detail=(
-                f'{label} connector "{connector_name}"'
-                f" ({connector_type}) was not found"
+                f'{label} connector "{connector_name}" ({connector_type}) was not found'
             ),
         )
     matches = connectors_by_name.get(normalized_name, [])

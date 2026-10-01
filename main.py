@@ -7,6 +7,8 @@ import atexit
 import faulthandler
 import subprocess
 import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
@@ -39,6 +41,7 @@ from app.services.console_audit_monitor import console_audit_monitor
 from app.services.console_runtime.supervisor import console_runtime_worker_service
 from app.services.fleet_credit_monitor import fleet_credit_monitor
 from app.services.estate_sync import sync_registry
+from app.services.kaizen.supervisor import kaizen_broker_service
 from app.services.passive_udp_listeners import passive_udp_listeners
 from app.services.tmux_reconciler import reconcile_tmux_connectors_for_startup
 from app.core.logging import setup_logger
@@ -49,12 +52,15 @@ def run_alembic_migrations():
         os.makedirs("alembic/versions", exist_ok=True)
     logger.info("Alembic: upgrade heads start")
     try:
+        migration_env = dict(os.environ)
+        migration_env["NORMAN_ALEMBIC_DATABASE_URL"] = settings.database_url
         # Run alembic in a subprocess to avoid abrupt exits in the main process.
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "heads"],
             check=True,
             capture_output=True,
             text=True,
+            env=migration_env,
         )
         if result.stdout:
             logger.info("Alembic stdout: %s", result.stdout.strip())
@@ -66,9 +72,20 @@ def run_alembic_migrations():
     logger.info("Alembic: upgrade heads done")
 
 
-app = FastAPI()
 logger = setup_logger(__name__)
 faulthandler.enable()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await startup_event()
+    try:
+        yield
+    finally:
+        await shutdown_event()
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def _handle_signal(signum, _frame):
@@ -127,7 +144,6 @@ async def cache_control_middleware(request: Request, call_next):
 
 
 # Create the initial user
-@app.on_event("startup")
 async def startup_event():
     logger.info("Startup: begin")
     try:
@@ -189,6 +205,10 @@ async def startup_event():
             logger.info("Startup: starting console runtime worker")
             await console_runtime_worker_service.start()
             app.state.console_runtime_worker_enabled = True
+        if not os.environ.get("SKIP_KAIZEN_BROKER") and settings.kaizen_enabled:
+            logger.info("Startup: starting Kaizen broker scheduler")
+            await kaizen_broker_service.start()
+            app.state.kaizen_broker_enabled = True
         try:
             await passive_udp_listeners.start()
             app.state.passive_udp_listeners_enabled = True
@@ -205,7 +225,6 @@ async def startup_event():
         raise
 
 
-@app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Shutdown: begin")
     stop_event = getattr(app.state, "routing_stop_event", None)
@@ -222,6 +241,8 @@ async def shutdown_event():
         await console_audit_monitor.stop()
     if getattr(app.state, "console_runtime_worker_enabled", False):
         await console_runtime_worker_service.stop()
+    if getattr(app.state, "kaizen_broker_enabled", False):
+        await kaizen_broker_service.stop()
     if getattr(app.state, "passive_udp_listeners_enabled", False):
         await passive_udp_listeners.stop()
     logger.info("Shutdown: complete")
@@ -237,10 +258,10 @@ init_connectors(app, settings)
 init_routers(app)
 add_exception_handlers(app)
 
-current_dir = os.path.dirname(os.path.realpath(__file__))
+static_directory = Path(__file__).resolve().parent / "app" / "static"
 app.mount(
     "/static",
-    StaticFiles(directory=os.path.join(current_dir, "app/static")),
+    StaticFiles(directory=static_directory),
     name="static",
 )
 

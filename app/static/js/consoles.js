@@ -422,6 +422,14 @@
     const offlineTokens = Number(ledger.offline_tokens || 0);
     const cloudTokens = Number(ledger.cloud_tokens || 0);
     const cloudLlmTokens = Number(ledger.cloud_llm_tokens || 0);
+    const latestModel = summary.model && typeof summary.model === 'object' ? summary.model.latest || {} : {};
+    const latestRoute = route.latest && typeof route.latest === 'object' ? route.latest : {};
+    const expectedP95 = Number(
+      latestModel.expected_p95_latency_ms || latestRoute.expected_p95_latency_ms || 0,
+    );
+    const capacityState = String(
+      latestModel.capacity_state || latestRoute.capacity_state || '',
+    ).trim();
     if (routeTotal > 0) parts.push(`routes ${routeLocal}/${routeTotal} local`);
     if (Number.isFinite(localPercent) && localPercent > 0) parts.push(`local ${Math.round(localPercent)}%`);
     if (sparkEvidence > 0) parts.push(`spark ${sparkEvidence}`);
@@ -431,6 +439,8 @@
       if (cloudLlmTokens > 0) parts.push(`cloud llm ${cloudLlmTokens}`);
       else if (cloudTokens > 0) parts.push(`cloud tok ${cloudTokens}`);
     }
+    if (expectedP95 > 0) parts.push(`p95 ${Math.round(expectedP95)}ms`);
+    if (capacityState && capacityState !== 'available') parts.push(`capacity ${capacityState}`);
     if (kpi.status) parts.push(`kpi ${kpi.status}`);
     const workerLine = Object.entries(byWorker)
       .filter(([workerId, count]) => workerId && Number(count || 0) > 0)

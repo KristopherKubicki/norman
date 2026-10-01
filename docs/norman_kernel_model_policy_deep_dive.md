@@ -111,12 +111,12 @@ Recommended order:
 | Mode | Cloud LLM | Web | LAN Norllama | Shell | Codex | Expected behavior |
 | --- | --- | --- | --- | --- | --- | --- |
 | `primary_online` | allowed | allowed | allowed | policy-gated | allowed | normal hybrid routing |
-| `local_first_online` | allowed with receipt | allowed | preferred | policy-gated | allowed | local scout/filter first, minimal cloud |
-| `cloud_llm_offline` | blocked | allowed | preferred | policy-gated | blocked unless local-only adapter | web and local can work; no cloud models |
-| `codex_quarantine` | policy-dependent | allowed | preferred | policy-gated | blocked | use shell/Norllama/cloud adapters without Codex CLI |
+| `local_first_online` | allowed with receipt | allowed | preferred | policy-gated | allowed | local-first hybrid |
+| `cloud_llm_offline` | blocked | allowed | preferred | policy-gated | blocked except local adapter | web/local only |
+| `codex_quarantine` | policy-dependent | allowed | preferred | policy-gated | blocked | no Codex CLI |
 | `lan_only` | blocked | blocked except LAN | allowed | policy-gated | blocked if cloud-backed | local/LAN only |
 | `airgap_local` | blocked | blocked | local only | policy-gated | blocked | local/offline work only |
-| `control_only` | blocked | optional read-only | optional health only | disabled | blocked | queue, checkpoint, display, recover |
+| `control_only` | blocked | optional read-only | optional health only | disabled | blocked | control-plane only |
 
 ## Egress Classes
 
@@ -305,6 +305,19 @@ Important boundary:
 
 Norllama cloud proxy is not a way to hide cloud usage. It is a way to make cloud
 usage uniform, receipted, and policy controlled.
+
+### Native Bedrock Credentials
+
+Native Bedrock Converse routes may set an explicit
+`aws_credentials_secret` (or `aws_credentials_secret_name`) in route policy.
+The runtime resolves that logical alias through Norman Keys HTTP
+(`NORMAN_KEYS_URL`) or the approved broker command (`NORMAN_SECRET_CMD`), then
+uses the leased JSON credential bundle only to create the AWS session.
+
+There is no default alias and no repo-local plaintext credential fallback. A
+route without an explicit brokered alias retains named AWS-profile resolution.
+Receipts may record the logical alias, broker source, and lease metadata, but
+never access keys, secret keys, session tokens, or the broker payload.
 
 ## Implementation Slices
 

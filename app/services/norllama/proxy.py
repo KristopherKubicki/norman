@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-import os
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+from app.services.norllama.bedrock import (
+    bedrock_profile,
+    bedrock_region,
+    invoke_bedrock_converse,
+    normalize_bedrock_converse_response,
+    resolve_bedrock_credentials,
+)
 from app.services.norllama import gateway as norllama_gateway
 from app.services.norllama.routing import (
     TOOL_TASK_KINDS,
@@ -20,12 +26,6 @@ from app.services.norllama.types import (
     NorllamaTaskKind,
     NorllamaTaskRequest,
 )
-
-try:
-    import boto3  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    boto3 = None  # type: ignore
-
 
 ToolHandler = Callable[[NorllamaTaskRequest, NorllamaRoute], dict[str, Any]]
 CloudHandler = Callable[[NorllamaTaskRequest, NorllamaRoute], dict[str, Any]]
@@ -197,44 +197,32 @@ def _default_tool_handlers() -> dict[str, ToolHandler]:
 def _bedrock_converse(
     request: NorllamaTaskRequest, route: NorllamaRoute
 ) -> dict[str, Any]:
-    if boto3 is None:
-        raise RuntimeError("boto3 is not installed; Bedrock proxy is unavailable")
     model = _clean(route.model)
     if not model:
         raise RuntimeError("Bedrock proxy route is missing a model")
-    region = (
-        _clean(request.route_policy.get("region"))
-        or os.getenv("AWS_REGION")
-        or os.getenv("AWS_DEFAULT_REGION")
+    credentials = resolve_bedrock_credentials(
+        request.route_policy,
+        timeout_seconds=request.route_policy.get("timeout_seconds") or 0,
+        session_id=request.task_id,
+        lane=route.lane,
     )
-    kwargs = {"region_name": region} if region else {}
-    client = boto3.client("bedrock-runtime", **kwargs)
-    messages = [
-        {
-            "role": "user" if message.get("role") != "assistant" else "assistant",
-            "content": [{"text": _clean(message.get("content"))}],
-        }
-        for message in _request_messages(request)
-        if _clean(message.get("content"))
-    ]
-    response = client.converse(
-        modelId=model,
-        messages=messages,
-        inferenceConfig={
-            "maxTokens": int(request.route_policy.get("max_tokens") or 1024),
-            "temperature": float(request.route_policy.get("temperature") or 0),
-        },
-    )
-    content = response.get("output", {}).get("message", {}).get("content", [])
-    text = "\n".join(
-        _clean(part.get("text"))
-        for part in content
-        if isinstance(part, dict) and _clean(part.get("text"))
+    response = invoke_bedrock_converse(
+        model=model,
+        messages=_request_messages(request),
+        max_tokens=int(request.route_policy.get("max_tokens") or 1024),
+        temperature=request.route_policy.get("temperature", 0),
+        region=bedrock_region(request.route_policy),
+        profile=bedrock_profile(request.route_policy),
+        credentials=credentials,
+        timeout_seconds=request.route_policy.get("timeout_seconds") or 0,
     )
     return {
         "provider": "bedrock",
         "model": model,
-        "text": text,
+        **normalize_bedrock_converse_response(response),
+        "cloud_credentials": (
+            credentials.receipt_metadata() if credentials is not None else {}
+        ),
         "raw": response,
     }
 

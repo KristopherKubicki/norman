@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh active Norman production route policy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+ExecStart=/usr/local/libexec/norman-refresh-active-route-policy
+NoNewPrivileges=true
+PrivateTmp=true

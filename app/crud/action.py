@@ -60,7 +60,7 @@ def create(db: Session, obj_in: ActionCreate) -> ActionModel:
 def update(db: Session, db_obj: ActionModel, obj_in: ActionUpdate) -> ActionModel:
     """Update an existing action."""
 
-    update_data = obj_in.dict(exclude_unset=True)
+    update_data = obj_in.model_dump(exclude_unset=True)
     if "reply_channel_id" in update_data:
         db_obj.reply_to = update_data.pop("reply_channel_id")
     for field, value in update_data.items():

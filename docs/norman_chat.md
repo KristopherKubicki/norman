@@ -1,5 +1,10 @@
 # Norman Chat
 
+> **Status:** Product direction, not a current implementation guide. For
+> deployed runtime behavior and operator controls, see
+> [Architecture](architecture.md) and the
+> [Norman Kernel Program](norman_kernel_program.md).
+
 `Norman Chat` is the product expression of the original Norman goal:
 
 one screen where Operator can keep up with people, obligations, and

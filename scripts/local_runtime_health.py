@@ -18,9 +18,12 @@ SCHEMA = "norman.local-runtime-health.v1"
 DEFAULT_OUTPUT_JSON = Path("tmp/local_runtime_health.json")
 DEFAULT_OUTPUT_MD = Path("tmp/local_runtime_health.md")
 DEFAULT_OLLAMA_SENSE_JSON = Path("tmp/ollama_sense_live.json")
+DEFAULT_VLLM_SENSE_JSON = Path("tmp/vllm_sense_live.json")
 DEFAULT_OLLAMA_ENDPOINT = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-DEFAULT_VLLM_ENDPOINT = os.environ.get(
-    "NORMAN_SPARK_VLLM_BASE_URL", "http://127.0.0.1:8000"
+DEFAULT_VLLM_ENDPOINT = (
+    os.environ.get("NORMAN_SPARK_VLLM_BASE_URL", "").strip()
+    or os.environ.get("NORMAN_LOCAL_LLM_FRONTDOOR", "").strip()
+    or "https://llm.home.arpa"
 )
 
 
@@ -55,7 +58,7 @@ def load_optional_json(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _best_usable_ollama_endpoint(report: dict[str, Any]) -> dict[str, Any]:
+def _best_usable_sensed_endpoint(report: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(report, dict):
         return {}
     best_endpoint = str(report.get("summary", {}).get("best_endpoint") or "").strip()
@@ -86,7 +89,7 @@ def _apply_ollama_sense_fallback(
     if row.get("routeable"):
         row["health_source"] = "direct_probe"
         return row
-    endpoint = _best_usable_ollama_endpoint(sense_report)
+    endpoint = _best_usable_sensed_endpoint(sense_report)
     if not endpoint:
         row["health_source"] = "direct_probe"
         return row
@@ -101,6 +104,31 @@ def _apply_ollama_sense_fallback(
         "model_count": len(models),
         "reason": "",
         "health_source": "ollama_sense_fallback",
+        "source_schema": str(sense_report.get("schema") or ""),
+        "endpoint_scope": str(endpoint.get("scope") or ""),
+        "latency_ms": int(endpoint.get("latency_ms") or 0),
+        "model_names": models,
+    }
+
+
+def _vllm_sense_runtime_row(sense_report: dict[str, Any]) -> dict[str, Any]:
+    endpoint = _best_usable_sensed_endpoint(sense_report)
+    if not endpoint:
+        return {}
+    endpoint_url = str(endpoint.get("endpoint") or "").strip().rstrip("/")
+    models = [str(model) for model in endpoint.get("models") or [] if str(model)]
+    return {
+        "runtime_class": "spark_vllm",
+        "provider": "vllm",
+        "endpoint": endpoint_url,
+        "models_url": f"{endpoint_url}/v1/models",
+        "command": "vllm",
+        "command_path": shutil.which("vllm") or "",
+        "status": "healthy",
+        "routeable": True,
+        "model_count": len(models),
+        "reason": "",
+        "health_source": "vllm_sense",
         "source_schema": str(sense_report.get("schema") or ""),
         "endpoint_scope": str(endpoint.get("scope") or ""),
         "latency_ms": int(endpoint.get("latency_ms") or 0),
@@ -146,9 +174,19 @@ def build_report(
     ollama_endpoint: str = DEFAULT_OLLAMA_ENDPOINT,
     vllm_endpoint: str = DEFAULT_VLLM_ENDPOINT,
     ollama_sense_report: dict[str, Any] | None = None,
+    vllm_sense_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ollama = ollama_endpoint.rstrip("/")
     vllm = vllm_endpoint.rstrip("/")
+    vllm_row = _vllm_sense_runtime_row(vllm_sense_report or {})
+    if not vllm_row:
+        vllm_row = _runtime_row(
+            runtime_class="spark_vllm",
+            provider="vllm",
+            endpoint=vllm,
+            command="vllm",
+            models_url=f"{vllm}/v1/models",
+        )
     runtimes = [
         _apply_ollama_sense_fallback(
             _runtime_row(
@@ -160,13 +198,7 @@ def build_report(
             ),
             ollama_sense_report or {},
         ),
-        _runtime_row(
-            runtime_class="spark_vllm",
-            provider="vllm",
-            endpoint=vllm,
-            command="vllm",
-            models_url=f"{vllm}/v1/models",
-        ),
+        vllm_row,
     ]
     return {
         "schema": SCHEMA,
@@ -221,6 +253,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--ollama-sense-json", type=Path, default=DEFAULT_OLLAMA_SENSE_JSON
     )
+    parser.add_argument("--vllm-sense-json", type=Path, default=DEFAULT_VLLM_SENSE_JSON)
     parser.add_argument("--output-json", type=Path, default=DEFAULT_OUTPUT_JSON)
     parser.add_argument("--output-md", type=Path, default=DEFAULT_OUTPUT_MD)
     return parser.parse_args(argv)
@@ -232,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
         ollama_endpoint=args.ollama_endpoint,
         vllm_endpoint=args.vllm_endpoint,
         ollama_sense_report=load_optional_json(args.ollama_sense_json),
+        vllm_sense_report=load_optional_json(args.vllm_sense_json),
     )
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(

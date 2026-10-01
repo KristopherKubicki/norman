@@ -1,5 +1,5 @@
 from typing import List, Optional, Tuple
-from datetime import datetime
+from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from app.models.routing import RoutingRule, RoutingEvent, RoutingJob
@@ -17,7 +17,7 @@ def get_rules_by_user(db: Session, user_id: int) -> List[RoutingRule]:
 def create_rule(
     db: Session, *, user_id: int, rule_in: RoutingRuleCreate
 ) -> RoutingRule:
-    rule = RoutingRule(user_id=user_id, **rule_in.dict())
+    rule = RoutingRule(user_id=user_id, **rule_in.model_dump())
     db.add(rule)
     db.commit()
     db.refresh(rule)
@@ -27,7 +27,7 @@ def create_rule(
 def update_rule(
     db: Session, *, rule: RoutingRule, rule_in: RoutingRuleUpdate
 ) -> RoutingRule:
-    for field, value in rule_in.dict(exclude_unset=True).items():
+    for field, value in rule_in.model_dump(exclude_unset=True).items():
         setattr(rule, field, value)
     db.commit()
     db.refresh(rule)
@@ -141,7 +141,7 @@ def retry_job(
     if was_dead:
         job.attempts = 0
     job.last_error = None
-    job.next_attempt_at = datetime.utcnow()
+    job.next_attempt_at = datetime.now(UTC)
     db.add(job)
     if event:
         event.status = "queued"
@@ -160,7 +160,7 @@ def get_due_jobs(db: Session, *, limit: int = 10) -> List[RoutingJob]:
     return (
         db.query(RoutingJob)
         .filter(RoutingJob.status == "pending")
-        .filter(RoutingJob.next_attempt_at <= datetime.utcnow())
+        .filter(RoutingJob.next_attempt_at <= datetime.now(UTC))
         .order_by(RoutingJob.next_attempt_at.asc(), RoutingJob.id.asc())
         .limit(limit)
         .all()

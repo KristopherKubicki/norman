@@ -1,0 +1,13 @@
+[Unit]
+Description=Verify Norman front-door TLS certificates
+Wants=network-online.target caddy.service switchboard-bbs.service norman-frontdoor-dns-reconcile.service
+After=network-online.target caddy.service switchboard-bbs.service norman-frontdoor-dns-reconcile.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+StateDirectory=norman
+WorkingDirectory=/home/kristopher/code/norman
+ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/norman_frontdoor_tls_guard.py --post-alerts --output /var/lib/norman/frontdoor-tls-health.json --alert-state /var/lib/norman/frontdoor-tls-alerts-state.json

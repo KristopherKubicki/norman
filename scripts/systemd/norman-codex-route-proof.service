@@ -1,0 +1,14 @@
+[Unit]
+Description=Verify brokered Codex CLI routes to TUI gateways
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+WorkingDirectory=/home/kristopher/code/norman
+EnvironmentFile=-/etc/norman/codex-route-proof.env
+ExecStartPre=/usr/bin/mkdir -p /home/kristopher/.local/state/norman
+ExecStart=/home/kristopher/code/norman/.venv/bin/python /home/kristopher/code/norman/scripts/codex_route_proof.py --parallelism 1 --attempts 2 --output-json /home/kristopher/.local/state/norman/codex-route-proof.json
+TimeoutStartSec=5min

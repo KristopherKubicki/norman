@@ -11,6 +11,7 @@ from app.services.reasoning_orchestrator import (
     kpi_background_loop_plan,
     plan_reasoning_turn,
 )
+from app.services.work_classification import classify_work
 from app.services import tui_route_intent
 
 PROMPT_LOAD_BALANCER_SCHEMA = "norman.prompt-load-balancer.v1"
@@ -448,6 +449,20 @@ def _messages_prompt(messages: Any) -> str:
     return "\n".join(lines).strip()
 
 
+def _latest_user_turn_prompt(messages: Any) -> str:
+    """Return the current user task without treating context as an instruction."""
+
+    for message in reversed(_list(messages)):
+        if not isinstance(message, Mapping):
+            continue
+        if _lower(message.get("role")) != "user":
+            continue
+        content = _content_text(message.get("content"))
+        if content:
+            return content
+    return ""
+
+
 def _responses_input_prompt(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
@@ -861,15 +876,6 @@ def balance_prompt(
                 *stateful_control["blockers"],
             ]
     reasoning = _reasoning_profile(classification, prompt=clean_prompt)
-    orchestration_plan = plan_reasoning_turn(
-        prompt=clean_prompt,
-        classification=classification,
-        context=context,
-        artifacts=[dict(item) for item in artifacts or [] if isinstance(item, Mapping)],
-        source=source,
-        session=session,
-    )
-    reasoning_receipt = build_reasoning_receipt(orchestration_plan)
     strategy = _strategy_for_prompt(
         classification,
         reasoning,
@@ -918,6 +924,33 @@ def balance_prompt(
             "context": dict(context or {}),
         },
     )
+    context_payload = _dict(context)
+    active_work = bool(
+        context_payload.get("active_job_count")
+        or context_payload.get("active_job_id")
+        or context_payload.get("pending_action_kind")
+    )
+    work_classification = classify_work(
+        prompt_classification=classification,
+        attachment_count=len(artifacts or []),
+        active_work=active_work,
+        route_locked=_flag(policy.get("route_lock")),
+        force_requested_runtime=force_requested_runtime,
+        requested_runtime=requested_runtime,
+        effective_runtime=route.provider,
+        selected_provider=route.provider,
+        task_kind=task_kind,
+    )
+    orchestration_plan = plan_reasoning_turn(
+        prompt=clean_prompt,
+        classification=classification,
+        context=context,
+        artifacts=[dict(item) for item in artifacts or [] if isinstance(item, Mapping)],
+        source=source,
+        session=session,
+        work_classification=work_classification,
+    )
+    reasoning_receipt = build_reasoning_receipt(orchestration_plan)
     receipt = build_task_receipt(
         task_request,
         route,
@@ -956,6 +989,7 @@ def balance_prompt(
         "source": source,
         "session": session,
         "classification": classification,
+        "work_classification": work_classification,
         "stateful_control": stateful_control,
         "reasoning_profile": reasoning,
         "reasoning_orchestration": orchestration_plan,
@@ -992,6 +1026,7 @@ def balance_prompt(
             "selected_model": route.model,
             "selected_lane": route.lane,
             "task_kind": task_kind,
+            "work_classification": work_classification,
             "reasoning_tier": reasoning["tier"],
             "routing_strategy": strategy["strategy"],
             "primary_executor": strategy["primary_executor"],
@@ -1035,6 +1070,7 @@ def balance_prompt(
             "execution_performed": False,
             "norllama_route_receipt": receipt.get("route_receipt", {}),
             "reasoning_receipt": reasoning_receipt,
+            "work_classification": work_classification,
         },
     }
 
@@ -1044,6 +1080,7 @@ def provider_adapter_decision(
     provider: str,
     endpoint: str,
     payload: Mapping[str, Any],
+    trusted_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider_payload = dict(payload)
     options = _provider_options(provider_payload)
@@ -1054,18 +1091,23 @@ def provider_adapter_decision(
     )
     mode_policy = _ADAPTER_MODES[adapter_mode]
     prompt = ""
+    request_messages: Any = None
     if endpoint == "openai.chat.completions":
-        prompt = _messages_prompt(provider_payload.get("messages"))
+        request_messages = provider_payload.get("messages")
+        prompt = _messages_prompt(request_messages)
     elif endpoint == "openai.responses":
-        prompt = _responses_input_prompt(provider_payload.get("input"))
+        request_messages = provider_payload.get("input")
+        prompt = _responses_input_prompt(request_messages)
     else:
-        prompt = _responses_input_prompt(
+        request_messages = (
             provider_payload.get("input")
             or provider_payload.get("prompt")
             or provider_payload.get("messages")
         )
+        prompt = _responses_input_prompt(request_messages)
     if not prompt:
         raise ValueError("provider request does not contain prompt text")
+    policy_prompt = _latest_user_turn_prompt(request_messages) or prompt
 
     force_requested_runtime = _flag(options.get("force_requested_runtime"), False)
     requested_runtime = _clean(options.get("requested_runtime")) or _provider_runtime(
@@ -1075,6 +1117,18 @@ def provider_adapter_decision(
         provider_payload.get("model")
     )
     caller_route_policy = _dict(options.get("route_policy"))
+    trusted_gateway_context = _dict(trusted_context)
+    gateway_route = _clean(trusted_gateway_context.get("gateway_route")).lower()
+    source_tui = _clean(trusted_gateway_context.get("source_tui")) or gateway_route
+    policy_scope = _clean(trusted_gateway_context.get("policy_scope"))
+    if gateway_route:
+        trusted_gateway_context = {
+            "gateway_route": gateway_route,
+            "source_tui": source_tui,
+            "policy_scope": policy_scope or f"tui:{gateway_route}",
+        }
+    else:
+        trusted_gateway_context = {}
     route_policy: dict[str, Any] = {}
     route_policy["provider_adapter"] = True
     route_policy["provider_adapter_provider"] = provider
@@ -1085,11 +1139,15 @@ def provider_adapter_decision(
     route_policy["caller_route_policy_trusted"] = False
     route_policy["intermediary_mode"] = adapter_mode
     route_policy["intermediary_enforcement_level"] = mode_policy["enforcement_level"]
+    if trusted_gateway_context:
+        route_policy["gateway_route"] = trusted_gateway_context["gateway_route"]
+        route_policy["source_tui"] = trusted_gateway_context["source_tui"]
+        route_policy["policy_scope"] = trusted_gateway_context["policy_scope"]
     allow_cloud = _flag(options.get("allow_cloud_escalation"), True)
     if adapter_mode == "strict_local":
         allow_cloud = False
     decision = balance_prompt(
-        prompt=prompt,
+        prompt=policy_prompt,
         source=_clean(options.get("source")) or _clean(provider),
         session=_clean(options.get("session")),
         requested_runtime=requested_runtime,
@@ -1104,7 +1162,8 @@ def provider_adapter_decision(
                 "request_model": provider_payload.get("model"),
                 "stream": bool(provider_payload.get("stream")),
                 "adapter_mode": adapter_mode,
-            }
+            },
+            "trusted_gateway": trusted_gateway_context,
         },
         artifacts=[dict(item) for item in _list(options.get("artifacts"))],
     )
@@ -1127,14 +1186,19 @@ def provider_adapter_decision(
         "forwarding_performed": False,
         "proxy_safe": True,
         "transparent_mitm": False,
-        "normalized_prompt": prompt,
+        "trusted_gateway_context": trusted_gateway_context,
+        "normalized_prompt": policy_prompt,
         "caller_request": {
             "model": provider_payload.get("model"),
             "stream": bool(provider_payload.get("stream")),
             "has_messages": bool(provider_payload.get("messages")),
             "has_input": provider_payload.get("input") is not None,
+            "policy_prompt_source": (
+                "latest_user_turn" if policy_prompt != prompt else "request_prompt"
+            ),
             "route_policy_supplied": bool(caller_route_policy),
             "route_policy_trusted": False,
+            "trusted_gateway_context": bool(trusted_gateway_context),
         },
         "norman_route": decision,
         "next_hop": decision["recommendation"]["next_hop"],

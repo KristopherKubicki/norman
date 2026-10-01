@@ -14,7 +14,21 @@ from .routing import RoutingRule, RoutingEvent, RoutingJob
 from .command_approval import CommandApproval
 from .console_target import ConsoleTarget
 from .console_audit_event import ConsoleAuditEvent
-from .console_runtime import ConsoleRuntimeEventRecord, ConsoleRuntimeJobRecord
+from .console_runtime import (
+    ConsoleRuntimeEffectRecord,
+    ConsoleRuntimeEventRecord,
+    ConsoleRuntimeJobDependencyRecord,
+    ConsoleRuntimeJobRecord,
+    ConsoleRuntimeWorkstreamRecord,
+)
+from .bridge_conversation import BridgeConversationRecord
+from .kaizen import (
+    KaizenCandidateFingerprintRecord,
+    KaizenCandidateRecord,
+    KaizenKpiObservationRecord,
+    KaizenPolicyActionRecord,
+    KaizenReportRecord,
+)
 from .estate_principal import EstatePrincipal
 from .estate_policy_profile import EstatePolicyProfile
 from .estate_control_class import EstateControlClass
@@ -31,3 +45,9 @@ from .secret_request import SecretRequest
 from .secret_lease import SecretLease
 from .secret_audit_event import SecretAuditEvent
 from .secret_stash_item import SecretStashItem
+from .keys_host_enrollment import KeysHostEnrollment
+from .keys_capability import KeysCapability
+from .keys_capability_policy import KeysCapabilityPolicy
+from .keys_capability_request import KeysCapabilityRequest
+from .keys_capability_lease import KeysCapabilityLease
+from .keys_capability_audit_event import KeysCapabilityAuditEvent

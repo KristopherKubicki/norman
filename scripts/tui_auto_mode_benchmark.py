@@ -177,7 +177,7 @@ MODE_SPECS: tuple[ModeSpec, ...] = (
         "auto_bedrock_role_default",
         "Auto route -> role-policy cloud default, optimized",
         "codex",
-        "openai.gpt-5.4",
+        CODEX_CLOUD_DEFAULT_MODEL,
         "auto",
         "auto",
         "Auto resolves to Bedrock profile when configured",

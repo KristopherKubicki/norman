@@ -24,7 +24,7 @@ def get_multi_by_user(db: Session, user_id: int) -> List[ConsoleTargetModel]:
 def create(
     db: Session, obj_in: ConsoleTargetCreate, user_id: int
 ) -> ConsoleTargetModel:
-    db_obj = ConsoleTargetModel(**obj_in.dict(), user_id=user_id)
+    db_obj = ConsoleTargetModel(**obj_in.model_dump(), user_id=user_id)
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
@@ -34,7 +34,7 @@ def create(
 def update(
     db: Session, db_obj: ConsoleTargetModel, obj_in: ConsoleTargetUpdate
 ) -> ConsoleTargetModel:
-    for field, value in obj_in.dict(exclude_unset=True).items():
+    for field, value in obj_in.model_dump(exclude_unset=True).items():
         setattr(db_obj, field, value)
     db.commit()
     db.refresh(db_obj)

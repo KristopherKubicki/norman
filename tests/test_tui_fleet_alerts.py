@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -186,6 +188,8 @@ def test_alert_post_creates_thread_and_posts_message(monkeypatch) -> None:
         thread_id="th_tui_fleet_health",
         health=health,
         decision=decision,
+        title="TUI fleet health",
+        report_paths=[],
     )
 
     assert calls[0][0] == "GET"
@@ -196,6 +200,129 @@ def test_alert_post_creates_thread_and_posts_message(monkeypatch) -> None:
     assert "TUI fleet health alert" in calls[2][3]["body"]
     assert "Action needed:" in calls[2][3]["body"]
     assert calls[2][3]["metadata"]["has_failure"] is True
+
+
+def test_alert_post_can_limit_thread_watchers(monkeypatch) -> None:
+    module = _load_alerts(monkeypatch)
+    calls = []
+
+    def fake_request(method, url, *, token, payload=None, timeout=15.0):
+        calls.append((method, url, token, payload))
+        if method == "GET":
+            return 404, {"ok": False, "error": "not_found"}
+        return 201, {"ok": True}
+
+    monkeypatch.setattr(module, "_request", fake_request)
+    module.post_alert(
+        base_url="http://bbs.local",
+        token="secret",
+        actor="norllama-fleet",
+        thread_id="th_norllama_fleet_health",
+        health={
+            "checked_at": "2026-08-10T00:00:00Z",
+            "status": "fail",
+            "summary": {"active": 3, "expected": 3, "fail": 1, "warn": 0},
+        },
+        decision={
+            "new_alerts": [_issue("fail", "ASR upstream is unavailable")],
+            "suppressed_warnings": [],
+        },
+        title="Norllama fleet health",
+        report_paths=[],
+        watchers=["netops"],
+    )
+
+    assert calls[1][3]["watchers"] == ["netops"]
+
+
+def test_alert_watchers_use_environment_override(monkeypatch) -> None:
+    module = _load_alerts(monkeypatch)
+    monkeypatch.setenv("NORMAN_TUI_FLEET_ALERT_WATCHERS", "netops, netops, norman")
+
+    assert module.resolve_watchers() == ["netops", "norman"]
+
+
+def test_alert_token_uses_norman_secret_command_not_actor_env(monkeypatch) -> None:
+    module = _load_alerts(monkeypatch)
+    monkeypatch.delenv("NORMAN_KEYS_URL", raising=False)
+    monkeypatch.delenv("NORMAN_KEYS_API_BASE", raising=False)
+    monkeypatch.setenv("NORMAN_SECRET_CMD", "keysctl read {name}")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="bbs-token\n", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    token, errors = module.resolve_brokered_token("bbs.norman.post-token")
+
+    assert token == "bbs-token"
+    assert errors == []
+    assert calls[0][0] == ["keysctl", "read", "bbs.norman.post-token"]
+    assert "actor_env" not in module.parse_args([]).__dict__
+
+
+def test_alert_token_uses_norman_keys_http(monkeypatch) -> None:
+    module = _load_alerts(monkeypatch)
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
+    monkeypatch.setenv("NORMAN_KEYS_TOKEN", "keys-api-token")
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"value": "bbs-token"}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    token, errors = module.resolve_brokered_token("bbs.norman.post-token")
+
+    assert token == "bbs-token"
+    assert errors == []
+    assert requests[0][0].full_url == "http://keys.norman.test/v1/secrets/get"
+    payload = json.loads(requests[0][0].data.decode("utf-8"))
+    assert payload["name"] == "bbs.norman.post-token"
+    assert requests[0][0].get_header("Authorization") == "Bearer keys-api-token"
+
+
+def test_alert_main_reports_missing_broker_without_state_mutation(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    module = _load_alerts(monkeypatch)
+    monkeypatch.delenv("NORMAN_KEYS_URL", raising=False)
+    monkeypatch.delenv("NORMAN_KEYS_API_BASE", raising=False)
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
+    health_path = tmp_path / "health.json"
+    state_path = tmp_path / "state.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "checked_at": "2026-08-06T00:00:00Z",
+                "status": "fail",
+                "issues": [_issue("fail", "session pressure is sustained")],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        module.main(["--health-json", str(health_path), "--state", str(state_path)])
+        == 1
+    )
+
+    assert "bbs.norman.post-token" in capsys.readouterr().err
+    assert not state_path.exists()
 
 
 def test_tui_fleet_alerts_systemd_path_triggers_on_doctor_json() -> None:
@@ -213,3 +340,14 @@ def test_tui_fleet_alerts_systemd_path_triggers_on_doctor_json() -> None:
         "PathChanged=/home/kristopher/.local/state/norman/tui-fleet-doctor.json" in path
     )
     assert "Unit=norman-tui-fleet-alerts.service" in path
+
+
+def test_norllama_bbs_token_broker_is_alias_restricted() -> None:
+    root = Path(__file__).resolve().parents[1]
+    broker = (root / "scripts" / "norllama" / "norman_bbs_token_broker.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'TOKEN_ALIAS="bbs.norllama-fleet.post-token"' in broker
+    assert "norllama-fleet-bbs.token" in broker
+    assert 'exec /usr/bin/cat "$TOKEN_PATH"' in broker

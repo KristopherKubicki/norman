@@ -562,6 +562,13 @@ def enqueue_outbound_reply(
 
 
 def main() -> int:
+    # The correlated callback flow is the only supported production path. Keep
+    # the older modes below for an explicit legacy configuration during rollout.
+    if os.getenv("DELIVERY_MODE", "sms").strip().lower() == "sms":
+        from sms_bridge import main as sms_main
+
+        return sms_main()
+
     queue_url = os.getenv("INBOUND_QUEUE_URL", "").strip()
     if not queue_url:
         raise RuntimeError("INBOUND_QUEUE_URL is required")

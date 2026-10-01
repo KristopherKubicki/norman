@@ -1,10 +1,15 @@
-import json
 import importlib.util
+import io
+import json
 import os
 import pathlib
+import re
+import sqlite3
+import subprocess
 import sys
 import threading
 import time
+import tempfile
 import urllib.parse
 import urllib.request
 import uuid
@@ -19,6 +24,9 @@ LAUNCH_SCRIPT_PATH = REPO_ROOT / "scripts" / "norman_codex_launch.sh"
 def _load_norman_codex_web(monkeypatch, tmp_path, **overrides):
     codex_home = tmp_path / "codex-home"
     state_dir = tmp_path / "state"
+    existing_legacy_keys = {
+        key for key in os.environ if key.startswith("HOUSEBOT_CODEX_")
+    }
     for key in tuple(os.environ):
         if (
             key.startswith(("NORMAN_CODEX_", "HOUSEBOT_CODEX_"))
@@ -28,10 +36,28 @@ def _load_norman_codex_web(monkeypatch, tmp_path, **overrides):
     monkeypatch.setenv("NORMAN_CODEX_HOME", str(codex_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("NORMAN_CODEX_WEB_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("NORMAN_CODEX_MODEL", "gpt-5.4")
-    monkeypatch.setenv("NORMAN_CODEX_LATEST_MODEL", "gpt-5.5")
-    monkeypatch.setenv("NORMAN_CODEX_AVAILABLE_MODELS", "gpt-5.5")
+    monkeypatch.setenv("NORMAN_CODEX_PROFILE_CONFIG_FLAG", "--profile-v2")
+    monkeypatch.setenv("NORMAN_CODEX_MODEL", "gpt-5.6-terra")
+    monkeypatch.setenv("NORMAN_CODEX_LATEST_MODEL", "gpt-5.6-terra")
+    monkeypatch.setenv(
+        "NORMAN_CODEX_AVAILABLE_MODELS",
+        "openai.gpt-5.6-terra,gpt-5.6-terra",
+    )
     monkeypatch.setenv("NORMAN_CODEX_BBS_SUMMARY_ENABLED", "0")
+    # Most tests exercise console state, not optional background inference.
+    # Recap tests opt in explicitly with their own synthetic transport.
+    monkeypatch.setenv("NORMAN_CODEX_WORKING_RECAP_ENABLED", "0")
+    if "NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH" not in overrides:
+        monkeypatch.setenv(
+            "NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH",
+            str(tmp_path / "pressure-guard.json"),
+        )
+    if "NORMAN_CODEX_REQUIRE_NAMED_ESCALATION" not in overrides:
+        monkeypatch.setenv("NORMAN_CODEX_REQUIRE_NAMED_ESCALATION", "0")
+    if "NORMAN_CODEX_ALLOW_OPENAI_API_SPEND" not in overrides:
+        # Legacy executor tests use a synthetic direct Codex runtime without
+        # creating either a ChatGPT or API-key auth fixture.
+        monkeypatch.setenv("NORMAN_CODEX_ALLOW_OPENAI_API_SPEND", "1")
     for key in (
         "NORMAN_CODEX_BILLING_SCOPE",
         "NORMAN_CODEX_BILLING_UNIT",
@@ -52,7 +78,245 @@ def _load_norman_codex_web(monkeypatch, tmp_path, **overrides):
         spec.loader.exec_module(module)
     finally:
         sys.modules.pop(module_name, None)
+        # The module bridges canonical settings to legacy aliases with direct
+        # os.environ writes. Keep those aliases from leaking into later tests.
+        for key in tuple(os.environ):
+            if key.startswith("HOUSEBOT_CODEX_") and key not in existing_legacy_keys:
+                os.environ.pop(key, None)
+    # These stdlib modules are process-wide singletons. Give each test console
+    # its own references so HTTP/clock mocks cannot affect other workers.
+    module.urllib_request = SimpleNamespace(**vars(module.urllib_request))
+    module.time = SimpleNamespace(**vars(module.time))
     return module
+
+
+def test_browser_relay_targets_strip_credentials(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    targets = module.browser_relay_targets(
+        [
+            {
+                "label": "Housebot",
+                "url": "https://housebot.home.arpa/?token=relay-secret&profile=default",
+                "api_url": "https://housebot.home.arpa/api/ask",
+                "token": "relay-secret",
+                "host": "housebot.home.arpa",
+            }
+        ]
+    )
+
+    assert targets == [
+        {
+            "label": "Housebot",
+            "url": "https://housebot.home.arpa/?profile=default",
+            "host": "housebot.home.arpa",
+        }
+    ]
+    assert "secret" not in json.dumps(targets)
+    assert "api_url" not in targets[0]
+
+
+def test_local_cli_discovery_observes_loose_and_managed_sessions(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    proc_root = tmp_path / "proc"
+    loose_dir = proc_root / "4242"
+    managed_dir = proc_root / "4343"
+    loose_dir.mkdir(parents=True)
+    managed_dir.mkdir(parents=True)
+    loose_workspace = tmp_path / "loose-project"
+    managed_workspace = tmp_path / "managed-project"
+    loose_workspace.mkdir()
+    managed_workspace.mkdir()
+    (loose_dir / "cwd").symlink_to(loose_workspace)
+    (managed_dir / "cwd").symlink_to(managed_workspace)
+    (loose_dir / "environ").write_bytes(
+        b"SECRET=hidden\0CODEX_THREAD_ID=thread-loose\0"
+    )
+    (managed_dir / "environ").write_bytes(
+        b"NORMAN_CODEX_AGENT_NAME=Theseus\0TMUX=/tmp/tmux/theseus,1,0\0TMUX_PANE=%2\0"
+    )
+
+    ps_output = "\n".join(
+        [
+            "1000 4242 4000 125 pts/3 codex",
+            "1000 4343 4001 3605 pts/7 codex",
+            "1000 4444 4002 12 pts/8 python",
+            "1001 4545 4003 9 pts/9 codex",
+        ]
+    )
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=ps_output,
+            stderr="",
+        ),
+    )
+
+    payload = module.discover_local_cli_sessions(proc_root=proc_root, uid=1000)
+
+    assert payload["count"] == 2
+    assert payload["loose_count"] == 1
+    assert payload["managed_count"] == 1
+    loose, managed = payload["items"]
+    assert loose["key"] == "4242"
+    assert loose["workspace"] == "loose-project"
+    assert loose["thread_id"] == "thread-loose"
+    assert loose["observer_state"] == "observed"
+    assert "SECRET" not in json.dumps(payload)
+    assert managed["agent_name"] == "Theseus"
+    assert managed["observer_state"] == "managed"
+    assert managed["tmux_socket"] == "theseus"
+
+
+def test_norman_local_cli_discovery_reads_hal_over_ssh(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_AGENT_NAME="Norman",
+        NORMAN_CODEX_HOSTNAME="norman",
+    )
+    calls = []
+    remote_rows = [
+        {
+            "pid": 5151,
+            "ppid": 5000,
+            "age_seconds": 42,
+            "tty": "pts/11",
+            "cwd": "/home/kristopher/code/norman",
+            "environment": {},
+        }
+    ]
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout=json.dumps(remote_rows), stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    payload = module.discover_local_cli_sessions()
+
+    assert module.LOCAL_CLI_DISCOVERY_ENABLED is True
+    assert payload["available"] is True
+    assert payload["host"] == "hal"
+    assert payload["count"] == 1
+    assert payload["items"][0]["pid"] == 5151
+    assert calls[0][0][-2:] == ["hal", "python3 -"]
+    assert calls[0][1]["input"] == module.REMOTE_LOCAL_CLI_DISCOVERY_SCRIPT
+
+
+def test_cli_snapshot_serves_cached_data_during_single_background_scan(
+    monkeypatch, tmp_path
+):
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "LOCAL_CLI_DISCOVERY_ENABLED", True)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    calls = []
+    cached = {"enabled": True, "count": 7, "items": []}
+    module.LOCAL_CLI_DISCOVERY_CACHE.update(observed_at=0, payload=cached)
+
+    def discover():
+        calls.append(True)
+        started.set()
+        assert release.wait(3)
+        return {"enabled": True, "count": 8, "items": []}
+
+    original_refresh = module._refresh_local_cli_sessions_cache
+
+    def refresh():
+        try:
+            original_refresh()
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(module, "discover_local_cli_sessions", discover)
+    monkeypatch.setattr(module, "_refresh_local_cli_sessions_cache", refresh)
+    try:
+        first = module.local_cli_sessions_snapshot()
+        assert started.wait(1)
+        second = module.local_cli_sessions_snapshot(force=True)
+        assert first["count"] == second["count"] == 7
+        assert first["refreshing"] is True
+        assert calls == [True]
+    finally:
+        release.set()
+        assert finished.wait(2)
+    assert module.local_cli_sessions_snapshot()["count"] == 8
+    assert module.LOCAL_CLI_DISCOVERY_REFRESHING is False
+
+
+def test_norman_switcher_renders_local_cli_observer() -> None:
+    source = WEB_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert 'parsed.path == "/api/local-cli-sessions"' in source
+    assert "function renderLocalCliObserverHtml(payload)" in source
+    assert 'class="local-cli-observer"' in source
+    assert "Direct PTYs stay operator-controlled." in source
+
+
+def _route_proof(
+    module,
+    *,
+    runtime: str = "",
+    model: str = "",
+    service_tier: str = "",
+) -> dict:
+    normalized_runtime = module.normalize_runtime(runtime)
+    normalized_model = module.normalize_runtime_model(normalized_runtime, model)
+    normalized_tier = module.normalize_service_tier(service_tier)
+    options = {
+        "requested_runtime": normalized_runtime,
+        "requested_model": normalized_model,
+        "requested_service_tier": normalized_tier,
+        "base_runtime": normalized_runtime,
+        "base_model": normalized_model,
+        "base_service_tier": normalized_tier,
+        "bedrock_runtime": "codex",
+        "bedrock_model": normalized_model,
+        "bedrock_service_tier": "bedrock-emergency",
+        "route_lock": True,
+        "subscription": {},
+        "norllama_available": False,
+        "norllama_safe_final": False,
+        "bedrock_available": False,
+    }
+    if normalized_tier == "flex":
+        options.update(
+            {
+                "route_lock": False,
+                "subscription": {
+                    "enabled": True,
+                    "selected": True,
+                    "state": "available",
+                    "fresh": True,
+                    "chatgpt_auth_verified": True,
+                },
+                "norllama_available": True,
+                "norllama_safe_final": True,
+                "bedrock_available": True,
+            }
+        )
+    elif normalized_runtime == "localllm":
+        options.update(
+            {
+                "route_lock": False,
+                "subscription": {
+                    "enabled": True,
+                    "selected": False,
+                    "state": "blocked",
+                    "fresh": True,
+                    "chatgpt_auth_verified": True,
+                },
+                "norllama_available": True,
+                "norllama_safe_final": True,
+            }
+        )
+    return module.build_tui_waterfall(**options)
 
 
 def _cheap_snapshot(module):
@@ -68,22 +332,1193 @@ def _cheap_snapshot(module):
     }
 
 
-def test_runtime_model_enforces_gpt55_floor(monkeypatch, tmp_path) -> None:
+def test_runtime_model_enforces_gpt56_terra_floor(monkeypatch, tmp_path) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
-    assert module.CODEX_MODEL_FLOOR == "gpt-5.5"
-    assert module.codex_model_below_floor("gpt-5.4") is True
-    assert "gpt-5.5" in module.AVAILABLE_MODELS
-    assert "gpt-5.4" in module.AVAILABLE_MODELS
-    assert "openai.gpt-5.4" in module.AVAILABLE_MODELS
-    assert module.configured_chat_model() == "gpt-5.5"
+    assert module.CODEX_MODEL_FLOOR == "gpt-5.6-terra"
+    assert module.codex_model_below_floor("gpt-5.5") is True
+    assert "gpt-5.6-terra" in module.AVAILABLE_MODELS
+    assert "openai.gpt-5.6-terra" in module.AVAILABLE_MODELS
+    assert module.configured_chat_model() == "gpt-5.6-terra"
     assert module.chat_model_update_available() is False
 
 
-def test_careful_response_speed_uses_xhigh_reasoning(monkeypatch, tmp_path) -> None:
+def test_profile_flag_uses_modern_cli_option_when_available(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_PROFILE_CONFIG_FLAG="",
+    )
+
+    def fake_run(args, **_kwargs):
+        if args == [module.CODEX_BIN, "exec", "--help"]:
+            return SimpleNamespace(stdout="--profile", stderr="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    assert module.resolve_codex_profile_config_flag() == "--profile"
+
+
+def test_release_preflight_passes_configured_inner_timeout(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_PREFLIGHT_MODE="required",
+        NORMAN_CODEX_PREFLIGHT_TIMEOUT_SECONDS="12",
+        NORMAN_CODEX_PREFLIGHT_COMMAND_TIMEOUT_SECONDS="20",
+    )
+    helper = tmp_path / "tui_release_readiness.py"
+    helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["timeout"] = kwargs["timeout"]
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module, "_tui_release_readiness_script", lambda: helper)
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    assert module.codex_launch_preflight("default")["allowed"] is True
+    command = captured["command"]
+    timeout_index = command.index("--timeout-seconds")
+    assert command[timeout_index + 1] == "12"
+    assert captured["timeout"] == 20
+
+
+def test_release_preflight_reports_blocking_detail_and_recovery(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_PREFLIGHT_MODE="required",
+    )
+    helper = tmp_path / "tui_release_readiness.py"
+    helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    module.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    (module.STATE_DIR / "release_readiness.json").write_text(
+        json.dumps(
+            {
+                "checks": [
+                    {
+                        "id": "bedrock_credentials_profile_missing",
+                        "blocking": True,
+                        "detail": (
+                            "Selected Bedrock route has no configured AWS "
+                            "credential profile."
+                        ),
+                        "recovery": (
+                            "Set NORMAN_CODEX_STANDARD_AWS_PROFILE, then "
+                            "restart the managed TUI."
+                        ),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module, "_tui_release_readiness_script", lambda: helper)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr=""),
+    )
+
+    result = module.codex_launch_preflight("default")
+
+    assert result["allowed"] is False
+    assert "no configured AWS credential profile" in result["message"]
+    assert "Set NORMAN_CODEX_STANDARD_AWS_PROFILE" in result["message"]
+
+
+def test_switchboard_exposes_lightweight_version_endpoint() -> None:
+    source = WEB_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert 'if parsed.path == "/api/version":' in source
+    assert '"ui_version": UI_VERSION' in source
+    assert '"agent_name": AGENT_NAME' in source
+    assert '"session_name": SESSION' in source
+
+
+def test_switchboard_rendered_console_javascript_passes_node_syntax_check(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    module.ensure_session = lambda: None
+    module.current_snapshot = lambda: {
+        "pending": False,
+        "thread_id": "thread-demo",
+        "updated_at": 0,
+        "services": [],
+        "last_prompt": "[no prompt yet]",
+        "last_response": "[no response yet]",
+        "last_error": "[none]",
+        "pane": "[pane unavailable]",
+        "logs": "[no journal output]",
+        "history": [],
+        "queued_prompts": [],
+        "queue_depth": 0,
+        "draft_attachments": [],
+    }
+    module.STATE_DIR = tmp_path / "render-state"
+
+    handler = object.__new__(module.Handler)
+    handler.wfile = io.BytesIO()
+
+    class _Headers(dict):
+        def get(self, key: str, default: str = "") -> str:
+            return str(super().get(key, default))
+
+    handler.headers = _Headers({"Host": "example.test:8789"})
+    handler.send_response = lambda status: None
+    handler.send_header = lambda name, value: None
+    handler.end_headers = lambda: None
+    handler.is_trusted_client = lambda: False
+    handler.browser_auth_supported_for_request = lambda: False
+    handler.auth_cookie_token = lambda: ""
+
+    module.Handler.render_index(handler, {"token": ["open-sesame"]})
+    rendered = handler.wfile.getvalue().decode("utf-8")
+    assert 'id="usage-reset-button"' in rendered
+    assert 'id="usage-limit-reset-dialog"' in rendered
+    script_text = "\n\n".join(re.findall(r"<script>(.*?)</script>", rendered, re.S))
+    script_path = pathlib.Path(tempfile.mkdtemp()) / "norman_console.js"
+    script_path.write_text(script_text, encoding="utf-8")
+    result = subprocess.run(
+        ["node", "--check", str(script_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_connector_access_snapshot_reports_work_profile_configuration(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    codex_home = tmp_path / ".codex-work"
+    codex_home.mkdir()
+    module.CODEX_HOME = str(codex_home)
+    module.AGENT_GROUP = ""
+    (codex_home / "config.toml").write_text(
+        """
+[plugins."google-drive@openai-curated"]
+enabled = true
+
+[plugins."gmail@openai-curated"]
+enabled = false
+
+[plugins."google-calendar@openai-curated"]
+enabled = true
+
+[plugins."linear@openai-curated"]
+enabled = true
+
+[features]
+enabled = true
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = module.connector_access_snapshot()
+    apps = {item["key"]: item for item in snapshot["apps"]}
+
+    assert snapshot["profile"] == "work"
+    assert snapshot["profile_label"] == "Work connector set"
+    assert snapshot["source"] == ".codex-work/config.toml"
+    assert snapshot["config_available"] is True
+    assert snapshot["configured_count"] == 3
+    assert apps["google-drive@openai-curated"]["status"] == "Configured"
+    assert apps["gmail@openai-curated"]["status"] == "Not configured"
+    assert apps["google-calendar@openai-curated"]["status"] == "Configured"
+    assert apps["slack@openai-curated"]["status"] == "Not configured"
+    assert apps["github@openai-curated"]["status"] == "Not configured"
+    assert apps["linear@openai-curated"] == {
+        "key": "linear@openai-curated",
+        "label": "Linear",
+        "configured": True,
+        "status": "Configured",
+    }
+
+
+def test_connector_access_snapshot_marks_unreadable_config(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    module.CODEX_HOME = str(tmp_path / ".codex-work")
+    module.AGENT_GROUP = ""
+
+    snapshot = module.connector_access_snapshot()
+
+    assert snapshot["config_available"] is False
+    assert snapshot["profile_label"] == "Work connector set"
+    assert all(item["status"] == "Config unavailable" for item in snapshot["apps"])
+
+
+def test_switchboard_exposes_dynamic_working_on_recap_panel() -> None:
+    source = WEB_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "NORMAN_CODEX_WORKING_RECAP_REFRESH_SECONDS" in source
+    assert "https://llm.home.arpa" in source
+    assert "def working_recap_local_llm(" in source
+    assert "Use only this sanitized status packet." in source
+    assert '"working_recap": working_recap' in source
+    assert "function workingRecapForSnapshot(" in source
+    assert "function buildWorkingOnPanel(" in source
+    assert "working-on-timeline" in source
+    assert "working-recap-pulse" in source
+
+
+def test_switchboard_token_capacity_plan_tracks_duration_and_provider(
+    monkeypatch, tmp_path
+) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
-    assert module.response_reasoning_effort("careful") == "xhigh"
+    bedrock = module.provider_token_budget_plan(
+        prompt="Implement the focused fix and verify it.",
+        runtime="claude",
+        job_budget="2m",
+        detail=2,
+        entries=[],
+        cloud_authorized=True,
+    )
+    codex = module.provider_token_budget_plan(
+        prompt="Implement the focused fix and verify it.",
+        runtime="codex",
+        service_tier="flex",
+        job_budget="2m",
+        detail=2,
+        entries=[],
+    )
+
+    assert bedrock["provider_class"] == "bedrock"
+    assert bedrock["time_window_output_cap"] == 2400
+    assert bedrock["execution_output_cap"] == 2100
+    assert bedrock["cloud_token_budget"] == 4200
+    assert bedrock["enforcement"] == "request_hard"
+    assert codex["provider_class"] in {"codex_subscription", "openai_direct"}
+    assert codex["execution_output_cap"] == 2000
+    assert codex["enforcement"] == "advisory"
+
+
+def test_subscription_route_requires_a_reset_aware_forecast(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_STANDARD_PROFILE_V2="personal-bedrock",
+        NORMAN_CODEX_STANDARD_AWS_PROFILE="norman-bedrock",
+        NORMAN_CODEX_AGENT_GROUP="personal",
+        NORMAN_CODEX_BILLING_OWNER="kristopher",
+    )
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    observed_at = module.now_ts()
+    capacity = {
+        **module.default_codex_account_capacity(),
+        "source": "interactive_usage",
+        "observed_at": observed_at,
+        "last_probe_at": observed_at,
+        "auth_mode": "chatgpt",
+        "state": "available",
+        "credits_available": 6907,
+        "windows": [
+            {
+                "label": "Short window",
+                "percent_left": 84,
+                "reset_hint": "2h",
+                "reset_seconds": 7200,
+            }
+        ],
+    }
+
+    selected = module.codex_subscription_capacity_route_decision(
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        prompt="Implement the focused fix and verify it.",
+        job_budget="normal",
+        detail=2,
+        capacity=capacity,
+    )
+
+    assert selected["selected"] is True
+    forecast = selected["capacity"]["forecast"]
+    assert forecast["reset_seconds"] == 7200
+    assert forecast["fits_policy_envelope"] is True
+    assert forecast["credits_available_informational"] == 6907
+
+    too_near = module.codex_subscription_capacity_route_decision(
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        prompt="Implement the focused fix and verify it.",
+        job_budget="normal",
+        detail=2,
+        capacity={
+            **capacity,
+            "windows": [
+                {
+                    "label": "Short window",
+                    "percent_left": 84,
+                    "reset_hint": "2m",
+                    "reset_seconds": 120,
+                }
+            ],
+        },
+    )
+
+    assert too_near["selected"] is False
+    assert "reset window" in too_near["reason"]
+
+
+def test_subscription_route_preference_applies_across_work_scope(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_AGENT_GROUP="work",
+        NORMAN_CODEX_BILLING_OWNER="openbrand",
+        NORMAN_CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED="0",
+    )
+
+    assert module.codex_subscription_capacity_personal_lane() is False
+    assert module.codex_subscription_capacity_route_lane() is False
+
+    module.CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED = True
+
+    assert module.codex_subscription_capacity_route_lane() is True
+
+
+def test_switchboard_working_recap_uses_sanitized_norllama_packet(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_WORKING_RECAP_ENABLED="1",
+        NORMAN_CODEX_WORKING_RECAP_MODEL="norllama-test",
+        NORMAN_CODEX_WORKING_RECAP_ENDPOINTS="http://norllama.invalid",
+    )
+    captured: list[object] = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "message": {
+                        "content": (
+                            '{"now":"Reviewing the completed checkpoint.",'
+                            '"milestones":["One tool checkpoint completed.",'
+                            '"Bearer output-token"],'
+                            '"next":"Choose the next safe action."}'
+                        )
+                    }
+                }
+            ).encode()
+
+    def fake_urlopen(request, timeout):
+        captured.extend((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(module.urllib_request, "urlopen", fake_urlopen)
+    meta = {
+        "last_started_at": 1712878300,
+        "running_prompt": "Deploy api_key=prompt-secret with Bearer prompt-token",
+        "running_runtime": "codex",
+        "running_model": "gpt-5.5",
+        "turn_plan": {
+            "understood_task": "Deploy api_key=plan-secret",
+            "skill_labels": ["code edit", "verification"],
+            "plan_steps": ["Check the running worker.", "Report the result."],
+        },
+        "live_turn": {
+            "event_count": 3,
+            "tool_started_count": 2,
+            "tool_finished_count": 1,
+            "last_tool_status": "tool-finished",
+        },
+    }
+    deterministic = module.deterministic_working_recap(meta, observed_at=1712878350)
+
+    recap, model = module.working_recap_local_llm(meta, deterministic, queue_depth=1)
+
+    request, timeout = captured
+    request_payload = json.loads(request.data.decode())
+    prompt = request_payload["messages"][0]["content"]
+    assert request.full_url == "http://norllama.invalid/api/chat"
+    assert timeout == module.WORKING_RECAP_LLM_TIMEOUT_SECONDS
+    assert "prompt-secret" not in prompt
+    assert "prompt-token" not in prompt
+    assert "plan-secret" not in prompt
+    assert model == "norllama-test"
+    assert recap["source"] == "local_llm"
+    assert recap["now"] == "Reviewing the completed checkpoint."
+    assert recap["milestones"] == [
+        "One tool checkpoint completed.",
+        "Bearer [redacted]",
+    ]
+    outcome = module.load_local_llm_route_outcomes(limit=1)[0]
+    assert outcome["source"] == "working-recap"
+    assert outcome["status"] == "ok"
+    assert outcome["model"] == "norllama-test"
+
+
+def test_switchboard_resident_role_can_be_replaced_by_registry(
+    monkeypatch, tmp_path
+) -> None:
+    registry = tmp_path / "model_roles.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema": "norman.norllama.model-roles.v1",
+                "version": "future",
+                "roles": {
+                    "resident": {
+                        "model": "future-local-model",
+                        "endpoints": ["http://future-local:11434"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_NORLLAMA_MODEL_ROLE_CONFIG=str(registry),
+    )
+
+    assert module.NORLLAMA_RESIDENT_MODEL == "future-local-model"
+    assert module.WORKING_RECAP_LOCAL_MODEL == "future-local-model"
+    assert module.WORKING_RECAP_LOCAL_ENDPOINTS[0] == "http://future-local:11434"
+    assert module.local_planner_preflight_models() == (
+        ["future-local-model"],
+        "resident-role-registry",
+    )
+
+
+def test_switchboard_planner_preflight_uses_resident_role_registry(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_LOCAL_LLM_MODEL="llama3.2:3b",
+        NORMAN_LOCAL_LLM_MODELS=("llama3.2:3b,qwen3.6:35b-a3b-q4_K_M,qwen3.6:27b"),
+        NORMAN_LOCAL_LLM_PLANNER_MODELS=(
+            "qwen3.6:35b-a3b-q4_K_M,qwen3.6:27b,llama3.2:3b"
+        ),
+    )
+    module.WORKING_RECAP_LOCAL_ENDPOINTS = ("http://local-llm:18151",)
+    calls = []
+
+    def fake_generate(endpoint, model, prompt, **kwargs):
+        calls.append((endpoint, model, prompt, kwargs))
+        return {"message": {"content": "Use cloud authority after local check."}}
+
+    monkeypatch.setattr(module, "working_recap_local_generate", fake_generate)
+
+    receipt = module.local_planner_preflight("Check the current TUI route.")
+
+    assert receipt["used"] is True
+    assert receipt["model"] == "qwen3.8:27b"
+    assert receipt["candidate_policy"] == "resident-role-registry"
+    assert calls[0][3] == {
+        "timeout_seconds": 18,
+        "max_output_tokens": 96,
+    }
+
+
+def test_switchboard_background_generation_sends_best_effort_headers(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"message":{"content":"ok"}}'
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(module.urllib_request, "urlopen", fake_urlopen)
+
+    module.working_recap_local_generate(
+        "http://local-llm:18151",
+        "resident-model",
+        "sanitized background prompt",
+        source="planner-verifier",
+    )
+
+    headers = {
+        str(key).lower(): str(value) for key, value in requests[0][0].header_items()
+    }
+    assert headers["x-norllama-priority"] == "background"
+    assert headers["x-norllama-work-class"] == "background"
+    assert headers["x-norllama-interruptible"] == "true"
+    assert headers["x-norllama-max-queue-wait-ms"] == "750"
+    assert headers["x-norllama-work-source"] == "planner-verifier"
+
+
+def test_switchboard_planner_readiness_uses_resident_role_registry(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_LOCAL_LLM_MODEL="llama3.2:3b",
+        NORMAN_LOCAL_LLM_MODELS=("llama3.2:3b,qwen3.6:35b-a3b-q4_K_M,qwen3.6:27b"),
+        NORMAN_LOCAL_LLM_PLANNER_MODELS=(
+            "qwen3.6:35b-a3b-q4_K_M,qwen3.6:27b,llama3.2:3b"
+        ),
+    )
+    module.WORKING_RECAP_LOCAL_ENDPOINTS = ("http://local-llm:18151",)
+
+    readiness = module.local_planner_preflight_readiness()
+
+    assert readiness["ready"] is True
+    assert readiness["model"] == "qwen3.8:27b"
+    assert readiness["endpoint"] == "http://local-llm:18151"
+    assert readiness["candidate_policy"] == "resident-role-registry"
+    assert readiness["candidate_diagnostics"][-1]["status"] == "ready"
+
+
+def test_switchboard_planner_readiness_reports_active_cooldown(
+    monkeypatch, tmp_path
+) -> None:
+    planner_model = "qwen3.8:27b"
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_LOCAL_LLM_ROUTE_COOLDOWN_SECONDS="900",
+        NORMAN_LOCAL_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS="60",
+        NORMAN_LOCAL_LLM_PLANNER_MODELS=planner_model,
+    )
+    module.WORKING_RECAP_LOCAL_ENDPOINTS = ("http://local-llm:18151",)
+    module.append_local_llm_route_outcome(
+        source="planner-preflight",
+        status="timeout",
+        ok=False,
+        model=planner_model,
+        endpoint="http://local-llm:18151",
+        recorded_at=module.now_ts(),
+        reason="planner cold load timed out",
+    )
+
+    readiness = module.local_planner_preflight_readiness()
+
+    assert readiness["ready"] is False
+    assert readiness["status"] == "unavailable"
+    assert readiness["candidate_diagnostics"][-1]["status"] == "cooldown"
+    assert readiness["candidate_diagnostics"][-1]["cooldown"]["remaining_seconds"] <= 60
+    assert module.deterministic_status_prompt_allowed("Status update?", []) is True
+
+
+def test_switchboard_planner_verifier_is_bounded_and_advisory(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_LOCAL_PLANNER_VERIFIER_MODELS="qwen3.5:122b-a10b-q4_K_M",
+    )
+    module.WORKING_RECAP_LOCAL_ENDPOINTS = ("http://local-llm:18151",)
+    calls = []
+    planner = {
+        "used": True,
+        "status": "ok",
+        "summary": "Recall may be incomplete.",
+        "confidence": 0.42,
+        "recall_status": "partial",
+        "memory_ref_ids": ["turn-1"],
+    }
+    candidates = [
+        {"id": "turn-1", "prompt_preview": "First archived turn."},
+        {"id": "turn-2", "prompt_preview": "Second archived turn."},
+    ]
+
+    def fake_generate(endpoint, model, prompt, **kwargs):
+        calls.append((endpoint, model, prompt, kwargs))
+        return {
+            "message": {
+                "content": json.dumps(
+                    {
+                        "verdict": "review",
+                        "recall_status": "complete",
+                        "memory_ref_ids": ["turn-2", "not-supplied"],
+                        "cloud_needed": True,
+                        "reason": "second archive reference corroborates the plan",
+                    }
+                )
+            }
+        }
+
+    monkeypatch.setattr(module, "working_recap_local_generate", fake_generate)
+
+    verifier = module.local_planner_verifier(
+        {
+            "prompt_preview": "Review archive evidence before the cloud turn.",
+            "prompt_estimated_tokens": 1200,
+        },
+        planner=planner,
+        memory_candidates=candidates,
+        selected_refs=[candidates[0]],
+        memory_retrieval={"method": "local-planner", "candidate_count": 2},
+    )
+    refs, retrieval = module.apply_local_planner_verifier_memory_refs(
+        candidates,
+        [candidates[0]],
+        {"method": "local-planner", "candidate_count": 2},
+        verifier,
+    )
+
+    assert verifier["used"] is True
+    assert verifier["verdict"] == "review"
+    assert verifier["cloud_needed"] is True
+    assert verifier["trigger_reasons"] == [
+        "planner reported partial archive recall",
+        "planner confidence 0.42 is below 0.72",
+    ]
+    assert calls[0][1] == "qwen3.8:27b"
+    assert calls[0][3] == {
+        "timeout_seconds": 18,
+        "max_output_tokens": 96,
+    }
+    assert [item["id"] for item in refs] == ["turn-1", "turn-2"]
+    assert retrieval["method"] == "local-planner-verifier"
+
+
+def test_switchboard_planner_timeout_cooldown_clears_after_one_minute(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_LOCAL_LLM_ROUTE_COOLDOWN_SECONDS="900",
+        NORMAN_LOCAL_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS="60",
+    )
+    model = "qwen3.8:27b"
+    now = int(time.time())
+
+    assert (
+        module.local_llm_outcome_cooldown_seconds(
+            {"source": "planner-preflight", "status": "timeout"}
+        )
+        == 60
+    )
+    module.append_local_llm_route_outcome(
+        source="planner-preflight",
+        status="timeout",
+        ok=False,
+        model=model,
+        endpoint="",
+        recorded_at=now,
+        reason="synthetic cold planner timeout",
+    )
+
+    fresh = module.local_llm_route_cooldown(model, include_fleet=False)
+
+    assert fresh["active"] is True
+    assert fresh["cooldown_seconds"] == 60
+
+    module.append_local_llm_route_outcome(
+        source="planner-preflight",
+        status="timeout",
+        ok=False,
+        model=model,
+        endpoint="",
+        recorded_at=now - 61,
+        reason="synthetic stale planner timeout",
+    )
+
+    assert module.local_llm_route_cooldown(model, include_fleet=False) == {}
+
+
+def test_direct_openai_execution_requires_plan_capacity_or_explicit_override(
+    monkeypatch, tmp_path
+) -> None:
+    blocked = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+    )
+    monkeypatch.setattr(blocked, "stored_codex_auth_mode", lambda: "api_key")
+
+    blocked_decision = blocked.codex_openai_direct_execution_decision("flex")
+
+    assert blocked_decision["allowed"] is False
+    assert blocked_decision["auth_mode"] == "api_key"
+    assert "API spending is disabled" in blocked_decision["reason"]
+
+    guarded_subscription = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+    )
+    monkeypatch.setattr(
+        guarded_subscription, "stored_codex_auth_mode", lambda: "chatgpt"
+    )
+
+    guarded_decision = guarded_subscription.codex_openai_direct_execution_decision(
+        "flex"
+    )
+
+    assert guarded_decision["allowed"] is False
+    assert guarded_decision["reason_code"] == "chatgpt_credit_extension_guard"
+    assert "paid ChatGPT credit extension is disabled" in guarded_decision["reason"]
+
+    subscription = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+    )
+    monkeypatch.setattr(subscription, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(
+        subscription,
+        "codex_account_capacity_snapshot",
+        lambda **_kwargs: {
+            "fresh": True,
+            "state": "available",
+            "minimum_window_percent_left": 75,
+            "windows": [{"reset_seconds": 7200}],
+        },
+    )
+
+    subscription_decision = subscription.codex_openai_direct_execution_decision("flex")
+
+    assert subscription_decision["allowed"] is True
+    assert subscription_decision["api_spend_override"] is False
+    assert (
+        subscription_decision["reason"]
+        == "verified ChatGPT plan capacity is above the no-credit extension reserve"
+    )
+
+    override = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="1",
+    )
+    monkeypatch.setattr(override, "stored_codex_auth_mode", lambda: "")
+
+    override_decision = override.codex_openai_direct_execution_decision("flex")
+
+    assert override_decision["allowed"] is True
+    assert override_decision["api_spend_override"] is True
+    assert override_decision["reason"] == "explicit OpenAI API spend override"
+
+
+def test_subscription_capacity_probe_requires_active_chatgpt_auth(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="1",
+    )
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+
+    allowed = module.codex_openai_direct_execution_decision(
+        "flex",
+        subscription_probe=True,
+    )
+
+    assert allowed["allowed"] is True
+    assert allowed["api_spend_override"] is True
+    assert allowed["reason_code"] == "subscription_capacity_probe_allowed"
+
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "api_key")
+    blocked = module.codex_openai_direct_execution_decision(
+        "flex",
+        subscription_probe=True,
+    )
+
+    assert blocked["allowed"] is False
+    assert blocked["auth_mode"] == "api_key"
+    assert blocked["reason_code"] == "subscription_capacity_probe_auth_required"
+
+
+def test_subscription_capacity_probe_exhaustion_persists_blocked_capacity(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    observed_at = 1_786_000_000
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    monkeypatch.setattr(module, "now_ts", lambda: observed_at)
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    cost_route = module.build_tui_waterfall(
+        requested_runtime="codex",
+        requested_model=module.MODEL,
+        requested_service_tier="default",
+        base_runtime="codex",
+        base_model=module.MODEL,
+        base_service_tier="default",
+        bedrock_runtime="codex",
+        bedrock_model=module.MODEL,
+        bedrock_service_tier="bedrock-emergency",
+        route_lock=False,
+        subscription={
+            "enabled": True,
+            "selected": False,
+            "state": "unknown",
+            "fresh": False,
+            "chatgpt_auth_verified": True,
+        },
+        norllama_available=False,
+        norllama_safe_final=False,
+        bedrock_available=True,
+    )
+
+    assert cost_route["waterfall_stage"] == "subscription_flex_probe"
+    assert module.persist_subscription_probe_exhaustion(
+        cost_route=cost_route,
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="flex",
+        response="",
+        error_text="You've hit your usage limit. Try again at 4:30 PM.",
+        usage={"provider_error_kind": "usage_limit"},
+    )
+
+    persisted = module.read_json(
+        module.CODEX_ACCOUNT_CAPACITY_PATH,
+        module.default_codex_account_capacity(),
+    )
+    assert persisted["source"] == "interactive_usage"
+    assert persisted["state"] == "blocked"
+    assert persisted["auth_mode"] == "chatgpt"
+    assert persisted["fresh"] is True
+    assert persisted["observed_at"] == observed_at
+    assert persisted["last_probe_at"] == observed_at
+    events = module.load_audit_events(
+        limit=20,
+        event_type="chat.subscription-capacity-probe-exhausted",
+    )
+    assert events
+
+
+def test_prompt_runtime_keeps_legacy_codex_executors_compatible_with_probe(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    calls = []
+
+    def legacy_executor(
+        prompt,
+        speed,
+        detail,
+        attachments,
+        timeout_seconds=None,
+        model="",
+        service_tier="",
+        job_budget="",
+    ):
+        calls.append(
+            {
+                "prompt": prompt,
+                "speed": speed,
+                "detail": detail,
+                "attachments": attachments,
+                "timeout_seconds": timeout_seconds,
+                "model": model,
+                "service_tier": service_tier,
+                "job_budget": job_budget,
+            }
+        )
+        return "Legacy executor completed.", "", "legacy-thread", {}
+
+    monkeypatch.setattr(module, "_execute_codex_prompt", legacy_executor)
+
+    response, error, thread_id, usage = module._execute_prompt_runtime(
+        "Execute through the guarded route.",
+        "balanced",
+        3,
+        [],
+        "codex",
+        module.MODEL,
+        timeout_seconds=120,
+        service_tier="flex",
+        job_budget="normal",
+        optimization_mode="routine",
+        subscription_probe=True,
+    )
+
+    assert (response, error, thread_id, usage) == (
+        "Legacy executor completed.",
+        "",
+        "legacy-thread",
+        {},
+    )
+    assert calls == [
+        {
+            "prompt": "Execute through the guarded route.",
+            "speed": "balanced",
+            "detail": 3,
+            "attachments": [],
+            "timeout_seconds": 120,
+            "model": module.MODEL,
+            "service_tier": "flex",
+            "job_budget": "normal",
+        }
+    ]
+
+
+def test_direct_openai_execution_rechecks_auth_before_process_launch(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+    )
+    auth_state = {"calls": 0}
+
+    def auth_mode() -> str:
+        auth_state["calls"] += 1
+        return "chatgpt" if auth_state["calls"] == 1 else "api_key"
+
+    monkeypatch.setattr(module, "stored_codex_auth_mode", auth_mode)
+
+    def fail_popen(*_args, **_kwargs):
+        raise AssertionError("direct Codex process must not launch after auth changes")
+
+    monkeypatch.setattr(module.subprocess, "Popen", fail_popen)
+
+    response, error_text, _thread_id, usage = module._execute_codex_prompt(
+        "Check the current state.", "balanced", 2, [], service_tier="flex"
+    )
+
+    assert response == ""
+    assert "No OpenAI API request was sent." in error_text
+    assert usage["provider_error_kind"] == "openai_api_spend_blocked"
+
+
+def test_direct_chatgpt_launch_requires_turn_to_fit_reset_window(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+    )
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(
+        module,
+        "codex_account_capacity_snapshot",
+        lambda **_kwargs: {
+            "fresh": True,
+            "state": "available",
+            "minimum_window_percent_left": 75,
+            "windows": [{"reset_seconds": 300}],
+        },
+    )
+
+    decision = module.codex_openai_direct_execution_decision(
+        "flex",
+        prompt="Implement the focused fix and verify it.",
+        job_budget="normal",
+        detail=3,
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason_code"] == "chatgpt_credit_extension_guard"
+    assert decision["capacity"]["forecast"]["turn_fits_reset"] is False
+
+
+def test_bedrock_launch_drops_inherited_openai_api_key_when_api_spend_disabled(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-bedrock-child")
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+        NORMAN_CODEX_STANDARD_PROFILE_V2="personal-bedrock",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_AWS_PROFILE="kk-personal",
+        NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
+    )
+    captured_env: dict[str, str] = {}
+
+    class FakePopen:
+        pid = 12345
+        returncode = 0
+
+        def __init__(self, cmd, text, stdin, stdout, stderr, env, start_new_session):
+            captured_env.update(env)
+            output_path = pathlib.Path(cmd[cmd.index("-o") + 1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("ok", encoding="utf-8")
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(module.subprocess, "Popen", FakePopen)
+
+    response, error_text, _thread_id, _usage = module._execute_codex_prompt(
+        "Check the Bedrock route.", "balanced", 2, [], service_tier="default"
+    )
+
+    assert response == "ok"
+    assert error_text == ""
+    assert "OPENAI_API_KEY" not in captured_env
+    assert captured_env["AWS_PROFILE"] == "kk-personal"
+    assert captured_env["AWS_REGION"] == "us-east-2"
+
+
+def test_subscription_self_improvement_runs_once_near_reset_with_read_only_codex(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+        NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_ENABLED="1",
+        NORMAN_CODEX_BILLING_OWNER="kristopher",
+        NORMAN_CODEX_AGENT_GROUP="personal",
+    )
+    module.ensure_state_dir()
+    now = 1_700_000_000
+    capacity = {
+        **module.default_codex_account_capacity(),
+        "source": "interactive_usage",
+        "observed_at": now,
+        "last_probe_at": now,
+        "auth_mode": "chatgpt",
+        "state": "available",
+        "windows": [
+            {
+                "label": "Short",
+                "percent_left": 75,
+                "reset_hint": "10m",
+                "reset_seconds": 600,
+            }
+        ],
+    }
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(module, "now_ts", lambda: now)
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    module.update_status_meta(pending=False, queued_prompts=[])
+    module._persist_codex_account_capacity(capacity)
+    launches: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        module,
+        "start_web_prompt",
+        lambda *args, **kwargs: (
+            launches.append((args, kwargs)) is None,
+            {},
+        ),
+    )
+
+    decision = module.codex_subscription_self_improvement_decision(capacity, now=now)
+
+    assert decision["eligible"] is True
+    assert decision["reset_window_id"]
+    assert module.maybe_start_subscription_capacity_self_improvement(capacity) is True
+    assert module.maybe_start_subscription_capacity_self_improvement(capacity) is False
+    assert len(launches) == 1
+    args, kwargs = launches[0]
+    assert module.SUBSCRIPTION_SELF_IMPROVEMENT_MARKER in str(args[0])
+    assert kwargs["runtime"] == "codex"
+    assert kwargs["service_tier"] == "flex"
+    assert kwargs["route_lock"] is True
+    assert kwargs["source"] == "system"
+
+    command: list[str] = []
+
+    class FakePopen:
+        pid = 12345
+        returncode = 0
+
+        def __init__(self, cmd, text, stdin, stdout, stderr, env, start_new_session):
+            command.extend(cmd)
+            assert "OPENAI_API_KEY" not in env
+            assert "CODEX_API_KEY" not in env
+            output_path = pathlib.Path(cmd[cmd.index("-o") + 1])
+            output_path.write_text("Read-only review complete.", encoding="utf-8")
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(module.subprocess, "Popen", FakePopen)
+
+    response, error_text, _thread_id, _usage = module._execute_codex_prompt(
+        module.subscription_capacity_self_improvement_prompt(),
+        "balanced",
+        2,
+        [],
+        service_tier="flex",
+        job_budget="2m",
+        optimization_mode="raw",
+    )
+
+    assert response == "Read-only review complete."
+    assert error_text == ""
+    assert command[command.index("--sandbox") + 1] == "read-only"
+    assert command[command.index("--ask-for-approval") + 1] == "never"
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command
+
+
+def test_session_budget_defaults_to_160k_handoff_and_200k_hard_stop(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    policy = module.session_budget_policy_from_env()
+
+    assert policy.enabled is True
+    assert policy.checkpoint_tokens == 160_000
+    assert policy.reauthorization_tokens == 200_000
+
+
+def test_session_budget_allows_explicit_threshold_overrides(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_SESSION_CHECKPOINT_TOKENS="175000",
+        NORMAN_CODEX_SESSION_REAUTHORIZATION_TOKENS="225000",
+    )
+
+    policy = module.session_budget_policy_from_env()
+
+    assert policy.checkpoint_tokens == 175_000
+    assert policy.reauthorization_tokens == 225_000
+
+
+def test_careful_response_speed_uses_high_reasoning(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    assert module.response_reasoning_effort("careful") == "high"
 
 
 def test_xfast_response_speed_is_balanced_without_emergency_gate(
@@ -109,12 +1544,269 @@ def test_xfast_response_speed_requires_explicit_emergency_gate(
     assert module.response_reasoning_effort("xfast") == "low"
 
 
+def test_session_admission_requires_named_xhigh_escalation(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_REQUIRE_NAMED_ESCALATION="1",
+    )
+
+    normal_reason = module.session_budget_admission(
+        model="openai.gpt-5.6-terra",
+        reasoning_effort="high",
+    )
+    assert normal_reason["allowed"] is True
+    assert normal_reason["reason_code"] == "within_budget"
+
+    missing_effort_reason = module.session_budget_admission(
+        model="openai.gpt-5.6-terra",
+        reasoning_effort="xhigh",
+    )
+    assert missing_effort_reason["allowed"] is False
+    assert missing_effort_reason["reason_code"] == "named_escalation_required"
+
+    admitted = module.session_budget_admission(
+        model="openai.gpt-5.6-terra",
+        reasoning_effort="xhigh",
+        escalation_reason="Need elevated reasoning to reproduce the production failure.",
+    )
+    assert admitted["allowed"] is True
+    assert admitted["action"] == "escalated"
+
+
+def test_session_checkpoint_handoff_resets_thread_and_bypasses_reauth(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_REQUIRE_NAMED_ESCALATION="1",
+    )
+    module.SESSION_BUDGET_POLICY = module.SessionBudgetPolicy(
+        enabled=True,
+        checkpoint_tokens=100,
+        reauthorization_tokens=250,
+        max_age_seconds=24 * 60 * 60,
+        max_tool_calls=10,
+        require_named_escalation=True,
+    )
+    module.ensure_state_dir()
+    thread_id = "checkpoint-thread"
+    module.append_usage_entry(
+        started_at=100,
+        finished_at=110,
+        thread_id=thread_id,
+        speed="careful",
+        detail=3,
+        service_tier="default",
+        success=True,
+        runtime="codex",
+        model="openai.gpt-5.6-terra",
+        usage={"total_tokens": 260, "broker_tool_calls": 12},
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.6-terra",
+            service_tier="default",
+        ),
+    )
+
+    blocked = module.session_budget_admission(
+        model="openai.gpt-5.6-terra",
+        reasoning_effort="high",
+        thread_id=thread_id,
+    )
+    assert blocked["allowed"] is False
+    assert blocked["reason_code"] == "reauthorization_required"
+
+    handoff = module.session_budget_admission(
+        model="openai.gpt-5.6-terra",
+        reasoning_effort="high",
+        checkpoint_intent=True,
+        thread_id=thread_id,
+    )
+    assert handoff["allowed"] is True
+    assert handoff["action"] == "checkpoint"
+    assert {"token_limit", "tool_call_limit"} <= set(handoff["checkpoint_reasons"])
+
+    module.write_text(module.THREAD_ID_PATH, thread_id)
+    module.write_text(module.THREAD_SCOPE_PATH, "profile-v2:work")
+    assert module.complete_session_handoff_if_needed(
+        handoff,
+        success=True,
+        thread_id=thread_id,
+        finished_at=120,
+    )
+    assert module.read_text(module.THREAD_ID_PATH) == ""
+    assert module.read_text(module.THREAD_SCOPE_PATH) == ""
+
+
+def test_stale_idle_provider_thread_rotates_in_norman_switchboard(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    module.SESSION_BUDGET_POLICY = module.SessionBudgetPolicy(
+        enabled=True,
+        checkpoint_tokens=100,
+        reauthorization_tokens=200,
+        max_age_seconds=24 * 60 * 60,
+        max_tool_calls=100,
+        require_named_escalation=False,
+    )
+    module.ensure_state_dir()
+    module.write_text(module.THREAD_ID_PATH, "stale-norman-thread")
+    module.write_text(module.THREAD_SCOPE_PATH, "profile-v2:work")
+    module.update_status_meta(pending=False, state="ok", queued_prompts=[])
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+
+    rotation = module.rotate_idle_provider_thread_for_operator_prompt(
+        {
+            "allowed": False,
+            "reason_code": "reauthorization_required",
+            "usage": {"age_seconds": 11_132, "total_tokens": 1_643_951},
+        },
+        prompt="start an unrelated task",
+        source="operator",
+    )
+
+    assert rotation["reason"] == "stale_idle_provider_thread"
+    assert rotation["prior_thread_id"] == "stale-norman-thread"
+    assert module.read_text(module.THREAD_ID_PATH) == ""
+    assert module.read_text(module.THREAD_SCOPE_PATH) == ""
+
+
+def test_context_checkpoint_prompt_recognizes_compact_command(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    assert module.is_context_checkpoint_prompt("/compact")
+    assert module.is_context_checkpoint_prompt(
+        "Switching topics now, /compact, then inspect the new request."
+    )
+    assert not module.is_context_checkpoint_prompt("inspect the new request")
+
+
+def test_queue_rechecks_session_admission_before_launch(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    module.queue_prompt(
+        "continue the scoped work",
+        "careful",
+        3,
+        "10m",
+        [],
+        "codex",
+        "openai.gpt-5.6-terra",
+        service_tier="default",
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.6-terra",
+            service_tier="default",
+        ),
+        session_admission={
+            "reasoning_effort": "high",
+            "escalation_reason": "",
+            "reauthorization_reason": "",
+            "checkpoint_intent": False,
+        },
+    )
+    module.update_status_meta(pending=False, state="ok")
+    denied = {
+        "allowed": False,
+        "action": "deny",
+        "reason_code": "checkpoint_required",
+        "reason": "Save a compact handoff before resuming this thread.",
+    }
+    monkeypatch.setattr(module, "session_budget_admission", lambda **_kwargs: denied)
+
+    assert module.start_next_queued_prompt() is None
+    meta = module.load_status_meta()
+    assert meta["state"] == "session-budget-blocked"
+    assert len(module.normalize_queue(meta["queued_prompts"])) == 1
+    assert meta["last_session_admission"]["reason_code"] == "checkpoint_required"
+
+
+def test_raw_tmux_send_is_disabled_by_default(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    assert module.RAW_TMUX_SEND_ALLOWED is False
+
+
+def test_usage_attribution_persists_activity_skills_and_tool_calls(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    attribution = module.usage_attribution(
+        prompt="repair the parser and verify the replay",
+        turn_plan={
+            "understood_task": "Repair parser replay",
+            "skill_labels": ["code edit", "verification"],
+        },
+        admission={
+            "reasoning_effort": "high",
+            "action": "allow",
+            "reason_code": "within_budget",
+        },
+        request_source="operator",
+        speed="careful",
+        usage={"broker_tool_calls": 7},
+    )
+    module.append_usage_entry(
+        started_at=100,
+        finished_at=120,
+        thread_id="attribution-thread",
+        speed="careful",
+        detail=3,
+        service_tier="default",
+        success=True,
+        runtime="codex",
+        model="openai.gpt-5.6-terra",
+        usage={"total_tokens": 345, "broker_tool_calls": 7},
+        attribution=attribution,
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.6-terra",
+            service_tier="default",
+        ),
+    )
+
+    conn = sqlite3.connect(module.STATE_DB_PATH)
+    row = conn.execute(
+        """
+        SELECT activity_label, skill_labels, reasoning_effort, request_source,
+               session_admission_action, session_admission_reason_code,
+               tool_call_count
+        FROM usage_events
+        WHERE thread_id = ?
+        """,
+        ("attribution-thread",),
+    ).fetchone()
+    conn.close()
+
+    assert row == (
+        "Repair parser replay",
+        '["code edit", "verification"]',
+        "high",
+        "operator",
+        "allow",
+        "within_budget",
+        7,
+    )
+
+
 def test_host_pressure_guard_blocks_new_web_prompt(monkeypatch, tmp_path) -> None:
     guard_path = tmp_path / "pressure-guard.json"
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
         NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH=str(guard_path),
+        NORMAN_CODEX_HOST_PRESSURE_GUARD_TARGET="work-special",
     )
     guard_path.write_text(
         json.dumps(
@@ -155,6 +1847,7 @@ def test_host_pressure_guard_defers_heavy_web_prompt(monkeypatch, tmp_path) -> N
         monkeypatch,
         tmp_path,
         NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH=str(guard_path),
+        NORMAN_CODEX_HOST_PRESSURE_GUARD_TARGET="work-special",
     )
     guard_path.write_text(
         json.dumps(
@@ -184,7 +1877,7 @@ def test_host_pressure_guard_defers_heavy_web_prompt(monkeypatch, tmp_path) -> N
     assert actions[0][0] == "pressure-guard-defer"
 
 
-def test_auto_turn_controls_downshift_status_from_xhigh(monkeypatch, tmp_path) -> None:
+def test_auto_turn_controls_downshift_status_from_high(monkeypatch, tmp_path) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
     recommendation = module.turn_control_recommendation(
@@ -271,7 +1964,7 @@ def test_auto_turn_controls_do_not_treat_fork_plan_question_as_status(
     assert "Answer now" not in recommendation["steering_chips"]
 
 
-def test_auto_turn_controls_preserve_explicit_deep(monkeypatch, tmp_path) -> None:
+def test_auto_turn_controls_preserve_explicit_depth(monkeypatch, tmp_path) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
     recommendation = module.turn_control_recommendation(
@@ -286,7 +1979,7 @@ def test_auto_turn_controls_preserve_explicit_deep(monkeypatch, tmp_path) -> Non
     assert recommendation["workload"] == "explicit"
     assert recommendation["auto_applied"] is False
     assert recommendation["effective_speed"] == "careful"
-    assert recommendation["effective_reasoning_effort"] == "xhigh"
+    assert recommendation["effective_reasoning_effort"] == "high"
     assert recommendation["effective_detail"] == 5
     assert recommendation["effective_job_budget"] == "normal"
 
@@ -356,7 +2049,7 @@ def test_deadline_checkpoint_auto_policy_keeps_working_past_target(
     )
 
 
-def test_auto_turn_controls_keep_deploy_fix_on_xhigh(monkeypatch, tmp_path) -> None:
+def test_auto_turn_controls_keep_deploy_fix_on_high(monkeypatch, tmp_path) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
     recommendation = module.turn_control_recommendation(
@@ -371,7 +2064,7 @@ def test_auto_turn_controls_keep_deploy_fix_on_xhigh(monkeypatch, tmp_path) -> N
     assert recommendation["workload"] == "approval_boundary"
     assert recommendation["auto_applied"] is True
     assert recommendation["effective_speed"] == "careful"
-    assert recommendation["effective_reasoning_effort"] == "xhigh"
+    assert recommendation["effective_reasoning_effort"] == "high"
     assert recommendation["effective_detail"] == 4
     assert recommendation["effective_job_budget"] == "30m"
 
@@ -415,7 +2108,7 @@ def test_auto_turn_controls_parse_explicit_five_minute_deadline(
     assert recommendation["workload"] == "explicit"
     assert recommendation["auto_applied"] is False
     assert recommendation["effective_speed"] == "careful"
-    assert recommendation["effective_reasoning_effort"] == "xhigh"
+    assert recommendation["effective_reasoning_effort"] == "high"
     assert recommendation["effective_job_budget"] == "5m"
     assert recommendation["requested_time_label"] == "5 min"
 
@@ -484,7 +2177,7 @@ def test_auto_turn_controls_allow_approved_overnight_work(
     assert recommendation["workload"] == "long_work"
     assert recommendation["auto_applied"] is True
     assert recommendation["effective_speed"] == "careful"
-    assert recommendation["effective_reasoning_effort"] == "xhigh"
+    assert recommendation["effective_reasoning_effort"] == "high"
     assert recommendation["effective_job_budget"] == "overnight"
     assert recommendation["time_approval_required"] is False
     assert recommendation["time_approval_granted"] is True
@@ -545,6 +2238,17 @@ def test_start_web_prompt_applies_auto_turn_controls_to_status(
         module, "launch_prompt_worker", lambda *args: launches.append(args)
     )
     monkeypatch.setattr(module, "current_snapshot", lambda: _cheap_snapshot(module))
+    monkeypatch.setattr(
+        module,
+        "codex_subscription_capacity_route_decision",
+        lambda **_kwargs: {
+            "enabled": True,
+            "selected": True,
+            "state": "available",
+            "fresh": True,
+            "chatgpt_auth_verified": True,
+        },
+    )
 
     accepted, snapshot = module.start_web_prompt(
         "status on keystone?",
@@ -568,7 +2272,7 @@ def test_start_web_prompt_applies_auto_turn_controls_to_status(
     assert snapshot["running_turn_control"]["workload"] == "status"
     assert snapshot["running_turn_envelope"]["operator_intent_class"] == "status"
     assert snapshot["running_turn_envelope"]["authority_class"] == "read_only"
-    assert snapshot["running_turn_envelope"]["effective_model"] == "gpt-5.4"
+    assert snapshot["running_turn_envelope"]["effective_model"] == "gpt-5.6-terra"
 
 
 def test_service_tier_controls_are_explicit_and_alias_legacy_fast(
@@ -583,8 +2287,15 @@ def test_service_tier_controls_are_explicit_and_alias_legacy_fast(
     assert module.normalize_service_tier("flex") == "flex"
     assert module.normalize_service_tier("fast") == "priority"
     assert module.service_tier_execution_tier("auto") == "flex"
-    assert module.service_tier_config_args("auto") == ["-c", 'service_tier="flex"']
+    assert module.service_tier_config_args("auto") == [
+        "-c",
+        'model_provider="openai"',
+        "-c",
+        'service_tier="flex"',
+    ]
     assert module.service_tier_config_args("priority") == [
+        "-c",
+        'model_provider="openai"',
         "-c",
         'service_tier="priority"',
     ]
@@ -604,33 +2315,44 @@ def test_service_tier_default_can_be_set_to_flex(monkeypatch, tmp_path) -> None:
 def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.delenv("AWS_PROFILE", raising=False)
-    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv("AWS_PROFILE", "ambient-aws-profile")
+    monkeypatch.setenv("AWS_REGION", "us-west-1")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-1")
+    monkeypatch.setenv("OPENAI_API_KEY", "should-not-reach-chatgpt-codex")
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="1",
+        NORMAN_CODEX_CHATGPT_CREDIT_EXTENSION_ALLOWED="1",
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
-        NORMAN_CODEX_DIRECT_MODEL="gpt-5.5",
-        NORMAN_CODEX_FLEX_MODEL="gpt-5.5",
-        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
+        NORMAN_CODEX_DIRECT_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_FLEX_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
+    )
+    module.CODEX_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    module.CODEX_AUTH_PATH.write_text(
+        json.dumps({"auth_mode": "chatgpt"}) + "\n",
+        encoding="utf-8",
     )
 
     assert module.DEFAULT_SERVICE_TIER == "default"
     assert module.service_tier_options_payload()[1]["label"] == "Bedrock Standard"
     assert module.codex_profile_v2_for_service_tier("standard") == "traqline-bedrock"
     assert module.codex_model_for_service_tier("standard", "gpt-5.4") == (
-        "openai.gpt-5.4"
+        "openai.gpt-5.6-terra"
     )
     assert module.codex_profile_v2_for_service_tier("flex") == ""
-    assert module.codex_model_for_service_tier("flex", "gpt-5.4") == "gpt-5.4"
-    assert module.codex_model_for_service_tier("flex", "openai.gpt-5.4") == "gpt-5.4"
+    assert module.codex_model_for_service_tier("flex", "gpt-5.4") == "gpt-5.6-terra"
+    assert (
+        module.codex_model_for_service_tier("flex", "openai.gpt-5.4") == "gpt-5.6-terra"
+    )
     assert (
         module.codex_thread_scope_key("flex", "openai.gpt-5.4")
-        == "direct:model:gpt-5.4"
+        == "direct:model:gpt-5.6-terra"
     )
     assert module.usage_provider_tags("standard") == {
         "provider_label": "Bedrock Standard",
@@ -654,6 +2376,13 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
         "AWS_PROFILE": "ob-traqline-admin",
         "AWS_REGION": "us-east-2",
     }
+    direct_provider_env = {
+        "AWS_PROFILE": "ambient-aws-profile",
+        "AWS_REGION": "us-west-1",
+        "AWS_DEFAULT_REGION": "us-west-1",
+    }
+    module.apply_codex_provider_environment(direct_provider_env, "flex")
+    assert direct_provider_env == {}
 
     captured: list[tuple[list[str], dict[str, str]]] = []
 
@@ -676,7 +2405,7 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     module._execute_codex_prompt("status?", "balanced", 3, [], service_tier="default")
     standard_cmd, standard_env = captured[-1]
     assert standard_cmd[standard_cmd.index("--profile-v2") + 1] == "traqline-bedrock"
-    assert standard_cmd[standard_cmd.index("-m") + 1] == "openai.gpt-5.5"
+    assert standard_cmd[standard_cmd.index("-m") + 1] == "openai.gpt-5.6-terra"
     assert "-c" in standard_cmd
     assert standard_env["AWS_PROFILE"] == "ob-traqline-admin"
     assert standard_env["AWS_REGION"] == "us-east-2"
@@ -684,10 +2413,13 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     module._execute_codex_prompt("status?", "balanced", 3, [], service_tier="flex")
     flex_cmd, flex_env = captured[-1]
     assert "--profile-v2" not in flex_cmd
-    assert flex_cmd[flex_cmd.index("-m") + 1] == "gpt-5.5"
+    assert flex_cmd[flex_cmd.index("-m") + 1] == "gpt-5.6-terra"
+    assert 'model_provider="openai"' in flex_cmd
     assert 'service_tier="flex"' in flex_cmd
     assert flex_env.get("AWS_PROFILE") is None
     assert flex_env.get("AWS_REGION") is None
+    assert flex_env.get("AWS_DEFAULT_REGION") is None
+    assert "OPENAI_API_KEY" not in flex_env
 
     module._execute_codex_prompt(
         "status?",
@@ -699,7 +2431,7 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     )
     stale_flex_cmd, stale_flex_env = captured[-1]
     assert "--profile-v2" not in stale_flex_cmd
-    assert stale_flex_cmd[stale_flex_cmd.index("-m") + 1] == "gpt-5.5"
+    assert stale_flex_cmd[stale_flex_cmd.index("-m") + 1] == "gpt-5.6-terra"
     assert stale_flex_env.get("AWS_PROFILE") is None
     assert stale_flex_env.get("AWS_REGION") is None
 
@@ -714,14 +2446,14 @@ def test_bedrock_failover_profile_routes_secondary_region_before_direct(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2="traqline-bedrock-us-west-2",
-        NORMAN_CODEX_BEDROCK_FAILOVER_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_BEDROCK_FAILOVER_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_FAILOVER_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION="us-west-2",
-        NORMAN_CODEX_DIRECT_MODEL="gpt-5.5",
-        NORMAN_CODEX_FLEX_MODEL="gpt-5.5",
-        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.5",
+        NORMAN_CODEX_DIRECT_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_FLEX_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
     )
@@ -734,10 +2466,7 @@ def test_bedrock_failover_profile_routes_secondary_region_before_direct(
         "priority",
     ]
     assert module.normalize_service_tier("secondary-bedrock") == "bedrock-failover"
-    assert module.service_tier_config_args("bedrock-failover") == [
-        "-c",
-        'service_tier="default"',
-    ]
+    assert module.service_tier_config_args("bedrock-failover") == []
     assert module.codex_profile_v2_for_service_tier("bedrock-failover") == (
         "traqline-bedrock-us-west-2"
     )
@@ -746,10 +2475,11 @@ def test_bedrock_failover_profile_routes_secondary_region_before_direct(
         "traqline-bedrock-us-west-2",
     ]
     assert (
-        module.codex_model_for_service_tier("bedrock-failover", "") == "openai.gpt-5.5"
+        module.codex_model_for_service_tier("bedrock-failover", "")
+        == "openai.gpt-5.6-terra"
     )
     assert module.codex_thread_scope_key("bedrock-failover") == (
-        "profile-v2:traqline-bedrock-us-west-2:model:openai.gpt-5.5"
+        "profile-v2:traqline-bedrock-us-west-2:model:openai.gpt-5.6-terra"
     )
     assert module.usage_provider_tags("bedrock-failover") == {
         "provider_label": "Bedrock Failover",
@@ -810,8 +2540,8 @@ def test_bedrock_failover_profile_routes_secondary_region_before_direct(
     assert failover_cmd[failover_cmd.index("--profile-v2") + 1] == (
         "traqline-bedrock-us-west-2"
     )
-    assert failover_cmd[failover_cmd.index("-m") + 1] == "openai.gpt-5.5"
-    assert 'service_tier="default"' in failover_cmd
+    assert failover_cmd[failover_cmd.index("-m") + 1] == "openai.gpt-5.6-terra"
+    assert 'service_tier="default"' not in failover_cmd
     assert failover_env["AWS_PROFILE"] == "ob-traqline-admin"
     assert failover_env["AWS_REGION"] == "us-west-2"
 
@@ -826,18 +2556,18 @@ def test_bedrock_tertiary_failover_profile_routes_before_direct(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2="traqline-bedrock-us-east-1",
-        NORMAN_CODEX_BEDROCK_FAILOVER_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_BEDROCK_FAILOVER_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_FAILOVER_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION="us-east-1",
         NORMAN_CODEX_BEDROCK_FAILOVER2_PROFILE_V2="traqline-bedrock-us-west-2",
-        NORMAN_CODEX_BEDROCK_FAILOVER2_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_BEDROCK_FAILOVER2_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_FAILOVER2_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_BEDROCK_FAILOVER2_AWS_REGION="us-west-2",
-        NORMAN_CODEX_DIRECT_MODEL="gpt-5.5",
-        NORMAN_CODEX_FLEX_MODEL="gpt-5.5",
-        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.5",
+        NORMAN_CODEX_DIRECT_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_FLEX_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
     )
@@ -851,16 +2581,13 @@ def test_bedrock_tertiary_failover_profile_routes_before_direct(
         "priority",
     ]
     assert module.normalize_service_tier("bedrock3") == "bedrock-failover-2"
-    assert module.service_tier_config_args("bedrock-failover-2") == [
-        "-c",
-        'service_tier="default"',
-    ]
+    assert module.service_tier_config_args("bedrock-failover-2") == []
     assert module.codex_profile_v2_for_service_tier("bedrock-failover-2") == (
         "traqline-bedrock-us-west-2"
     )
     assert (
         module.codex_model_for_service_tier("bedrock-failover-2", "")
-        == "openai.gpt-5.5"
+        == "openai.gpt-5.6-terra"
     )
     assert module.usage_provider_tags("bedrock-failover-2") == {
         "provider_label": "Bedrock Failover 2",
@@ -985,6 +2712,30 @@ def test_start_web_prompt_recovers_stale_direct_tier_before_worker(
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
     )
     module.ensure_state_dir()
+    module.CODEX_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    module.CODEX_AUTH_PATH.write_text(
+        json.dumps({"auth_mode": "chatgpt"}) + "\n",
+        encoding="utf-8",
+    )
+    observed_at = module.now_ts()
+    module._persist_codex_account_capacity(
+        {
+            **module.default_codex_account_capacity(),
+            "source": "interactive_usage",
+            "observed_at": observed_at,
+            "last_probe_at": observed_at,
+            "auth_mode": "chatgpt",
+            "state": "available",
+            "windows": [
+                {
+                    "label": "Short window",
+                    "percent_left": 84,
+                    "reset_hint": "2h",
+                    "reset_seconds": 7200,
+                }
+            ],
+        }
+    )
     module.append_usage_entry(
         started_at=1781538999,
         finished_at=1781539006,
@@ -1003,6 +2754,12 @@ def test_start_web_prompt_recovers_stale_direct_tier_before_worker(
                 "request to your admin or try again at 5:28 PM."
             ),
         },
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="gpt-5.5",
+            service_tier="flex",
+        ),
     )
     calls = []
 
@@ -1063,6 +2820,299 @@ def test_start_web_prompt_recovers_stale_direct_tier_before_worker(
     assert events[0]["payload"]["service_tier"] == "default"
 
 
+def test_start_web_prompt_prefers_fresh_chatgpt_capacity_over_bedrock(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_SERVICE_TIER="default",
+        NORMAN_CODEX_STANDARD_PROFILE_V2="personal-bedrock",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_AWS_PROFILE="norman-bedrock",
+        NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
+        NORMAN_CODEX_BILLING_OWNER="kristopher",
+        NORMAN_CODEX_AGENT_GROUP="personal",
+    )
+    module.ensure_state_dir()
+    module.CODEX_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    module.CODEX_AUTH_PATH.write_text(
+        json.dumps({"auth_mode": "chatgpt"}) + "\n",
+        encoding="utf-8",
+    )
+    observed_at = module.now_ts()
+    module._persist_codex_account_capacity(
+        {
+            **module.default_codex_account_capacity(),
+            "source": "interactive_usage",
+            "observed_at": observed_at,
+            "last_probe_at": observed_at,
+            "auth_mode": "chatgpt",
+            "state": "available",
+            "windows": [
+                {
+                    "label": "Short window",
+                    "percent_left": 84,
+                    "reset_hint": "2h",
+                    "reset_seconds": 7200,
+                }
+            ],
+        }
+    )
+    calls = []
+
+    def fake_execute_runtime(
+        prompt,
+        speed,
+        detail,
+        attachments,
+        runtime,
+        model,
+        timeout_seconds=None,
+        service_tier="",
+        job_budget="",
+        optimization_mode="",
+    ):
+        calls.append(
+            {
+                "prompt": prompt,
+                "runtime": runtime,
+                "model": model,
+                "service_tier": service_tier,
+            }
+        )
+        return (
+            "Completed through the subscription lane.",
+            "",
+            "thread-subscription",
+            module.normalize_usage_entry(
+                {
+                    "service_tier": service_tier,
+                    "provider_surface": "openai-direct",
+                    "codex_auth_mode": "chatgpt",
+                    "total_tokens": 10,
+                }
+            ),
+        )
+
+    monkeypatch.setattr(module, "_execute_prompt_runtime", fake_execute_runtime)
+
+    accepted, snapshot = module.start_web_prompt(
+        "Implement the targeted patch and run make test.",
+        "careful",
+        5,
+        "normal",
+        service_tier="default",
+    )
+
+    assert accepted is True
+    assert snapshot["pending"] is True
+    for _ in range(20):
+        worker = module.ACTIVE_PROMPT_THREAD
+        if worker is not None:
+            worker.join(timeout=0.2)
+        final_snapshot = module.current_snapshot()
+        if not final_snapshot["pending"] and calls:
+            break
+
+    assert calls
+    assert calls[0]["runtime"] == "codex"
+    assert calls[0]["service_tier"] == "flex"
+    assert (
+        final_snapshot["codex_account_capacity"]
+        == (final_snapshot["usage"]["codex_account_capacity"])
+    )
+    assert (
+        final_snapshot["codex_account_capacity"]["eligible_for_subscription_route"]
+        is True
+    )
+    events = module.load_audit_events(
+        limit=20, event_type="chat.subscription-capacity-preferred"
+    )
+    assert events
+    assert events[0]["payload"]["cost_route"]["selected_service_tier"] == "flex"
+
+
+def test_cp_waterfall_never_authorizes_norllama_as_final_response(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    captured = {}
+    original_build = module.build_tui_waterfall
+
+    def capture_cp_waterfall(**kwargs):
+        captured.update(kwargs)
+        return original_build(
+            **{
+                **kwargs,
+                "subscription": {
+                    "enabled": False,
+                    "selected": False,
+                    "state": "unknown",
+                    "fresh": False,
+                    "chatgpt_auth_verified": False,
+                },
+            }
+        )
+
+    monkeypatch.setattr(module, "build_tui_waterfall", capture_cp_waterfall)
+
+    accepted, snapshot = module.start_web_prompt(
+        "Prepare the final cloud-authority response.",
+        "balanced",
+        3,
+        "normal",
+        service_tier="default",
+    )
+
+    assert accepted is False
+    assert snapshot["waterfall_blocked"] is True
+    assert captured["norllama_available"] is False
+    assert captured["norllama_safe_final"] is False
+
+
+def test_switchboard_capacity_probe_never_sends_usage_command(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_TIMEOUT_SECONDS = 0.001
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = 0.01
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD = None
+    module.CODEX_ACCOUNT_CAPACITY_COMMAND = "/usage"
+    module.CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND = ""
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    prompt_pane = "OpenAI Codex (v0.144.4)\n\n› "
+    sent: list[str] = []
+    keys: list[tuple[str, ...]] = []
+    monkeypatch.setattr(module, "capture_pane", lambda: prompt_pane)
+    monkeypatch.setattr(
+        module, "send_codex_status_probe", lambda: sent.append("/status")
+    )
+    monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
+
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is True
+    )
+    worker = module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD
+    assert worker is not None
+    worker.join(timeout=1)
+
+    persisted = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+    assert sent == []
+    assert keys == []
+    assert persisted["source"] == "probe_command_rejected"
+    assert persisted["state"] == "unknown"
+    assert persisted["eligible_for_subscription_route"] is False
+    assert "/usage can consume an account limit reset" in persisted["last_error"]
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is False
+    )
+
+
+def test_norman_status_capacity_parser_records_credit_metadata(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    observed_at = int(time.mktime((2026, 7, 16, 12, 0, 0, 0, 0, -1)))
+
+    parsed = module.parse_codex_account_capacity_pane(
+        """
+        You have 4 usage limit resets available. Run /usage to use one.
+        Weekly limit: 100% left
+        (resets 12:12 on 23 Jul)
+        Context window: 92% left
+        Credits: 6,907 credits
+        """,
+        observed_at=observed_at,
+        auth_mode="chatgpt",
+    )
+
+    assert parsed["state"] == "available"
+    assert parsed["minimum_window_percent_left"] == 100
+    assert [window["label"] for window in parsed["windows"]] == ["Weekly"]
+    assert parsed["windows"][0]["reset_seconds"] > 6 * 24 * 60 * 60
+    assert parsed["credits_available"] == 6907
+    assert parsed["usage_limit_resets_available"] == 4
+
+
+def test_usage_limit_reset_approval_is_one_time(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    audit_events: list[dict] = []
+    monkeypatch.setattr(
+        module, "append_audit_event", lambda **value: audit_events.append(value)
+    )
+    offer = module.create_rate_limit_reset_approval(
+        {
+            "usage_limit_resets_available": 3,
+            "reset_hint": "in 2 days",
+        },
+        actor_ip="127.0.0.1",
+    )
+
+    assert offer["available_count"] == 3
+    assert offer["token"]
+    assert (
+        module.authorize_rate_limit_reset_fallback(offer["token"], actor_ip="127.0.0.1")
+        is True
+    )
+    assert (
+        module.authorize_rate_limit_reset_fallback(offer["token"], actor_ip="127.0.0.1")
+        is False
+    )
+    assert [item["event_type"] for item in audit_events] == [
+        "chat.usage-limit-reset-offered",
+        "chat.usage-limit-reset-declined",
+    ]
+
+
+def test_operator_approved_usage_limit_reset_uses_app_server(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "append_audit_event", lambda **_value: None)
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    calls: list[tuple[str, dict, bool]] = []
+
+    def exchange(method, params, *, followup_read=False):
+        calls.append((method, params, followup_read))
+        return (
+            {"outcome": "reset"},
+            {
+                "rateLimits": {
+                    "primary": {"usedPercent": 0, "resetsAt": int(time.time()) + 3600},
+                    "secondary": None,
+                },
+                "rateLimitResetCredits": {"availableCount": 2},
+            },
+        )
+
+    monkeypatch.setattr(module, "_codex_app_server_exchange", exchange)
+    offer = module.create_rate_limit_reset_approval(
+        {"usage_limit_resets_available": 3, "reset_hint": "tomorrow"}
+    )
+    ok, detail, capacity = module.consume_rate_limit_reset_approval(offer["token"])
+
+    assert ok is True
+    assert "Retrying" in detail
+    assert calls[0][0] == "account/rateLimitResetCredit/consume"
+    assert calls[0][2] is True
+    assert uuid.UUID(calls[0][1]["idempotencyKey"])
+    assert capacity["state"] == "available"
+    assert capacity["usage_limit_resets_available"] == 2
+
+
 def test_bedrock_standard_can_disable_direct_openai_tiers(
     monkeypatch, tmp_path
 ) -> None:
@@ -1071,8 +3121,8 @@ def test_bedrock_standard_can_disable_direct_openai_tiers(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
-        NORMAN_CODEX_DIRECT_MODEL="gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
+        NORMAN_CODEX_DIRECT_MODEL="gpt-5.6-terra",
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="0",
         HOUSEBOT_CODEX_DIRECT_TIERS_ENABLED="0",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
@@ -1086,11 +3136,13 @@ def test_bedrock_standard_can_disable_direct_openai_tiers(
     assert module.normalize_service_tier("flex") == "default"
     assert module.normalize_service_tier("priority") == "default"
     assert module.service_tier_execution_tier("auto") == "default"
-    assert module.service_tier_config_args("auto") == ["-c", 'service_tier="default"']
+    assert module.service_tier_config_args("auto") == []
     assert module.codex_profile_v2_for_service_tier("auto") == "traqline-bedrock"
-    assert module.service_tier_config_args("flex") == ["-c", 'service_tier="default"']
+    assert module.service_tier_config_args("flex") == []
     assert module.codex_profile_v2_for_service_tier("flex") == "traqline-bedrock"
-    assert module.codex_model_for_service_tier("flex", "gpt-5.5") == "openai.gpt-5.5"
+    assert (
+        module.codex_model_for_service_tier("flex", "gpt-5.5") == "openai.gpt-5.6-terra"
+    )
     assert module.usage_provider_tags("flex") == {
         "provider_label": "Bedrock Standard",
         "provider_surface": "aws-bedrock",
@@ -1124,7 +3176,7 @@ def test_bedrock_standard_does_not_resume_legacy_direct_thread(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
     )
     module.ensure_state_dir()
     module.THREAD_ID_PATH.write_text("legacy-direct-thread", encoding="utf-8")
@@ -1155,7 +3207,7 @@ def test_bedrock_standard_does_not_resume_legacy_direct_thread(
     assert "resume" not in first_cmd
     assert module.THREAD_ID_PATH.read_text(encoding="utf-8") == "bedrock-thread"
     assert module.THREAD_SCOPE_PATH.read_text(encoding="utf-8") == (
-        "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+        "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     )
 
     module._execute_codex_prompt("status?", "balanced", 3, [], service_tier="default")
@@ -1173,11 +3225,11 @@ def test_bedrock_standard_starts_fresh_thread_for_heavy_context(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
     )
     module.ensure_state_dir()
     old_thread_id = "heavy-bedrock-thread"
-    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     module.THREAD_ID_PATH.write_text(old_thread_id, encoding="utf-8")
     module.THREAD_SCOPE_PATH.write_text(old_scope, encoding="utf-8")
     module.append_usage_entry(
@@ -1189,12 +3241,18 @@ def test_bedrock_standard_starts_fresh_thread_for_heavy_context(
         service_tier="default",
         success=True,
         runtime="codex",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         usage={
             "input_tokens": 120_000,
             "cached_input_tokens": 60_000,
             "output_tokens": 800,
         },
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.6-terra",
+            service_tier="default",
+        ),
     )
     for index in range(14):
         module.append_history_entry(
@@ -1208,7 +3266,7 @@ def test_bedrock_standard_starts_fresh_thread_for_heavy_context(
             detail=5,
             service_tier="default",
             runtime="codex",
-            model="openai.gpt-5.5",
+            model="openai.gpt-5.6-terra",
             usage={"input_tokens": 12_000, "output_tokens": 900},
         )
 
@@ -1257,13 +3315,13 @@ def test_bedrock_pack_treats_heavy_thread_as_resume_risk(monkeypatch, tmp_path) 
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS="80000",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_SAVED_TOKENS="4000",
     )
     module.ensure_state_dir()
     old_thread_id = "heavy-thread-small-visible-context"
-    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     module.THREAD_ID_PATH.write_text(old_thread_id, encoding="utf-8")
     module.THREAD_SCOPE_PATH.write_text(old_scope, encoding="utf-8")
     module.append_usage_entry(
@@ -1275,13 +3333,19 @@ def test_bedrock_pack_treats_heavy_thread_as_resume_risk(monkeypatch, tmp_path) 
         service_tier="default",
         success=True,
         runtime="codex",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         usage={"input_tokens": 120_000, "output_tokens": 700},
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.6-terra",
+            service_tier="default",
+        ),
     )
 
     plan = module.bedrock_context_pack_plan(
         service_tier="default",
-        model="gpt-5.5",
+        model="gpt-5.6-terra",
         session_id=old_thread_id,
         thread_scope=old_scope,
     )
@@ -1325,6 +3389,12 @@ def test_bedrock_pack_forces_hard_cloud_context_cap(monkeypatch, tmp_path) -> No
             "cached_input_tokens": 954_558,
             "output_tokens": 6_365,
         },
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.6-terra",
+            service_tier="default",
+        ),
     )
 
     plan = module.bedrock_context_pack_plan(
@@ -1372,6 +3442,12 @@ def test_bedrock_pack_forces_low_yield_cloud_thread(monkeypatch, tmp_path) -> No
             "provider_yield_kind": "low_yield",
             "provider_yield_reasons": ["low output tokens"],
         },
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.6-terra",
+            service_tier="default",
+        ),
     )
 
     plan = module.bedrock_context_pack_plan(
@@ -1397,15 +3473,15 @@ def test_bedrock_pack_forces_costly_cloud_thread_below_token_threshold(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS="80000",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS="200000",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_UNCACHED_INPUT_TOKENS="80000",
-        NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_ESTIMATED_COST_USD="0.25",
+        NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_ESTIMATED_COST_USD="0.15",
     )
     module.ensure_state_dir()
     old_thread_id = "costly-thread-under-hard-cap"
-    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     module.append_usage_entry(
         started_at=100,
         finished_at=170,
@@ -1415,20 +3491,26 @@ def test_bedrock_pack_forces_costly_cloud_thread_below_token_threshold(
         service_tier="default",
         success=True,
         runtime="codex",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         usage={"input_tokens": 70_000, "output_tokens": 2_000},
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.6-terra",
+            service_tier="default",
+        ),
     )
 
     plan = module.bedrock_context_pack_plan(
         service_tier="default",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         session_id=old_thread_id,
         thread_scope=old_scope,
     )
 
     assert plan["thread_tokens"] < 80_000
     assert plan["uncached_input_pressure"] is False
-    assert plan["estimated_thread_cost_usd"] >= 0.25
+    assert plan["estimated_thread_cost_usd"] >= 0.15
     assert plan["costly_thread"] is True
     assert plan["should_pack"] is True
     assert plan["reason"] == "costly-cloud-context"
@@ -1442,9 +3524,9 @@ def test_public_usage_rates_include_gpt56_bedrock_models(monkeypatch, tmp_path) 
     sol = module._public_usage_cost_rates_for_model("openai.gpt-5.6-sol")
 
     assert luna["configured"] is True
-    assert luna["input_usd_per_1m"] == 1.0
+    assert luna["input_usd_per_1m"] == 0.2
     assert terra["configured"] is True
-    assert terra["input_usd_per_1m"] == 2.5
+    assert terra["input_usd_per_1m"] == 2.0
     assert sol["configured"] is True
     assert sol["input_usd_per_1m"] == 5.0
 
@@ -1536,6 +3618,121 @@ def test_mixed_unpriced_direct_and_bedrock_history_prefers_usd_display(
     assert estimate["usd"] > 0
 
 
+def test_monthly_usage_meter_summarizes_current_cycle_only(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE="100",
+    )
+    bounds = module.usage_billing_cycle_bounds()
+    current_entry_at = bounds["started_at"] + 60
+    prior_entry_at = bounds["started_at"] - 60
+
+    summary = module.usage_billing_cycle_summary(
+        [
+            {
+                "finished_at": current_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.6-terra",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "chatgpt",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                "charge_display_unit": "credits",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": current_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.6-terra",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "api-key",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "api_rate_card_estimate",
+                "charge_display_unit": "usd_equivalent",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": current_entry_at,
+                "runtime": "localllm",
+                "provider_surface": "norllama",
+                "charge_ledger_kind": "local_token_estimate",
+                "charge_display_unit": "tokens",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": prior_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "chatgpt",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                "charge_display_unit": "credits",
+                "input_tokens": 10_000,
+                "output_tokens": 1_000,
+            },
+        ]
+    )
+
+    assert summary["kind"] == "calendar_month"
+    assert summary["entries"] == 3
+    assert summary["plan"] == {
+        "credits": 0.2,
+        "entries": 1,
+        "configured_entries": 1,
+        "allowance_credits": 100.0,
+    }
+    assert summary["metered"]["entries"] == 1
+    assert summary["metered"]["configured_entries"] == 1
+    assert summary["metered"]["usd"] > 0
+
+
+def test_initial_monthly_usage_meter_only_shows_fill_for_configured_allowance(
+    monkeypatch, tmp_path
+) -> None:
+    snapshot = {
+        "usage": {
+            "billing": {
+                "cycle": {
+                    "label": "Aug 01 to Sep 01",
+                    "timezone": "CDT",
+                    "plan": {"credits": 75},
+                    "metered": {"usd": 1.25},
+                }
+            }
+        }
+    }
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    unbounded = module._initial_usage_meter(snapshot)
+
+    assert unbounded["has_fill"] is False
+    assert unbounded["fill_pct"] == 0
+    assert unbounded["plan_label"] == "Plan ~75 cr"
+    assert unbounded["metered_label"] == "Metered ~$1.25"
+
+    allowance_module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE="100",
+    )
+    bounded = allowance_module._initial_usage_meter(snapshot)
+
+    assert bounded["has_fill"] is True
+    assert bounded["fill_pct"] == 75
+    assert bounded["tone"] == "warn"
+    assert bounded["plan_label"] == "Plan 75%"
+
+
 def test_usage_entry_keeps_append_only_ledger_when_ui_cache_trims(
     monkeypatch, tmp_path
 ) -> None:
@@ -1561,6 +3758,11 @@ def test_usage_entry_keeps_append_only_ledger_when_ui_cache_trims(
         runtime="codex",
         model="gpt-5.5",
         usage={"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 10},
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="gpt-5.5",
+        ),
     )
     module.append_usage_entry(
         started_at=200,
@@ -1572,6 +3774,11 @@ def test_usage_entry_keeps_append_only_ledger_when_ui_cache_trims(
         runtime="codex",
         model="gpt-5.5",
         usage={"input_tokens": 200, "cached_input_tokens": 80, "output_tokens": 20},
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="gpt-5.5",
+        ),
     )
 
     usage_lines = module.USAGE_PATH.read_text(encoding="utf-8").splitlines()
@@ -1695,7 +3902,7 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
         optimization_mode="auto",
         success=True,
         runtime="codex",
-        model="openai.gpt-5.4",
+        model="openai.gpt-5.6-terra",
         usage={
             "input_tokens": 200_000,
             "cached_input_tokens": 20_000,
@@ -1704,6 +3911,12 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
         },
         outcome="done",
         turn_plan={"stage": "final"},
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.6-terra",
+            service_tier="flex",
+        ),
     )
 
     assert set(module.ROUTE_RECEIPT_REQUIRED_FIELDS).issubset(receipt)
@@ -1717,9 +3930,9 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
     assert receipt["authority_class"] == "read_only"
     assert receipt["mutation_risk"] == "none"
     assert receipt["benchmark_skill_id"] == "common-status"
-    assert receipt["selected_model_tier"] == "frontier_5_4_verifier"
-    assert receipt["requested_model"] == "openai.gpt-5.4"
-    assert receipt["effective_model"] == "openai.gpt-5.4"
+    assert receipt["selected_model_tier"] == "frontier_5_6_terra_final"
+    assert receipt["requested_model"] == "openai.gpt-5.6-terra"
+    assert receipt["effective_model"] == "openai.gpt-5.6-terra"
     assert receipt["requested_provider"] == "openai-direct"
     assert receipt["effective_provider"] == "openai-direct"
     assert receipt["requested_service_tier"] == "flex"
@@ -1727,7 +3940,7 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
     assert receipt["observed_service_tier"] == "flex"
     assert receipt["reasoning_effort"] == "medium"
     assert receipt["route_policy_version"] == module.ROUTE_RECEIPT_POLICY_VERSION
-    assert receipt["allowed_role"] == "verifier"
+    assert receipt["allowed_role"] == "final_authority"
     assert receipt["validator_gate"] == "pass"
     assert receipt["validator_passed"] is True
     assert receipt["operator_approval_required"] is False
@@ -1735,7 +3948,7 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
     assert receipt["live_write_attempted"] is False
     assert receipt["boundary_violation"] is False
     assert receipt["estimated_cost_usd"] > 0
-    assert receipt["baseline_all_5_5_cost_usd"] > receipt["estimated_cost_usd"]
+    assert receipt["baseline_all_terra_cost_usd"] > receipt["estimated_cost_usd"]
     assert receipt["input_tokens"] == 200_000
     assert receipt["cached_input_tokens"] == 20_000
     assert receipt["output_tokens"] == 20_000
@@ -1746,6 +3959,66 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
     assert receipt["context_digest"]
     assert receipt["latency_ms"] == 4000
     assert "turn_plan:final" in receipt["evidence_refs"]
+
+
+def test_route_receipt_records_terra_outside_legacy_fast_lanes(
+    monkeypatch, tmp_path
+) -> None:
+    receipt_path = tmp_path / "receipts" / "market-sizing.jsonl"
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED="1",
+        NORMAN_CODEX_ROUTE_RECEIPT_OWNER_TUI="market-sizing",
+        NORMAN_CODEX_ROUTE_RECEIPT_PATH=str(receipt_path),
+    )
+
+    receipt = module.append_route_receipt(
+        prompt="Status and what's next for the market sizing benchmark.",
+        visible_response="Ready. Next action is to run the verifier packet.",
+        started_at=1_786_000_100,
+        finished_at=1_786_000_104,
+        thread_id="thread-market-sizing",
+        speed="balanced",
+        detail=3,
+        service_tier="flex",
+        job_budget="normal",
+        optimization_mode="auto",
+        success=True,
+        runtime="codex",
+        model="openai.gpt-5.6-terra",
+        usage={
+            "input_tokens": 200_000,
+            "cached_input_tokens": 20_000,
+            "output_tokens": 20_000,
+            "total_tokens": 220_000,
+        },
+        outcome="done",
+        turn_plan={"stage": "final"},
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.6-terra",
+            service_tier="flex",
+        ),
+    )
+
+    assert receipt is not None
+    outcome = receipt["fast_lane_outcome"]
+    assert outcome["schema"] == "norman.fast-lane-outcome.v1"
+    assert outcome["state"] == "candidate"
+    assert outcome["lane"]["kind"] == "none"
+    snapshot = module.route_receipt_status_snapshot()
+    assert snapshot["latest_fast_lane_outcome"] == outcome
+    assert snapshot["fast_lane"]["states"]["candidate"] == 0
+    assert snapshot["fast_lane"]["ignored_count"] == 1
+    assert snapshot["fast_lane"]["verified"] == {
+        "count": 0,
+        "estimated_savings_usd": 0.0,
+        "local_not_invoiced_estimated_savings_usd": 0.0,
+        "luna_estimated_savings_usd": 0.0,
+    }
+    assert snapshot["fast_lane"]["calibration"]["auto_selection_enabled"] is False
 
 
 def test_route_receipt_append_records_approval_boundary_without_counting_as_safe(
@@ -1780,6 +4053,12 @@ def test_route_receipt_append_records_approval_boundary_without_counting_as_safe
         outcome="done",
         rate_limit_attempt=1,
         timed_out=True,
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.5",
+            service_tier="default",
+        ),
     )
 
     assert receipt is not None
@@ -1801,6 +4080,52 @@ def test_route_receipt_append_records_approval_boundary_without_counting_as_safe
     assert saved["previous_receipt_hash"] == ""
     assert saved["receipt_hash"]
     assert saved["receipt_hash"] == module.route_receipt_compute_hash(saved)
+
+
+def test_route_receipt_write_failure_is_nonfatal(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED="1",
+    )
+
+    def fail_receipt_write(_entry):
+        raise PermissionError("Permission denied: route receipts")
+
+    monkeypatch.setattr(module, "append_route_receipt_entry", fail_receipt_write)
+
+    receipt = module.append_route_receipt(
+        prompt="status?",
+        visible_response="ready",
+        error_text="",
+        started_at=1_786_000_210,
+        finished_at=1_786_000_212,
+        thread_id="thread-route-receipt-write-failure",
+        speed="quick",
+        detail=2,
+        service_tier="flex",
+        job_budget="quick",
+        optimization_mode="auto",
+        success=True,
+        runtime="codex",
+        model="openai.gpt-5.4",
+        usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+        outcome="done",
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.4",
+            service_tier="flex",
+        ),
+    )
+    snapshot = module.route_receipt_status_snapshot()
+
+    assert receipt is not None
+    assert receipt["mirror_status"] == "write_failed"
+    assert "Permission denied" in receipt["mirror_error"]
+    assert snapshot["status"] == "degraded"
+    assert "Permission denied" in snapshot["last_write_error"]
+    assert snapshot["jsonl_mirror_status"] == "write_failed"
 
 
 def test_route_receipt_append_hash_chain_links_consecutive_receipts(
@@ -1832,6 +4157,12 @@ def test_route_receipt_append_hash_chain_links_consecutive_receipts(
             model="openai.gpt-5.4",
             usage={"input_tokens": 1_000, "output_tokens": 100},
             outcome="done",
+            cost_route=_route_proof(
+                module,
+                runtime="codex",
+                model="openai.gpt-5.4",
+                service_tier="flex",
+            ),
         )
 
     saved = [
@@ -1877,6 +4208,12 @@ def test_current_snapshot_surfaces_route_receipt_status(monkeypatch, tmp_path) -
         model="openai.gpt-5.4",
         usage={"input_tokens": 1_000, "output_tokens": 100},
         outcome="done",
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.4",
+            service_tier="flex",
+        ),
     )
 
     snapshot = module.current_snapshot()
@@ -1899,8 +4236,10 @@ def test_ensure_session_does_not_wait_when_service_start_fails(
     monkeypatch.setattr(
         module,
         "run",
-        lambda cmd, input_text=None, check=False: commands.append(cmd)
-        or SimpleNamespace(returncode=1, stdout="", stderr="Access denied"),
+        lambda cmd, input_text=None, check=False: (
+            commands.append(cmd)
+            or SimpleNamespace(returncode=1, stdout="", stderr="Access denied")
+        ),
     )
     monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
 
@@ -1925,7 +4264,9 @@ def test_busy_web_prompt_queues_operator_prompt_with_visible_position(
     module.ACTIVE_PROMPT_THREAD = SimpleNamespace(is_alive=lambda: True)
     monkeypatch.setattr(module, "current_snapshot", lambda: _cheap_snapshot(module))
 
-    accepted, snapshot = module.start_web_prompt("status?", "fast", 2, [])
+    accepted, snapshot = module.start_web_prompt(
+        "status?", "fast", 2, [], route_lock=True
+    )
 
     assert accepted is True
     assert snapshot["pending"] is True
@@ -1968,6 +4309,7 @@ def test_busy_web_prompt_ignores_duplicate_running_operator_prompt(
         "fast",
         2,
         attachments=[],
+        route_lock=True,
     )
 
     assert accepted is True
@@ -1997,6 +4339,15 @@ def test_queue_checkpoint_interrupts_operator_prompt_after_tool_finished(
                 "queued_at": 123,
                 "source": "operator",
                 "interlace_mode": "interrupt",
+                "runtime": "codex",
+                "model": module.configured_chat_model(),
+                "service_tier": "default",
+                "cost_route": _route_proof(
+                    module,
+                    runtime="codex",
+                    model=module.configured_chat_model(),
+                    service_tier="default",
+                ),
             }
         ],
     )
@@ -2033,6 +4384,15 @@ def test_interrupt_handoff_runs_clean_prompt_with_execution_preamble(
                 "queued_at": 123,
                 "source": "operator",
                 "interlace_mode": "interrupt",
+                "runtime": "codex",
+                "model": module.configured_chat_model(),
+                "service_tier": "default",
+                "cost_route": _route_proof(
+                    module,
+                    runtime="codex",
+                    model=module.configured_chat_model(),
+                    service_tier="default",
+                ),
             }
         ],
         queue_handoff_state="checkpoint-ready",
@@ -2080,6 +4440,7 @@ def test_busy_web_prompt_can_queue_without_injecting(monkeypatch, tmp_path) -> N
         2,
         [],
         interlace_mode="queue",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -2149,7 +4510,7 @@ def test_api_ask_parses_interlace_mode_before_starting_prompt(
     try:
         body = urllib.parse.urlencode(
             {
-                "message": "status?",
+                "message": "Explain the selected route.",
                 "speed": "balanced",
                 "detail": "2",
                 "service_tier": "default",
@@ -2157,6 +4518,7 @@ def test_api_ask_parses_interlace_mode_before_starting_prompt(
                 "interlace_mode": "queue",
                 "runtime": "codex",
                 "model": "gpt-5.5",
+                "submission_id": "submit-ui-receipt-001",
                 "relay_id": "relay-api-ask",
                 "relay_callback_url": "http://source.local/api/v1/channels/1/relay-callback?relay_token=abc",
                 "relay_source_channel_id": "1",
@@ -2179,7 +4541,10 @@ def test_api_ask_parses_interlace_mode_before_starting_prompt(
     assert payload["accepted"] is True
     assert payload["running"] is True
     assert payload["queued"] is False
+    assert payload["submission_id"] == "submit-ui-receipt-001"
+    assert payload["submission_state"] == "running"
     assert captured["kwargs"]["interlace_mode"] == "queue"
+    assert captured["kwargs"]["submission_id"] == "submit-ui-receipt-001"
     assert captured["kwargs"]["relay_callback"] == {
         "relay_id": "relay-api-ask",
         "callback_url": "http://source.local/api/v1/channels/1/relay-callback?relay_token=abc",
@@ -2187,6 +4552,348 @@ def test_api_ask_parses_interlace_mode_before_starting_prompt(
         "source_message_id": "44",
         "target_connector_name": "api-target",
     }
+
+
+def test_api_ask_completes_explicit_deterministic_status_without_model_call(
+    monkeypatch, tmp_path
+) -> None:
+    receipt_path = tmp_path / "route-receipts" / "status-fallback.jsonl"
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED="1",
+        NORMAN_CODEX_ROUTE_RECEIPT_PATH=str(receipt_path),
+        NORMAN_LOCAL_PLANNER_PREFLIGHT_ENABLED="0",
+    )
+    start_calls = []
+    monkeypatch.setattr(
+        module,
+        "start_web_prompt",
+        lambda *_args, **_kwargs: start_calls.append(True) or (True, {"pending": True}),
+    )
+    assert module.deterministic_status_prompt_allowed("status? whats next?", []) is True
+
+    server = module.ThreadingHTTPServer(("127.0.0.1", 0), module.Handler)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        body = urllib.parse.urlencode(
+            {
+                "message": "status? whats next?",
+                "speed": "fast",
+                "detail": "2",
+                "service_tier": "default",
+                "job_budget": "quick",
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "submission_id": "status-fallback-001",
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/ask",
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert start_calls == []
+    assert payload["accepted"] is True
+    assert payload["queued"] is False
+    assert payload["running"] is False
+    assert payload["submission_id"] == "status-fallback-001"
+    assert payload["submission_state"] == "completed"
+    assert payload["snapshot"]["state"] == "ok"
+    assert "instant local status check" in payload["snapshot"]["last_response"]
+    module.DETERMINISTIC_ARCHIVE_QUEUE.join()
+    assert module.load_history(limit=1) == []
+    receipts = [
+        json.loads(line)
+        for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert receipts[-1]["requested_action"] == "status"
+    assert receipts[-1]["input_tokens"] == 0
+    assert receipts[-1]["output_tokens"] == 0
+
+
+def test_active_prompt_never_uses_deterministic_status_read(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_LOCAL_PLANNER_PREFLIGHT_ENABLED="0",
+    )
+    module.ACTIVE_PROMPT_THREAD = SimpleNamespace(is_alive=lambda: True)
+
+    assert module.deterministic_status_prompt_allowed("Status update?", []) is False
+
+    module.ACTIVE_PROMPT_THREAD = None
+
+
+def test_api_ask_completes_allowlisted_command_without_model_call(
+    monkeypatch, tmp_path
+) -> None:
+    receipt_path = tmp_path / "route-receipts" / "deterministic-command.jsonl"
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED="1",
+        NORMAN_CODEX_ROUTE_RECEIPT_PATH=str(receipt_path),
+    )
+    start_calls = []
+    executed: list[list[str]] = []
+    monkeypatch.setattr(
+        module,
+        "start_web_prompt",
+        lambda *_args, **_kwargs: (
+            start_calls.append(True)
+            or (_ for _ in ()).throw(
+                AssertionError("allowlisted command should not start a model prompt")
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "execute_deterministic_command",
+        lambda argv: (
+            executed.append(argv)
+            or "Command `pwd` completed with exit code 0.\n/test-workspace",
+            True,
+        ),
+    )
+
+    server = module.ThreadingHTTPServer(("127.0.0.1", 0), module.Handler)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        body = urllib.parse.urlencode(
+            {
+                "message": "run pwd",
+                "speed": "fast",
+                "detail": "2",
+                "service_tier": "default",
+                "job_budget": "quick",
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "submission_id": "deterministic-command-001",
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/ask",
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert start_calls == []
+    assert executed == [["pwd"]]
+    assert payload["accepted"] is True
+    assert payload["queued"] is False
+    assert payload["running"] is False
+    assert payload["submission_id"] == "deterministic-command-001"
+    assert payload["submission_state"] == "completed"
+    assert payload["snapshot"]["state"] == "ok"
+    history = module.load_history(limit=1)
+    assert history[-1]["runtime"] == "localllm"
+    assert history[-1]["model"] == "deterministic-command"
+    assert history[-1]["usage"]["total_tokens"] == 0
+    receipts = [
+        json.loads(line)
+        for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert receipts[-1]["requested_action"] == "command"
+    assert receipts[-1]["selected_model_tier"] == "deterministic_tool"
+    assert receipts[-1]["allowed_role"] == "deterministic_read"
+    assert receipts[-1]["decision_class"] == "deterministic"
+    assert receipts[-1]["frontier_review_required"] is False
+    assert receipts[-1]["frontier_calls_avoided"] == 1
+    assert receipts[-1]["local_calls_avoided"] == 1
+
+
+def test_deterministic_command_parser_has_exact_safe_boundaries(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    assert module.deterministic_command_request("run pwd") == ["pwd"]
+    assert module.deterministic_command_request("`date -Is`") == ["date", "-Is"]
+    assert module.deterministic_command_request("run git status --short") == [
+        "git",
+        "status",
+        "--short",
+    ]
+    for prompt in (
+        "git status",
+        "git status --short --ignored",
+        "run git status --short; pwd",
+        "run pwd && date",
+        "run pwd\nrun date",
+        "please run pwd",
+        "status? run pwd",
+    ):
+        assert module.deterministic_command_request(prompt) is None
+
+    attachment = [{"token": "attachment-1", "path": str(tmp_path / "note.txt")}]
+    assert (
+        module.deterministic_command_prompt_allowed(
+            "run pwd", attachment, route_lock=False
+        )
+        is False
+    )
+    assert (
+        module.deterministic_command_prompt_allowed("run pwd", [], route_lock=True)
+        is False
+    )
+    module.ACTIVE_PROMPT_THREAD = SimpleNamespace(is_alive=lambda: True)
+    assert module.deterministic_command_prompt_allowed("run pwd", []) is False
+    module.ACTIVE_PROMPT_THREAD = None
+
+
+def test_status_json_replacement_keeps_route_proof_readable_during_write(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    route = module.deterministic_command_cost_route()
+    assert route
+    original = module.default_status_meta()
+    original.update(
+        {
+            "status_message": "Original route proof.",
+            "running_runtime": "localllm",
+            "running_model": "deterministic-command",
+            "running_service_tier": "default",
+            "running_cost_route": route,
+        }
+    )
+    module.save_status_meta(original)
+
+    replacement_started = threading.Event()
+    release_replacement = threading.Event()
+    original_replace = module.os.replace
+    failures = []
+
+    def delayed_replace(source, destination):
+        if pathlib.Path(destination) == module.STATUS_PATH:
+            replacement_started.set()
+            release_replacement.wait(timeout=2)
+        return original_replace(source, destination)
+
+    def write_updated_status() -> None:
+        try:
+            updated = module.load_status_meta()
+            updated["status_message"] = "Updated route proof."
+            module.save_status_meta(updated)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            failures.append(exc)
+
+    monkeypatch.setattr(module.os, "replace", delayed_replace)
+    writer = threading.Thread(target=write_updated_status, daemon=True)
+    writer.start()
+    assert replacement_started.wait(timeout=2)
+
+    observed = module.load_status_meta()
+    assert observed["status_message"] == "Original route proof."
+    assert observed["running_cost_route"] == route
+
+    release_replacement.set()
+    writer.join(timeout=2)
+    assert not writer.is_alive()
+    assert failures == []
+    assert module.load_status_meta()["status_message"] == "Updated route proof."
+
+
+def test_api_last_response_returns_full_durable_reply(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    full_reply = "full durable reply\n" + ("x" * module.STATUS_TRANSPORT_STRING_LIMIT)
+    module.write_text(module.LAST_RESPONSE_PATH, full_reply)
+
+    transport_reply = module._transport_snapshot_value(full_reply)
+    assert transport_reply != full_reply
+    assert "characters omitted from live transport" in transport_reply
+
+    server = module.ThreadingHTTPServer(("127.0.0.1", 0), module.Handler)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/api/last-response",
+            timeout=5,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert payload == {
+        "ok": True,
+        "text": full_reply,
+        "character_count": len(full_reply),
+    }
+    source = WEB_SCRIPT_PATH.read_text(encoding="utf-8")
+    assert 'id="view-full-response-button"' in source
+    assert "function loadFullLastResponse(button = null)" in source
+
+
+def test_submission_id_tracks_queued_and_active_prompt(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    module.update_status_meta(
+        pending=True,
+        state="running",
+        running_prompt="Existing operator prompt.",
+    )
+
+    module.queue_prompt(
+        "Queued operator prompt.",
+        "balanced",
+        2,
+        "10m",
+        [],
+        "codex",
+        "gpt-5.5",
+        service_tier="default",
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="gpt-5.5",
+            service_tier="default",
+        ),
+        submission_id="submit-queued-receipt-001",
+    )
+
+    queued = module.normalize_queue(module.load_status_meta()["queued_prompts"])
+    assert queued[0]["submission_id"] == "submit-queued-receipt-001"
+
+    module.update_status_meta(pending=False, state="ok")
+    next_prompt = module.start_next_queued_prompt()
+
+    assert next_prompt is not None
+    assert module.load_status_meta()["running_submission_id"] == (
+        "submit-queued-receipt-001"
+    )
+
+
+def test_submission_id_normalization_is_bounded_and_safe(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    assert module.normalize_submission_id("submit-ui-receipt-001") == (
+        "submit-ui-receipt-001"
+    )
+    assert module.normalize_submission_id("short") == ""
+    assert module.normalize_submission_id("submit id with spaces") == ""
+    assert module.normalize_submission_id("x" * 129) == ""
 
 
 def test_queue_checkpoint_observe_mode_records_without_interrupt(
@@ -2242,7 +4949,9 @@ def test_live_runtime_queues_even_when_status_pending_is_stale(
     monkeypatch.setattr(module, "prompt_runtime_alive", lambda: True)
     monkeypatch.setattr(module, "current_snapshot", lambda: _cheap_snapshot(module))
 
-    accepted, snapshot = module.start_web_prompt("status?", "fast", 2, [])
+    accepted, snapshot = module.start_web_prompt(
+        "status?", "fast", 2, [], route_lock=True
+    )
 
     assert accepted is True
     assert snapshot["pending"] is True
@@ -2426,6 +5135,7 @@ def test_cancel_active_web_prompt_targets_tracked_codex_process_group(
         "terminate_process_group",
         lambda pid, pgid: terminations.append((pid, pgid)) or True,
     )
+    monkeypatch.setattr(module, "codex_runtime_pid_alive", lambda _pid: True)
     monkeypatch.setattr(module, "prompt_runtime_alive", lambda: True)
     monkeypatch.setattr(module, "current_snapshot", lambda: _cheap_snapshot(module))
 
@@ -2437,6 +5147,35 @@ def test_cancel_active_web_prompt_targets_tracked_codex_process_group(
     assert meta["state"] == "cancelling"
     assert meta["cancel_requested_at"] > 0
     assert meta["queued_prompts"] == []
+
+
+def test_cancel_active_web_prompt_discovers_untracked_codex_child(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    module.update_status_meta(
+        pending=False,
+        state="ok",
+        status_message="Ready.",
+        active_child_pid=0,
+        active_child_pgid=0,
+    )
+    terminations = []
+    monkeypatch.setattr(module, "active_codex_exec_child", lambda: (23456, 23456))
+    monkeypatch.setattr(
+        module,
+        "terminate_process_group",
+        lambda pid, pgid: terminations.append((pid, pgid)) or True,
+    )
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: True)
+    monkeypatch.setattr(module, "current_snapshot", lambda: _cheap_snapshot(module))
+
+    snapshot = module.cancel_active_web_prompt(clear_queue=False)
+
+    assert terminations == [(23456, 23456)]
+    assert snapshot["state"] == "cancelling"
+    assert module.load_status_meta()["cancel_requested_at"] > 0
 
 
 def test_cancel_active_web_prompt_marks_cancelled_when_no_worker_is_alive(
@@ -2483,6 +5222,17 @@ def test_checkpoint_interrupt_is_not_rendered_as_error(monkeypatch, tmp_path) ->
     )
     monkeypatch.setattr(
         module, "maybe_notify_long_job_completion", lambda **_kwargs: None
+    )
+    module.update_status_meta(
+        running_runtime="codex",
+        running_model=module.configured_chat_model(),
+        running_service_tier="flex",
+        running_cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model=module.configured_chat_model(),
+            service_tier="flex",
+        ),
     )
 
     module._prompt_worker(
@@ -2719,6 +5469,7 @@ def test_prompt_worker_backs_off_and_retries_rate_limit(monkeypatch, tmp_path) -
         3,
         "10m",
         service_tier="default",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -2745,6 +5496,70 @@ def test_prompt_worker_backs_off_and_retries_rate_limit(monkeypatch, tmp_path) -
     assert events
 
 
+def test_prompt_worker_does_not_retry_rate_limit_after_tool_activity(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_RATE_LIMIT_MAX_ATTEMPTS="3",
+        NORMAN_CODEX_RATE_LIMIT_BASE_SECONDS="1",
+        NORMAN_CODEX_RATE_LIMIT_MAX_BACKOFF_SECONDS="1",
+    )
+    module.ensure_state_dir()
+    calls = []
+
+    def fake_execute_runtime(
+        prompt,
+        speed,
+        detail,
+        attachments,
+        runtime,
+        model,
+        timeout_seconds=None,
+        service_tier="",
+        job_budget="",
+    ):
+        calls.append(prompt)
+        module.update_status_meta(
+            live_turn={
+                "file_interaction_count": 1,
+                "last_file": "/tmp/already-touched.txt",
+            }
+        )
+        return (
+            "",
+            "429 Too Many Requests",
+            "thread-rate",
+            module.default_usage_entry(),
+        )
+
+    monkeypatch.setattr(module, "_execute_prompt_runtime", fake_execute_runtime)
+
+    accepted, _snapshot = module.start_web_prompt(
+        "retry this",
+        "balanced",
+        3,
+        "10m",
+        service_tier="default",
+        route_lock=True,
+    )
+
+    assert accepted is True
+    worker = module.ACTIVE_PROMPT_THREAD
+    assert worker is not None
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert calls == ["retry this"]
+
+    final_snapshot = module.current_snapshot()
+    assert final_snapshot["state"] == "rate_limited"
+    assert "stopped instead of replaying work" in final_snapshot["last_response"]
+    events = module.load_audit_events(limit=20, event_type="chat.rate-limit-no-retry")
+    assert len(events) == 1
+    assert events[0]["payload"]["live_turn"]["last_file"] == "/tmp/already-touched.txt"
+
+
 def test_promised_work_classifier_catches_future_tense_action(
     monkeypatch, tmp_path
 ) -> None:
@@ -2756,7 +5571,7 @@ def test_promised_work_classifier_catches_future_tense_action(
         module.response_final_status("CHECKPOINT\nNext action: retry") == "checkpoint"
     )
     assert not module.response_needs_next_action_plan("DONE\nEvidence: checked.")
-    assert module.response_needs_next_action_plan("BLOCKED - waiting on provider")
+    assert not module.response_needs_next_action_plan("BLOCKED - waiting on provider")
     assert module.response_needs_next_action_plan("CHECKPOINT\nNext action: retry")
     assert module.response_promises_unfinished_work(
         "Targeted validation is green. I\u2019ll run the nearby unit shard before broader handoff."
@@ -2833,6 +5648,7 @@ def test_prompt_worker_auto_continues_promised_work_once(monkeypatch, tmp_path) 
         5,
         "normal",
         service_tier="default",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -2912,6 +5728,7 @@ def test_auto_continuation_uses_deeper_reasoning_floor(monkeypatch, tmp_path) ->
         2,
         "normal",
         service_tier="default",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -2980,6 +5797,7 @@ def test_prompt_worker_auto_plans_after_checkpoint_once(monkeypatch, tmp_path) -
         5,
         "normal",
         service_tier="default",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -3056,6 +5874,7 @@ def test_prompt_worker_marks_auto_continuation_progress_reply_incomplete(
         5,
         "normal",
         service_tier="default",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -3127,6 +5946,7 @@ def test_prompt_worker_retries_empty_reply_without_tool_activity(
         5,
         "normal",
         service_tier="default",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -3194,6 +6014,7 @@ def test_prompt_worker_does_not_retry_empty_reply_after_tool_activity(
         5,
         "normal",
         service_tier="default",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -3212,7 +6033,7 @@ def test_prompt_worker_does_not_retry_empty_reply_after_tool_activity(
     final_snapshot = module.current_snapshot()
     assert final_snapshot["pending"] is False
     assert final_snapshot["state"] == "error"
-    assert final_snapshot["last_response"] == "[no response returned]"
+    assert final_snapshot["last_response"] == "No final response was returned."
     assert final_snapshot["last_error"] == "No final response was returned."
     events = []
     for _ in range(20):
@@ -3225,7 +6046,7 @@ def test_prompt_worker_does_not_retry_empty_reply_after_tool_activity(
     assert events
 
 
-def test_prompt_worker_retries_zero_token_provider_failure(
+def test_prompt_worker_does_not_retry_locked_zero_token_provider_failure(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
@@ -3283,6 +6104,7 @@ def test_prompt_worker_retries_zero_token_provider_failure(
         5,
         "normal",
         service_tier="default",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -3293,44 +6115,43 @@ def test_prompt_worker_retries_zero_token_provider_failure(
         if worker is not None:
             worker.join(timeout=0.2)
         final_snapshot = module.current_snapshot()
-        if not final_snapshot["pending"] and len(calls) == 2:
+        if not final_snapshot["pending"]:
             break
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert calls[0]["service_tier"] == "default"
-    assert calls[1]["service_tier"] == "flex"
-    assert module.AUTO_CONTINUE_ZERO_TOKEN_PROVIDER_MARKER in calls[1]["prompt"]
 
     final_snapshot = module.current_snapshot()
     assert final_snapshot["pending"] is False
-    assert final_snapshot["state"] == "ok"
-    assert final_snapshot["last_response"] == "Recovered after provider stream retry."
-    events = module.load_audit_events(limit=20)
-    retry_events = [
-        event
-        for event in events
-        if event["event_type"] == "chat.zero-token-provider-retry"
-    ]
-    assert retry_events
-    assert retry_events[0]["payload"]["previous_service_tier"] == "default"
-    assert retry_events[0]["payload"]["retry_service_tier"] == "flex"
-    assert "OpenAI credits/cost" in retry_events[0]["detail"]
+    assert final_snapshot["state"] == "error"
+    assert provider_error in final_snapshot["last_error"]
+    assert not module.load_audit_events(
+        limit=20, event_type="chat.zero-token-provider-retry"
+    )
+    assert not module.load_audit_events(
+        limit=20, event_type="chat.zero-token-provider-recovery-handoff"
+    )
+    events = module.load_audit_events(
+        limit=20, event_type="chat.zero-token-provider-no-retry"
+    )
+    assert len(events) == 1
+    assert events[0]["payload"]["runtime"] == "codex"
+    assert events[0]["payload"]["model"] == module.configured_chat_model()
+    assert events[0]["payload"]["service_tier"] == "default"
 
 
-def test_prompt_worker_downgrades_bedrock_55_to_standard_54_before_flex(
-    monkeypatch, tmp_path
-) -> None:
+def test_prompt_worker_keeps_locked_terra_model(monkeypatch, tmp_path) -> None:
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
-        NORMAN_CODEX_MODEL_FLOOR="gpt-5.4",
-        NORMAN_CODEX_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_MODEL_FLOOR="gpt-5.6-terra",
+        NORMAN_CODEX_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
-        NORMAN_CODEX_SWITCHABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
-        NORMAN_CODEX_AVAILABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
+        NORMAN_CODEX_SWITCHABLE_MODELS="openai.gpt-5.6-terra,gpt-5.6-terra",
+        NORMAN_CODEX_AVAILABLE_MODELS="openai.gpt-5.6-terra,gpt-5.6-terra",
         NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES="1",
     )
     module.ensure_state_dir()
@@ -3349,9 +6170,7 @@ def test_prompt_worker_downgrades_bedrock_55_to_standard_54_before_flex(
             "zero_token_provider_failure": True,
         }
     )
-    assert module.zero_token_provider_retry_model("openai.gpt-5.5", usage) == (
-        "openai.gpt-5.4"
-    )
+    assert module.zero_token_provider_retry_model("openai.gpt-5.6-terra", usage) == ""
 
     def fake_execute_runtime(
         prompt,
@@ -3368,7 +6187,7 @@ def test_prompt_worker_downgrades_bedrock_55_to_standard_54_before_flex(
         if len(calls) == 1:
             return "", provider_error, "thread-bedrock", usage
         return (
-            "Recovered on Bedrock 5.4.",
+            "Terra did not retry after the provider failure.",
             "",
             "thread-bedrock",
             module.normalize_usage_entry({"total_tokens": 20}),
@@ -3381,8 +6200,9 @@ def test_prompt_worker_downgrades_bedrock_55_to_standard_54_before_flex(
         "careful",
         5,
         "normal",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         service_tier="default",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -3393,35 +6213,30 @@ def test_prompt_worker_downgrades_bedrock_55_to_standard_54_before_flex(
         if worker is not None:
             worker.join(timeout=0.2)
         final_snapshot = module.current_snapshot()
-        if not final_snapshot["pending"] and len(calls) == 2:
+        if not final_snapshot["pending"]:
             break
 
-    assert len(calls) == 2
-    assert calls[0]["model"] == "openai.gpt-5.5"
+    assert len(calls) == 1
+    assert calls[0]["model"] == "openai.gpt-5.6-terra"
     assert calls[0]["service_tier"] == "default"
-    assert calls[1]["model"] == "openai.gpt-5.4"
-    assert calls[1]["service_tier"] == "default"
-    assert module.AUTO_CONTINUE_ZERO_TOKEN_PROVIDER_MARKER in calls[1]["prompt"]
 
     final_snapshot = module.current_snapshot()
     assert final_snapshot["pending"] is False
-    assert final_snapshot["state"] == "ok"
-    assert final_snapshot["last_response"] == "Recovered on Bedrock 5.4."
-    events = module.load_audit_events(limit=20)
-    retry_events = [
-        event
-        for event in events
-        if event["event_type"] == "chat.zero-token-provider-retry"
-    ]
-    assert retry_events
-    payload = retry_events[0]["payload"]
-    assert payload["previous_model"] == "openai.gpt-5.5"
-    assert payload["retry_model"] == "openai.gpt-5.4"
-    assert payload["model_fallback"] is True
-    assert payload["previous_service_tier"] == "default"
-    assert payload["retry_service_tier"] == "default"
-    assert payload["service_tier_fallback"] is False
-    assert "OpenAI credits/cost" not in retry_events[0]["detail"]
+    assert final_snapshot["state"] == "error"
+    assert provider_error in final_snapshot["last_error"]
+    assert not module.load_audit_events(
+        limit=20, event_type="chat.zero-token-provider-retry"
+    )
+    assert not module.load_audit_events(
+        limit=20, event_type="chat.zero-token-provider-recovery-handoff"
+    )
+    events = module.load_audit_events(
+        limit=20, event_type="chat.zero-token-provider-no-retry"
+    )
+    assert len(events) == 1
+    assert events[0]["payload"]["runtime"] == "codex"
+    assert events[0]["payload"]["model"] == "openai.gpt-5.6-terra"
+    assert events[0]["payload"]["service_tier"] == "default"
 
 
 def test_bedrock_zero_token_retry_stays_on_bedrock_when_direct_tiers_disabled(
@@ -3447,7 +6262,7 @@ def test_bedrock_zero_token_retry_stays_on_bedrock_when_direct_tiers_disabled(
     assert module.zero_token_provider_retry_service_tier("default", usage) == "default"
 
 
-def test_prompt_worker_hands_off_bedrock_capacity_after_side_effects(
+def test_prompt_worker_does_not_handoff_locked_bedrock_capacity_after_side_effects(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
@@ -3520,6 +6335,7 @@ def test_prompt_worker_hands_off_bedrock_capacity_after_side_effects(
         5,
         "normal",
         service_tier="default",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -3530,64 +6346,50 @@ def test_prompt_worker_hands_off_bedrock_capacity_after_side_effects(
         if worker is not None:
             worker.join(timeout=0.2)
         final_snapshot = module.current_snapshot()
-        if not final_snapshot["pending"] and len(calls) == 2:
+        if not final_snapshot["pending"]:
             break
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert calls[0]["service_tier"] == "default"
     assert calls[0]["prompt"] == "finish the scan"
-    assert calls[1]["service_tier"] == "flex"
-    assert module.AUTO_CONTINUE_ZERO_TOKEN_PROVIDER_MARKER in calls[1]["prompt"]
-    assert "Provider recovery checkpoint" in calls[1]["prompt"]
-    assert "Original prompt: finish the scan" in calls[1]["prompt"]
-    assert (
-        "Provider error kind: bedrock_on_demand_capacity_exceeded" in calls[1]["prompt"]
-    )
-    assert "Do not resend the original prompt unchanged" in calls[1]["prompt"]
-    assert "Make the fallback spend visible" in calls[1]["prompt"]
 
     final_snapshot = module.current_snapshot()
     assert final_snapshot["pending"] is False
-    assert final_snapshot["state"] == "ok"
-    assert final_snapshot["last_response"] == (
-        "Recovered from provider recovery checkpoint."
+    assert final_snapshot["state"] == "error"
+    assert provider_error in final_snapshot["last_error"]
+    assert not module.load_audit_events(
+        limit=20, event_type="chat.zero-token-provider-retry"
     )
-
-    events = module.load_audit_events(
+    assert not module.load_audit_events(
         limit=20, event_type="chat.zero-token-provider-recovery-handoff"
     )
-    assert events
-    event = events[0]
-    assert event["summary"] == (
-        "Handing off Bedrock recovery checkpoint to fallback route."
-    )
-    assert "OpenAI credits/cost" in event["detail"]
-    assert event["payload"]["previous_service_tier"] == "default"
-    assert event["payload"]["retry_service_tier"] == "flex"
-    assert event["payload"]["service_tier_fallback"] is True
-    assert event["payload"]["provider_error_kind"] == (
-        "bedrock_on_demand_capacity_exceeded"
-    )
-    assert event["payload"]["provider_capacity_no_retry"] is True
-    assert not module.load_audit_events(
+    events = module.load_audit_events(
         limit=20, event_type="chat.zero-token-provider-no-retry"
     )
+    assert len(events) == 1
+    assert events[0]["payload"]["runtime"] == "codex"
+    assert events[0]["payload"]["model"] == module.configured_chat_model()
+    assert events[0]["payload"]["service_tier"] == "default"
+    assert events[0]["payload"]["provider_error_kind"] == (
+        "bedrock_on_demand_capacity_exceeded"
+    )
+    assert events[0]["payload"]["provider_capacity_no_retry"] is True
 
 
-def test_prompt_worker_hands_off_bedrock_55_failure_to_standard_54_after_side_effects(
+def test_prompt_worker_does_not_handoff_locked_terra_after_side_effects(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
-        NORMAN_CODEX_MODEL_FLOOR="gpt-5.4",
-        NORMAN_CODEX_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_MODEL_FLOOR="gpt-5.6-terra",
+        NORMAN_CODEX_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
-        NORMAN_CODEX_SWITCHABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
-        NORMAN_CODEX_AVAILABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
+        NORMAN_CODEX_SWITCHABLE_MODELS="openai.gpt-5.6-terra,gpt-5.6-terra",
+        NORMAN_CODEX_AVAILABLE_MODELS="openai.gpt-5.6-terra,gpt-5.6-terra",
         NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES="1",
     )
     module.ensure_state_dir()
@@ -3634,7 +6436,7 @@ def test_prompt_worker_hands_off_bedrock_55_failure_to_standard_54_after_side_ef
                 ),
             )
         return (
-            "Recovered from provider recovery checkpoint on 5.4.",
+            "Terra recovery checkpoint.",
             "",
             "thread-bedrock",
             module.normalize_usage_entry(
@@ -3653,8 +6455,9 @@ def test_prompt_worker_hands_off_bedrock_55_failure_to_standard_54_after_side_ef
         "careful",
         5,
         "normal",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         service_tier="default",
+        route_lock=True,
     )
 
     assert accepted is True
@@ -3665,40 +6468,31 @@ def test_prompt_worker_hands_off_bedrock_55_failure_to_standard_54_after_side_ef
         if worker is not None:
             worker.join(timeout=0.2)
         final_snapshot = module.current_snapshot()
-        if not final_snapshot["pending"] and len(calls) == 2:
+        if not final_snapshot["pending"]:
             break
 
-    assert len(calls) == 2
-    assert calls[0]["model"] == "openai.gpt-5.5"
+    assert len(calls) == 1
+    assert calls[0]["model"] == "openai.gpt-5.6-terra"
     assert calls[0]["service_tier"] == "default"
-    assert calls[1]["model"] == "openai.gpt-5.4"
-    assert calls[1]["service_tier"] == "default"
-    assert module.AUTO_CONTINUE_ZERO_TOKEN_PROVIDER_MARKER in calls[1]["prompt"]
-    assert "Provider recovery checkpoint" in calls[1]["prompt"]
-    assert "Original prompt: finish the scan" in calls[1]["prompt"]
-    assert "Provider error kind: bedrock_engine_not_found" in calls[1]["prompt"]
-    assert "Do not resend the original prompt unchanged" in calls[1]["prompt"]
 
     final_snapshot = module.current_snapshot()
     assert final_snapshot["pending"] is False
-    assert final_snapshot["state"] == "ok"
-    assert final_snapshot["last_response"] == (
-        "Recovered from provider recovery checkpoint on 5.4."
+    assert final_snapshot["state"] == "error"
+    assert provider_error in final_snapshot["last_error"]
+    assert not module.load_audit_events(
+        limit=20, event_type="chat.zero-token-provider-retry"
     )
-
-    events = module.load_audit_events(
+    assert not module.load_audit_events(
         limit=20, event_type="chat.zero-token-provider-recovery-handoff"
     )
-    assert events
-    event = events[0]
-    assert "OpenAI credits/cost" not in event["detail"]
-    assert event["payload"]["previous_model"] == "openai.gpt-5.5"
-    assert event["payload"]["retry_model"] == "openai.gpt-5.4"
-    assert event["payload"]["model_fallback"] is True
-    assert event["payload"]["previous_service_tier"] == "default"
-    assert event["payload"]["retry_service_tier"] == "default"
-    assert event["payload"]["service_tier_fallback"] is False
-    assert event["payload"]["provider_error_kind"] == "bedrock_engine_not_found"
+    events = module.load_audit_events(
+        limit=20, event_type="chat.zero-token-provider-no-retry"
+    )
+    assert len(events) == 1
+    assert events[0]["payload"]["runtime"] == "codex"
+    assert events[0]["payload"]["model"] == "openai.gpt-5.6-terra"
+    assert events[0]["payload"]["service_tier"] == "default"
+    assert events[0]["payload"]["provider_error_kind"] == "bedrock_engine_not_found"
 
 
 def test_bbs_relay_prompt_starts_when_console_is_idle(monkeypatch, tmp_path) -> None:
@@ -3748,6 +6542,7 @@ def test_bbs_relay_prompt_starts_when_console_is_idle(monkeypatch, tmp_path) -> 
             "source_message_id": 42,
             "target_connector_name": "queue-target",
         },
+        route_lock=True,
     )
 
     assert accepted is True
@@ -3816,6 +6611,7 @@ def test_bbs_relay_prompt_queues_when_console_is_busy(monkeypatch, tmp_path) -> 
             "source_message_id": 43,
             "target_connector_name": "queue-target",
         },
+        route_lock=True,
     )
 
     assert accepted is True
@@ -3874,22 +6670,24 @@ def test_console_links_load_from_state_file(monkeypatch, tmp_path) -> None:
     ]
 
 
-def test_runtime_model_selection_persists(monkeypatch, tmp_path) -> None:
+def test_runtime_model_selection_normalizes_retired_model_to_terra(
+    monkeypatch, tmp_path
+) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
     saved = module.save_runtime_settings(
         {"model": "gpt-5.5", "service_tier": "default"}
     )
 
-    assert saved["model"] == "gpt-5.5"
+    assert saved["model"] == "gpt-5.6-terra"
     assert saved["service_tier"] == "default"
-    assert module.load_runtime_settings()["model"] == "gpt-5.5"
+    assert module.load_runtime_settings()["model"] == "gpt-5.6-terra"
     assert module.configured_service_tier() == "default"
-    assert module.configured_chat_model() == "gpt-5.5"
+    assert module.configured_chat_model() == "gpt-5.6-terra"
     assert module.chat_model_update_available() is False
 
 
-def test_runtime_model_selection_allows_switchable_codex_versions(
+def test_runtime_model_selection_rejects_retired_switchable_override(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
@@ -3903,9 +6701,9 @@ def test_runtime_model_selection_allows_switchable_codex_versions(
     )
 
     assert saved["runtime"] == "codex"
-    assert saved["model"] == "openai.gpt-5.4"
-    assert module.configured_runtime_model("codex") == "openai.gpt-5.4"
-    assert "openai.gpt-5.4" in module.AVAILABLE_MODELS
+    assert saved["model"] == "gpt-5.6-terra"
+    assert module.configured_runtime_model("codex") == "gpt-5.6-terra"
+    assert module.AVAILABLE_MODELS == ["openai.gpt-5.6-terra", "gpt-5.6-terra"]
 
 
 def test_runtime_model_selection_rejects_below_floor(monkeypatch, tmp_path) -> None:
@@ -3914,8 +6712,8 @@ def test_runtime_model_selection_rejects_below_floor(monkeypatch, tmp_path) -> N
     saved = module.save_runtime_settings({"runtime": "codex", "model": "gpt-5.4-mini"})
 
     assert saved["runtime"] == "codex"
-    assert saved["model"] == "gpt-5.5"
-    assert module.configured_chat_model() == "gpt-5.5"
+    assert saved["model"] == "gpt-5.6-terra"
+    assert module.configured_chat_model() == "gpt-5.6-terra"
 
 
 def test_runtime_registry_includes_codex_and_local_llm(monkeypatch, tmp_path) -> None:
@@ -3924,10 +6722,13 @@ def test_runtime_registry_includes_codex_and_local_llm(monkeypatch, tmp_path) ->
     registry = {item["key"]: item for item in module.runtime_registry_payload()}
 
     assert registry["codex"]["can_execute"] is True
-    assert registry["codex"]["default_model"] == "gpt-5.5"
-    assert registry["localllm"]["label"] == "Codex Local"
+    assert registry["codex"]["default_model"] == "gpt-5.6-terra"
+    assert registry["localllm"]["label"] == "NorLlama Pool"
     assert registry["localllm"]["can_execute"] is False
     assert registry["localllm"]["tools"] == "brokered-read-only"
+    assert registry["localllm"]["execution"] == "pool"
+    assert registry["localllm"]["default_model"] == "norllama"
+    assert registry["localllm"]["models"] == ["norllama"]
     assert registry["claude"]["can_execute"] is False
     assert registry["claude"]["execution"] == "planned-offline"
     assert registry["kimi"]["provider"] == "moonshot"
@@ -3940,6 +6741,7 @@ def test_runtime_registry_includes_codex_and_local_llm(monkeypatch, tmp_path) ->
     assert registry["codexspark"]["provider"] == "openai/cerebras"
     assert registry["codexspark"]["default_model"] == "gpt-5.3-codex-spark"
     assert registry["codexspark"]["execution"] == "access-check"
+    assert registry["codexspark"]["can_execute"] is False
     assert registry["deepseek"]["provider"] == "deepseek"
     assert registry["deepseek"]["execution"] == "benchmark-only"
     assert registry["deepseek"]["default_model"] == "deepseek.v3.2"
@@ -3950,7 +6752,7 @@ def test_runtime_registry_includes_codex_and_local_llm(monkeypatch, tmp_path) ->
     assert module.normalize_runtime("deepseek-r1") == "deepseek"
 
 
-def test_runtime_registry_uses_configured_local_llm_inventory(
+def test_runtime_registry_hides_configured_local_llm_inventory(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
@@ -3977,23 +6779,10 @@ def test_runtime_registry_uses_configured_local_llm_inventory(
 
     registry = {item["key"]: item for item in module.runtime_registry_payload()}
 
-    assert registry["localllm"]["default_model"] == "gpt-oss:120b"
-    assert registry["localllm"]["models"] == [
-        "gpt-oss:120b",
-        "qwen3.5:122b-a10b-q4_K_M",
-        "qwen3-coder-next:q4_K_M",
-    ]
-    assert registry["localllm"]["endpoints"] == [
-        "http://192.168.2.151:11434",
-        "http://192.168.2.152:11434",
-    ]
-    assert registry["localllm"]["model_endpoints"]["gpt-oss:120b"] == [
-        "http://192.168.2.151:11434",
-        "http://192.168.2.152:11434",
-    ]
-    assert registry["localllm"]["model_endpoints"]["qwen3-coder-next:q4_K_M"] == [
-        "http://192.168.2.152:11434"
-    ]
+    assert registry["localllm"]["default_model"] == "norllama"
+    assert registry["localllm"]["models"] == ["norllama"]
+    assert "endpoints" not in registry["localllm"]
+    assert "model_endpoints" not in registry["localllm"]
 
 
 def test_bedrock_converse_can_enable_claude_runtime(monkeypatch, tmp_path) -> None:
@@ -4117,42 +6906,32 @@ def test_model_route_presets_include_codex_and_claude_bedrock(
         NORMAN_BEDROCK_CONVERSE_ENABLED="1",
         NORMAN_CLAUDE_MODEL="global.anthropic.claude-opus-4-8",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.4",
-        NORMAN_CODEX_DIRECT_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
+        NORMAN_CODEX_DIRECT_MODEL="gpt-5.6-terra",
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="1",
     )
 
     presets = {item["key"]: item for item in module.model_route_presets_payload()}
 
     assert presets["codex-openai"]["runtime"] == "codex"
-    assert presets["codex-openai"]["model"] == "gpt-5.5"
+    assert presets["codex-openai"]["model"] == "gpt-5.6-terra"
     assert presets["codex-openai"]["label"] == "Codex OpenAI Flex"
     assert presets["codex-openai"]["service_tier"] == "flex"
     assert presets["codex-openai"]["can_execute"] is True
     assert presets["codex-openai"]["role"] == "direct fallback"
-    assert presets["codex-openai-5-4"]["runtime"] == "codex"
-    assert presets["codex-openai-5-4"]["model"] == "gpt-5.4"
-    assert presets["codex-openai-5-4"]["service_tier"] == "flex"
-    assert presets["codex-openai-5-4"]["status"] == "Fallback"
     assert presets["codex-bedrock"]["runtime"] == "codex"
-    assert presets["codex-bedrock"]["model"] == "openai.gpt-5.4"
+    assert presets["codex-bedrock"]["model"] == "openai.gpt-5.6-terra"
     assert presets["codex-bedrock"]["label"] == "Codex Bedrock Default"
     assert presets["codex-bedrock"]["service_tier"] == "default"
     assert presets["codex-bedrock"]["can_execute"] is True
     assert presets["codex-bedrock"]["status"] == "Default"
     assert presets["codex-bedrock"]["confidence"] == "high"
-    assert presets["codex-bedrock-5-4"]["runtime"] == "codex"
-    assert presets["codex-bedrock-5-4"]["model"] == "openai.gpt-5.4"
-    assert presets["codex-bedrock-5-4"]["service_tier"] == "default"
-    assert presets["codex-bedrock-5-4"]["status"] == "Stable"
-    assert presets["codex-bedrock-5-4"]["lane"] == "aws-bedrock"
-    assert presets["codex-bedrock-frontier-5-5"]["runtime"] == "codex"
-    assert presets["codex-bedrock-frontier-5-5"]["model"] == "openai.gpt-5.5"
-    assert presets["codex-bedrock-frontier-5-5"]["status"] == "Frontier"
-    assert presets["codex-bedrock-frontier-5-5"]["role"] == "tie breaker"
+    assert "codex-openai-5-4" not in presets
+    assert "codex-bedrock-5-4" not in presets
+    assert "codex-bedrock-frontier-5-5" not in presets
     assert presets["codex-local"]["runtime"] == "localllm"
-    assert presets["codex-local"]["model"] == "local-llm"
-    assert presets["codex-local"]["label"] == "Codex Local"
+    assert presets["codex-local"]["model"] == "norllama"
+    assert presets["codex-local"]["label"] == "NorLlama Pool"
     assert presets["codex-local"]["can_execute"] is False
     assert presets["claude-bedrock"]["runtime"] == "claude"
     assert presets["claude-bedrock"]["model"] == "global.anthropic.claude-opus-4-8"
@@ -4488,12 +7267,13 @@ def test_queued_prompt_preserves_bound_runtime_and_model(monkeypatch, tmp_path) 
         [],
         "codex",
         "gpt-5.5",
+        route_lock=True,
     )
 
     assert accepted is True
     queued = module.normalize_queue(module.load_status_meta()["queued_prompts"])
     assert queued[0]["runtime"] == "codex"
-    assert queued[0]["model"] == "gpt-5.5"
+    assert queued[0]["model"] == "gpt-5.6-terra"
     assert queued[0]["speed"] == "balanced"
 
     module.ACTIVE_PROMPT_THREAD = None
@@ -4528,12 +7308,9 @@ def test_force_default_runtime_overrides_stale_prompt_runtime(
         "gpt-5.5",
     )
 
-    assert accepted is True
-    assert len(launches) == 1
-    assert launches[0][7] == "claude"
-    assert launches[0][8] == "global.anthropic.claude-opus-4-8"
-    assert snapshot["running_runtime"] == "claude"
-    assert snapshot["running_model"] == "global.anthropic.claude-opus-4-8"
+    assert accepted is False
+    assert launches == []
+    assert snapshot["waterfall_blocked"] is True
 
 
 def test_route_lock_honors_explicit_runtime_with_force_default_runtime(
@@ -4569,9 +7346,9 @@ def test_route_lock_honors_explicit_runtime_with_force_default_runtime(
     assert accepted is True
     assert len(launches) == 1
     assert launches[0][7] == "codex"
-    assert launches[0][8] == "openai.gpt-5.4"
+    assert launches[0][8] == "gpt-5.6-terra"
     assert snapshot["running_runtime"] == "codex"
-    assert snapshot["running_model"] == "openai.gpt-5.4"
+    assert snapshot["running_model"] == "gpt-5.6-terra"
 
 
 def test_console_source_mentions_manual_model_controls() -> None:
@@ -4595,7 +7372,7 @@ def test_console_source_mentions_manual_model_controls() -> None:
 def test_launch_script_reads_runtime_model_override() -> None:
     source = LAUNCH_SCRIPT_PATH.read_text(encoding="utf-8")
 
-    assert "NORMAN_CODEX_MODEL:-gpt-5.5" in source
+    assert "NORMAN_CODEX_MODEL:-openai.gpt-5.6-terra" in source
     assert "runtime_settings.json" in source
     assert 'MODEL="$RUNTIME_MODEL"' in source
 
@@ -4637,6 +7414,9 @@ def test_console_source_uses_scrollable_mobile_settings_sheet() -> None:
     assert 'id="settings-body"' in source
     assert ".settings-body" in source
     assert "max-height: min(calc(100dvh - 92px), 760px);" in source
+    assert "Responsive surface contract" in source
+    assert "--mobile-sheet-gutter: 8px;" in source
+    assert "padding-bottom: calc(18px + env(safe-area-inset-bottom));" in source
 
 
 def test_console_source_anchors_topbar_menu_from_viewport() -> None:
@@ -4663,6 +7443,39 @@ def test_console_source_exposes_low_ui_remote_navigation() -> None:
     assert "function handleLowUiRemoteKey(event)" in source
     assert "body.low-ui-mode .composer-send-label" in source
     assert "--low-ui-rail-top" in source
+
+
+def test_console_source_polishes_tooltips_and_edge_to_edge_layout() -> None:
+    source = WEB_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "--workspace-edge-pad: clamp(0px, 0.3vw, 6px);" in source
+    assert (
+        "padding: 0 var(--workspace-edge-pad) max(2px, var(--workspace-edge-pad));"
+        in source
+    )
+    assert "padding: 1px var(--mobile-edge-pad) 2px;" in source
+    assert "[data-tooltip]:not([data-governance-action])::after {" in source
+    assert 'data-tooltip="Console controls"' in source
+    assert 'data-tooltip="Add file, screenshot, or context"' in source
+    assert 'data-tooltip-side="left"' in source
+    assert "function tooltipTextForControl(control) {" in source
+    assert "Run action: ${{String(control.textContent || action)" in source
+    assert "function tooltipSideForControl(control) {" in source
+    assert "function hydrateControlTooltips(root = document) {" in source
+    assert 'control.dataset.tooltipFromControl = "true";' in source
+    assert "function observeControlTooltips() {" in source
+    assert "scheduleControlTooltipHydration();" in source
+    assert "const CONTROL_TOOLTIP_SELECTOR = [" in source
+    assert "\"[role='tab']\"," in source
+    assert '"[data-notice-action]",' in source
+    assert "scope.matches(CONTROL_TOOLTIP_SELECTOR)" in source
+    assert '[role="button"]:focus-visible,' in source
+    assert '[data-notice-action]:not([aria-disabled="true"]) {' in source
+    assert "hydrateControlTooltips(el.switcherPanel);" in source
+    assert "scheduleControlTooltipHydration();" in source
+    assert "observeControlTooltips();" in source
+    assert 'aria-label="Attach recent logs"' in source
+    assert 'data-tooltip="Close view settings"' in source
 
 
 def test_console_source_keeps_host_mentions_non_addressable() -> None:
@@ -4827,13 +7640,13 @@ def test_execute_prompt_resets_bedrock_engine_not_found_resume_thread(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="0",
     )
     stale_thread_id = "019ec4a4-de0e-7033-b0b9-caf9efff252f"
-    thread_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+    thread_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     error_message = "Task submission failed with status 404 Not Found: Engine not found"
     module.write_text(module.THREAD_ID_PATH, stale_thread_id)
     module.write_text(module.THREAD_SCOPE_PATH, thread_scope)
@@ -4894,7 +7707,7 @@ def test_execute_prompt_resets_new_bedrock_engine_not_found_thread(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="0",
@@ -4964,7 +7777,7 @@ def test_execute_prompt_records_bedrock_stream_disconnect_diagnostics(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="0",
@@ -5143,7 +7956,7 @@ def test_execute_prompt_resets_bedrock_stream_disconnect_thread(
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="0",
     )
     stale_thread_id = "019ec69d-ba62-7f21-a8c5-ae2b1f1250b0"
-    thread_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+    thread_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     error_message = (
         "stream disconnected before completion: The server had an error while "
         "processing your request. Sorry about that!"
@@ -5266,3 +8079,248 @@ def test_stale_arg0_cleanup_warning_is_not_provider_error(
         )
         == "bedrock_engine_not_found"
     )
+
+
+def test_context_preflight_uses_vector_selected_archive_turns(monkeypatch, tmp_path):
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_CONTEXT_PREFLIGHT_OFFLINE_COMMAND="vector-preflight",
+    )
+    module.CONTEXT_PREFLIGHT_OFFLINE_COMMAND = "vector-preflight"
+    candidates = [
+        {
+            "id": "turn-lexical-first",
+            "thread_id": "archive-thread",
+            "started_label": "2026-07-01 00:00 UTC",
+            "prompt_preview": "old routing note",
+            "response_preview": "not the requested prior decision",
+            "usage_total_tokens": 10,
+        },
+        {
+            "id": "turn-vector-selected",
+            "thread_id": "archive-thread",
+            "started_label": "2026-07-02 00:00 UTC",
+            "prompt_preview": "prior routing decision",
+            "response_preview": "vector-selected architecture rationale",
+            "usage_total_tokens": 20,
+        },
+    ]
+    requested_limits = []
+
+    def fake_memory_refs(_prompt, *, limit):
+        requested_limits.append(limit)
+        return candidates
+
+    monkeypatch.setattr(module, "context_preflight_memory_refs", fake_memory_refs)
+    monkeypatch.setattr(
+        module,
+        "local_planner_preflight",
+        lambda _payload: {
+            "configured": False,
+            "used": False,
+            "status": "disabled",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_verifier",
+        lambda *_args, **_kwargs: {
+            "configured": False,
+            "used": False,
+            "status": "disabled",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "run_context_preflight_offline_command",
+        lambda _payload: {
+            "configured": True,
+            "used": True,
+            "status": "ok",
+            "summary": "vector recall complete",
+            "memory_ref_ids": ["turn-vector-selected", "unknown-turn"],
+        },
+    )
+
+    context = module.context_preflight_prompt_context(
+        "Revisit the prior routing decision.",
+        attachments=[],
+        runtime="codex",
+        model=module.MODEL,
+    )
+
+    assert requested_limits == [module.CONTEXT_PREFLIGHT_MEMORY_CANDIDATES]
+    assert (
+        "Local vector preflight selected 1 of 2 archive memory candidates." in context
+    )
+    assert "vector-selected architecture rationale" in context
+    assert "not the requested prior decision" not in context
+
+
+def test_context_preflight_adds_database_validated_vector_candidates(
+    monkeypatch, tmp_path
+):
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_CONTEXT_PREFLIGHT_OFFLINE_COMMAND="vector-preflight",
+    )
+    module.CONTEXT_PREFLIGHT_OFFLINE_COMMAND = "vector-preflight"
+    lexical_candidates = [
+        {
+            "id": "turn-lexical",
+            "thread_id": "archive-thread",
+            "started_label": "2026-07-01 00:00 UTC",
+            "prompt_preview": "recent lexical match",
+            "response_preview": "not the older architecture decision",
+            "usage_total_tokens": 10,
+        }
+    ]
+    vector_candidate = {
+        "id": "turn-vector-database-validated",
+        "thread_id": "archive-thread",
+        "started_label": "2026-06-01 00:00 UTC",
+        "prompt_preview": "older architecture decision",
+        "response_preview": "database-validated vector retrieval",
+        "usage_total_tokens": 20,
+    }
+    requested_ids: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "context_preflight_memory_refs",
+        lambda _prompt, *, limit: lexical_candidates,
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_preflight",
+        lambda _payload: {"configured": False, "used": False},
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_verifier",
+        lambda *_args, **_kwargs: {"configured": False, "used": False},
+    )
+
+    def fake_memory_refs_by_ids(value, *, limit):
+        requested_ids.append(list(value))
+        assert limit == module.CONTEXT_PREFLIGHT_MEMORY_CANDIDATES
+        return [vector_candidate]
+
+    monkeypatch.setattr(
+        module,
+        "context_preflight_memory_refs_by_ids",
+        fake_memory_refs_by_ids,
+    )
+    monkeypatch.setattr(
+        module,
+        "run_context_preflight_offline_command",
+        lambda _payload: {
+            "configured": True,
+            "used": True,
+            "status": "ok",
+            "summary": "vector recall complete",
+            "memory_ref_ids": ["turn-vector-database-validated", "unknown-turn"],
+        },
+    )
+
+    context = module.context_preflight_prompt_context(
+        "Revisit the older architecture decision.",
+        attachments=[],
+        runtime="codex",
+        model=module.MODEL,
+    )
+
+    assert requested_ids == [["turn-vector-database-validated", "unknown-turn"]]
+    assert (
+        "Local vector preflight selected 1 of 2 archive memory candidates." in context
+    )
+    assert "database-validated vector retrieval" in context
+    assert "not the older architecture decision" not in context
+
+
+def test_context_preflight_records_rerank_receipt_for_route_details(
+    monkeypatch, tmp_path
+):
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_CONTEXT_PREFLIGHT_OFFLINE_COMMAND="vector-preflight",
+    )
+    module.CONTEXT_PREFLIGHT_OFFLINE_COMMAND = "vector-preflight"
+    candidates = [
+        {
+            "id": "turn-lexical",
+            "thread_id": "archive-thread",
+            "started_label": "2026-07-01 00:00 UTC",
+            "prompt_preview": "recent lexical match",
+            "response_preview": "not the older architecture decision",
+            "usage_total_tokens": 10,
+        },
+        {
+            "id": "turn-reranked",
+            "thread_id": "archive-thread",
+            "started_label": "2026-06-01 00:00 UTC",
+            "prompt_preview": "older architecture decision",
+            "response_preview": "cross-encoder selected retrieval",
+            "usage_total_tokens": 20,
+        },
+    ]
+    monkeypatch.setattr(
+        module,
+        "context_preflight_memory_refs",
+        lambda _prompt, *, limit: candidates[:limit],
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_preflight",
+        lambda _payload: {"configured": False, "used": False, "status": "disabled"},
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_verifier",
+        lambda *_args, **_kwargs: {
+            "configured": False,
+            "used": False,
+            "status": "disabled",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "run_context_preflight_offline_command",
+        lambda _payload: {
+            "configured": True,
+            "used": True,
+            "status": "ok",
+            "summary": "vector recall complete",
+            "memory_ref_ids": ["turn-reranked"],
+            "rerank": {
+                "configured": True,
+                "used": True,
+                "status": "ok",
+                "model": "BAAI/bge-reranker-v2-m3",
+                "candidate_count": 8,
+                "selected_count": 1,
+                "failure_class": "ok",
+            },
+        },
+    )
+
+    context = module.context_preflight_prompt_context(
+        "Revisit the older architecture decision.",
+        attachments=[],
+        runtime="codex",
+        model=module.MODEL,
+    )
+    accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
+    source = WEB_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "Local Spark reranker selected 1 of 2 archive memory candidates." in context
+    assert accounting["memory_rerank_used"] is True
+    assert accounting["memory_rerank_model"] == "BAAI/bge-reranker-v2-m3"
+    assert accounting["memory_rerank_candidate_count"] == 8
+    assert accounting["memory_rerank_selected_count"] == 1
+    assert accounting["memory_rerank_receipt"]["status"] == "ok"
+    assert "function turnRouteExplanationDescriptor(" in source
+    assert "message-route-details-toggle" in source

@@ -6,9 +6,9 @@ from scripts import tui_kernel_acceptance as acceptance
 
 
 def route_invocations(
-    model: str = "qwen3.6:27b",
+    model: str = "qwen3-coder:30b-a3b-q4_K_M",
     *,
-    worker: str = "spark-151",
+    worker: str = "spark-150",
     phase: str = "literal_response",
 ) -> list[dict[str, str]]:
     return [
@@ -42,10 +42,38 @@ def test_form_payload_uses_locked_local_llm_route():
     payload = acceptance.form_payload(run)
 
     assert payload["runtime"] == "localllm"
-    assert payload["model"] == "qwen3.6:27b"
+    assert payload["model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert payload["route_lock"] == "1"
     assert payload["job_budget"] == "2m"
     assert run.expected_response == "DONE local visible r1-norman-canary"
+
+
+def test_dry_run_writes_not_executed_plan(tmp_path, capsys):
+    output = tmp_path / "nested" / "acceptance-plan.json"
+
+    result = acceptance.main(
+        [
+            "--targets",
+            "norman",
+            "--scenarios",
+            "canary",
+            "--run-id",
+            "dry-plan",
+            "--output-json",
+            str(output),
+        ]
+    )
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    captured = capsys.readouterr()
+    assert result == 0
+    assert report["dry_run_only"] is True
+    assert report["model_calls_executed"] == 0
+    assert report["execution_status"] == "not_executed"
+    assert report["passed"] is None
+    assert report["plans"][0]["target"] == "norman"
+    assert report["plans"][0]["execution_status"] == "not_executed"
+    assert "expected response (not executed)" in captured.out
 
 
 def test_norman_target_uses_ssh_when_acceptance_runs_off_host(monkeypatch):
@@ -447,9 +475,9 @@ def test_live_multi_host_acceptance_can_use_authoritative_norman_db_fallback(
             "last_error": "",
             "kernel_owned_turn": True,
             "task_kind": "literal_response",
-            "selected_model": "qwen3.6:27b",
-            "selected_worker": "spark-151",
-            "observed_worker": "spark-151",
+            "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+            "selected_worker": "spark-150",
+            "observed_worker": "spark-150",
             "observed_worker_source": "gateway_response",
             "invocations": route_invocations(),
             "execution_mode": "live",
@@ -722,7 +750,7 @@ def test_receipt_from_activity_snapshot_maps_route_summary():
                     "route_receipt": {
                         "phase": "literal_response",
                         "task_kind": "chat",
-                        "selected_model": "qwen3.6:27b",
+                        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
                         "selected_worker": "spark-150",
                         "observed_worker": "spark-150",
                         "observed_worker_source": "gateway_response",
@@ -814,12 +842,12 @@ def test_validate_acceptance_passes_complete_local_receipt():
         "last_error": "",
         "kernel_owned_turn": True,
         "task_kind": "literal_response",
-        "selected_model": "qwen3.6:27b",
-        "selected_worker": "spark-151",
-        "target_worker": "spark-151",
+        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "selected_worker": "spark-150",
+        "target_worker": "spark-150",
         "target_worker_mode": "explicit",
-        "gateway_selected_worker": "spark-151",
-        "observed_worker": "spark-151",
+        "gateway_selected_worker": "spark-150",
+        "observed_worker": "spark-150",
         "observed_worker_source": "gateway_response",
         "request_id": "req-acceptance",
         "client_request_id": "req-acceptance",
@@ -850,8 +878,8 @@ def test_validate_acceptance_passes_complete_local_receipt():
 
     assert passed is True
     assert failures == []
-    assert proof["receipt"]["selected_worker"] == "spark-151"
-    assert proof["receipt"]["observed_worker"] == "spark-151"
+    assert proof["receipt"]["selected_worker"] == "spark-150"
+    assert proof["receipt"]["observed_worker"] == "spark-150"
     assert proof["receipt"]["gateway_request_id"] == "gw-acceptance"
 
 
@@ -886,9 +914,9 @@ def test_validate_acceptance_accepts_literal_phase_with_chat_task_kind():
         "receipt_task_kind": "chat",
         "receipt_phase": "literal_response",
         "task_kinds": ["chat"],
-        "selected_model": "qwen3.6:27b",
-        "selected_worker": "spark-151",
-        "observed_worker": "spark-151",
+        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "selected_worker": "spark-150",
+        "observed_worker": "spark-150",
         "observed_worker_source": "gateway_response",
         "request_id": "req-phase",
         "client_request_id": "req-phase",
@@ -948,11 +976,11 @@ def test_validate_acceptance_rejects_locked_route_model_mismatch():
         "last_error": "",
         "kernel_owned_turn": True,
         "task_kind": "literal_response",
-        "selected_model": "qwen3.6:27b",
-        "selected_worker": "spark-151",
-        "observed_worker": "spark-151",
+        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "selected_worker": "spark-150",
+        "observed_worker": "spark-150",
         "observed_worker_source": "gateway_response",
-        "invocations": route_invocations("qwen3.6:35b-a3b-q4_K_M"),
+        "invocations": route_invocations("gemma4:26b-a4b-it-q4_K_M"),
         "execution_mode": "live",
         "output_shape": "complete",
         "local_tokens": 77,
@@ -979,7 +1007,7 @@ def test_validate_acceptance_rejects_locked_route_model_mismatch():
     assert proof["route_proof_passed"] is False
     assert any(
         "locked route literal_response effective_runtime_model is "
-        "qwen3.6:35b-a3b-q4_K_M, expected qwen3.6:27b" == failure
+        "gemma4:26b-a4b-it-q4_K_M, expected qwen3-coder:30b-a3b-q4_K_M" == failure
         for failure in failures
     )
 
@@ -1009,7 +1037,7 @@ def test_validate_acceptance_rejects_cloud_tokens_and_missing_worker():
         "last_error": "",
         "kernel_owned_turn": True,
         "task_kind": "literal_response",
-        "selected_model": "qwen3.6:27b",
+        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
         "selected_worker": "",
         "observed_worker": "",
         "observed_worker_source": "",
@@ -1068,9 +1096,9 @@ def test_validate_acceptance_rejects_stale_status_job_id():
         "last_error": "",
         "kernel_owned_turn": True,
         "task_kind": "literal_response",
-        "selected_model": "qwen3.6:27b",
-        "selected_worker": "spark-151",
-        "observed_worker": "spark-151",
+        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "selected_worker": "spark-150",
+        "observed_worker": "spark-150",
         "observed_worker_source": "gateway_response",
         "invocations": route_invocations(),
         "execution_mode": "live",
@@ -1130,9 +1158,9 @@ def test_validate_acceptance_prefers_ask_owned_job_over_stale_status():
         "last_error": "",
         "kernel_owned_turn": True,
         "task_kind": "literal_response",
-        "selected_model": "qwen3.6:27b",
-        "selected_worker": "spark-151",
-        "observed_worker": "spark-151",
+        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "selected_worker": "spark-150",
+        "observed_worker": "spark-150",
         "observed_worker_source": "gateway_response",
         "invocations": route_invocations(),
         "execution_mode": "live",
@@ -1205,9 +1233,9 @@ def test_validate_acceptance_rejects_stale_visible_state_despite_route_proof():
         "last_error": "",
         "kernel_owned_turn": True,
         "task_kind": "literal_response",
-        "selected_model": "qwen3.6:27b",
-        "selected_worker": "spark-151",
-        "observed_worker": "spark-151",
+        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "selected_worker": "spark-150",
+        "observed_worker": "spark-150",
         "observed_worker_source": "gateway_response",
         "invocations": route_invocations(),
         "execution_mode": "live",
@@ -1266,9 +1294,9 @@ def test_validate_acceptance_can_require_spark_evidence():
         "last_error": "",
         "kernel_owned_turn": True,
         "task_kind": "literal_response",
-        "selected_model": "qwen3.6:27b",
-        "selected_worker": "spark-151",
-        "observed_worker": "spark-151",
+        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "selected_worker": "spark-150",
+        "observed_worker": "spark-150",
         "observed_worker_source": "gateway_response",
         "execution_mode": "live",
         "output_shape": "complete",
@@ -1329,12 +1357,12 @@ def test_validate_acceptance_uses_model_receipt_task_kind_for_unlocked_route():
         "task_kind": "chat",
         "receipt_task_kind": "chat",
         "envelope_task_kind": "visible_response",
-        "selected_model": "qwen3.6:27b",
-        "selected_worker": "spark-151",
-        "target_worker": "spark-151",
+        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "selected_worker": "spark-150",
+        "target_worker": "spark-150",
         "target_worker_mode": "explicit",
-        "gateway_selected_worker": "spark-151",
-        "observed_worker": "spark-151",
+        "gateway_selected_worker": "spark-150",
+        "observed_worker": "spark-150",
         "observed_worker_source": "gateway_response",
         "request_id": "req-auto",
         "client_request_id": "req-auto",
@@ -1383,8 +1411,8 @@ def test_activity_snapshot_reports_phase_level_invocations():
                     "route_selected_model": model,
                     "requested_model": model,
                     "effective_runtime_model": model,
-                    "selected_worker": "spark-151",
-                    "observed_worker": "spark-151",
+                    "selected_worker": "spark-150",
+                    "observed_worker": "spark-150",
                     "observed_worker_source": "gateway_response",
                     "execution_mode": "live",
                     "output_shape": "complete",
@@ -1424,17 +1452,17 @@ def test_activity_snapshot_reports_phase_level_invocations():
                 "spark_evidence_count": 3,
             },
             "events": [
-                model_event("plan", "qwen3.6:35b-a3b-q4_K_M", "inv-plan"),
-                model_event("work", "qwen3.6:27b", "inv-work"),
-                model_event("verify", "qwen3.6:27b", "inv-verify"),
+                model_event("plan", "qwen3-coder:30b-a3b-q4_K_M", "inv-plan"),
+                model_event("work", "qwen3-coder:30b-a3b-q4_K_M", "inv-work"),
+                model_event("verify", "qwen3-coder:30b-a3b-q4_K_M", "inv-verify"),
             ],
         },
     )
 
     assert receipt["models_by_phase"] == {
-        "plan": "qwen3.6:35b-a3b-q4_K_M",
-        "work": "qwen3.6:27b",
-        "verify": "qwen3.6:27b",
+        "plan": "qwen3-coder:30b-a3b-q4_K_M",
+        "work": "qwen3-coder:30b-a3b-q4_K_M",
+        "verify": "qwen3-coder:30b-a3b-q4_K_M",
     }
     assert [item["phase"] for item in receipt["invocations"]] == [
         "plan",
@@ -1442,4 +1470,4 @@ def test_activity_snapshot_reports_phase_level_invocations():
         "verify",
     ]
     assert receipt["final_invocation_phase"] == "verify"
-    assert receipt["final_effective_model"] == "qwen3.6:27b"
+    assert receipt["final_effective_model"] == "qwen3-coder:30b-a3b-q4_K_M"

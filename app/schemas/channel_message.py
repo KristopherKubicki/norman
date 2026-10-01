@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, constr
+from pydantic import ConfigDict, BaseModel, constr
 
 
 class ChannelMessageBase(BaseModel):
@@ -16,5 +16,4 @@ class ChannelMessageOut(ChannelMessageBase):
     source: str
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)

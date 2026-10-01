@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Norllama fleet route policy before expiry
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

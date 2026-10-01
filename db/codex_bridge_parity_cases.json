@@ -1,0 +1,274 @@
+{
+  "schema": "norman.codex-bridge-parity-cases.v1",
+  "cases": [
+    {
+      "id": "cp-agent-action-boundaries",
+      "title": "Control Plane agent action boundaries",
+      "category": "policy",
+      "requires_repository_tools": true,
+      "prompt": "Read README.md and docs/agent_action_policy.md. Explain the default action stance, name two actions that require human approval, and identify the boundary between Data Operations work and developer-controlled work. Cite the repository paths that support each claim.",
+      "required_facts": [
+        {
+          "id": "default-dry-run",
+          "all_terms": ["dry-run", "default"],
+          "weight": 1.0
+        },
+        {
+          "id": "human-approval-boundary",
+          "any_terms": ["human approval", "explicit signoff", "not allowed"],
+          "weight": 1.0
+        },
+        {
+          "id": "developer-control",
+          "all_terms": ["developer", "controlled"],
+          "weight": 1.0
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "policy-path",
+          "all_terms": ["docs/agent_action_policy.md"],
+          "weight": 1.0
+        },
+        {
+          "id": "readme-path",
+          "all_terms": ["README.md"],
+          "weight": 0.5
+        }
+      ],
+      "wisdom_checks": [
+        {
+          "id": "no-overclaim",
+          "any_terms": ["require", "approval", "controlled"],
+          "weight": 0.5
+        }
+      ],
+      "known_traps": [
+        {
+          "id": "claim-unrestricted-writes",
+          "all_terms": ["unrestricted", "production writes"],
+          "weight": 1.0
+        }
+      ],
+      "answer_contract": {
+        "min_response_words": 90,
+        "min_sentences": 4,
+        "required_sections": ["Evidence", "Boundary"],
+        "requires_caveat": true,
+        "min_reasoning_markers": 1
+      }
+    },
+    {
+      "id": "cp-public-surface-gate",
+      "title": "Control Plane public-surface closure gate",
+      "category": "policy",
+      "requires_repository_tools": true,
+      "prompt": "Read docs/agent_action_policy.md and identify the required gate before closing work that changes a customer-visible or executive-visible surface. Explain why a dry-run alone is insufficient, and state what verification must be retained. Cite the relevant path.",
+      "required_facts": [
+        {
+          "id": "required-flag",
+          "all_terms": ["public_surface_check.required=true"],
+          "weight": 1.0
+        },
+        {
+          "id": "explicit-verification",
+          "all_terms": ["verify", "surface"],
+          "weight": 1.0
+        },
+        {
+          "id": "dry-run-insufficient",
+          "all_terms": ["dry-run", "alone"],
+          "weight": 1.0
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "policy-path",
+          "all_terms": ["docs/agent_action_policy.md"],
+          "weight": 1.0
+        }
+      ],
+      "wisdom_checks": [
+        {
+          "id": "closure-caveat",
+          "any_terms": ["before closure", "do not", "must"],
+          "weight": 0.5
+        }
+      ],
+      "known_traps": [
+        {
+          "id": "dry-run-is-enough",
+          "all_terms": ["dry-run", "sufficient"],
+          "weight": 1.0
+        }
+      ],
+      "answer_contract": {
+        "min_response_words": 65,
+        "min_sentences": 3,
+        "required_sections": ["Evidence", "Decision"],
+        "requires_caveat": true,
+        "min_reasoning_markers": 1
+      }
+    },
+    {
+      "id": "cp-runbook-runner-mutation-gates",
+      "title": "Runbook runner mutation gates",
+      "category": "runbook",
+      "requires_repository_tools": true,
+      "prompt": "Inspect scripts/runbook_runner.py. Compare the safety gates for a Jira comment and a live GAPI submit. State the default behavior, every flag required for a live GAPI submit, and the audit behavior. Cite the source path and avoid proposing any execution.",
+      "required_facts": [
+        {
+          "id": "jira-default",
+          "all_terms": ["jira", "dry-run"],
+          "weight": 1.0
+        },
+        {
+          "id": "gapi-live-flags",
+          "all_terms": ["--live", "--apply", "--confirm-live"],
+          "weight": 1.0
+        },
+        {
+          "id": "audit-event",
+          "all_terms": ["audit", "write"],
+          "weight": 1.0
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "runner-path",
+          "all_terms": ["scripts/runbook_runner.py"],
+          "weight": 1.0
+        }
+      ],
+      "wisdom_checks": [
+        {
+          "id": "no-execution",
+          "any_terms": ["do not execute", "no execution", "read-only", "do not run"],
+          "weight": 0.5
+        }
+      ],
+      "known_traps": [
+        {
+          "id": "apply-alone-is-live",
+          "all_terms": ["--apply", "alone"],
+          "weight": 1.0
+        }
+      ],
+      "answer_contract": {
+        "min_response_words": 90,
+        "min_sentences": 4,
+        "required_sections": ["Evidence", "Comparison"],
+        "requires_caveat": true,
+        "requires_comparison": true,
+        "min_reasoning_markers": 1
+      }
+    },
+    {
+      "id": "cp-distribution-posture",
+      "title": "Control Plane distribution posture",
+      "category": "repository",
+      "requires_repository_tools": true,
+      "prompt": "Read README.md. Distinguish durable source-of-truth repository content from local runtime surfaces in Control Plane. Name the source directories and the runtime directories called out by the document, then explain the operational consequence for a coding task. Cite README.md.",
+      "required_facts": [
+        {
+          "id": "durable-source",
+          "any_terms": ["config/", "docs/", "templates/", "schemas/"],
+          "weight": 1.0
+        },
+        {
+          "id": "runtime-surfaces",
+          "any_terms": ["data/", "out/", "tmp/", "var/", "audit/"],
+          "weight": 1.0
+        },
+        {
+          "id": "not-source-of-truth",
+          "all_terms": ["source-of-truth"],
+          "weight": 1.0
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "readme-path",
+          "all_terms": ["README.md"],
+          "weight": 1.0
+        }
+      ],
+      "wisdom_checks": [
+        {
+          "id": "coding-consequence",
+          "any_terms": ["durable", "checked-in", "local runtime"],
+          "weight": 0.5
+        }
+      ],
+      "known_traps": [
+        {
+          "id": "commit-runtime-data",
+          "all_terms": ["commit", "data/", "source of truth"],
+          "weight": 1.0
+        }
+      ],
+      "answer_contract": {
+        "min_response_words": 75,
+        "min_sentences": 3,
+        "required_sections": ["Evidence", "Implication"],
+        "min_reasoning_markers": 1
+      }
+    },
+    {
+      "id": "cp-leadership-read-path",
+      "title": "Control Plane leadership read path",
+      "category": "documentation",
+      "requires_repository_tools": true,
+      "prompt": "Read README.md and identify the first four documents in the Leadership Read Path. Explain what this ordered path implies about how an agent should orient a leadership-facing answer, and cite README.md.",
+      "required_facts": [
+        {
+          "id": "executive-guide",
+          "all_terms": ["docs/executive_guide.md"],
+          "weight": 1.0
+        },
+        {
+          "id": "leadership-model",
+          "all_terms": ["docs/leadership_operating_model.md"],
+          "weight": 1.0
+        },
+        {
+          "id": "kpi-model",
+          "all_terms": ["docs/kpi_operating_model.md"],
+          "weight": 1.0
+        },
+        {
+          "id": "kaizen-model",
+          "all_terms": ["docs/kaizen_process_improvement_operating_model.md"],
+          "weight": 1.0
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "readme-path",
+          "all_terms": ["README.md"],
+          "weight": 1.0
+        }
+      ],
+      "wisdom_checks": [
+        {
+          "id": "ordered-orientation",
+          "any_terms": ["ordered", "orient", "leadership"],
+          "weight": 0.5
+        }
+      ],
+      "known_traps": [
+        {
+          "id": "unordered-reading",
+          "all_terms": ["any order", "documents"],
+          "weight": 1.0
+        }
+      ],
+      "answer_contract": {
+        "min_response_words": 70,
+        "min_sentences": 3,
+        "required_sections": ["Evidence", "Implication"],
+        "min_reasoning_markers": 1
+      }
+    }
+  ]
+}

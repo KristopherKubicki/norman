@@ -131,16 +131,27 @@ SIMPLER_PHRASES = (
 )
 VERIFY_PHRASES = ("verify", "check this", "validate", "audit this", "double check")
 COPY_PHRASES = ("copy", "copy this", "copy response", "copy text")
-HANDOFF_PHRASES = (
-    "handoff",
-    "hand off",
-    "relay",
-    "send to",
-    "pass to",
-    "ask scout",
-    "ask uplink",
-    "ask cloudagent",
-    "ask housebot",
+_HANDOFF_PREFIX = (
+    r"(?:(?:please|can|could|would|will)\s+(?:you\s+)?|"
+    r"go\s+ahead(?:\s+and)?\s+|i\s+(?:need|want)\s+you\s+to\s+)?"
+)
+_HANDOFF_TARGET = r"[a-z0-9][a-z0-9._-]*"
+_HANDOFF_SUBJECT = r"(?:this|that|it|the\s+(?:task|work|job|request))"
+_HANDOFF_DIRECTIVE_PATTERNS = (
+    re.compile(
+        rf"{_HANDOFF_PREFIX}(?:handoff|hand\s+off|relay)"
+        rf"(?:\s+{_HANDOFF_SUBJECT})?(?:\s+to\s+{_HANDOFF_TARGET})?\s*[.!?]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_HANDOFF_PREFIX}(?:send|pass)\s+{_HANDOFF_SUBJECT}\s+to\s+"
+        rf"{_HANDOFF_TARGET}\s*[.!?]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_HANDOFF_PREFIX}ask\s+(?:scout|uplink|cloudagent|housebot)\s*[.!?]?",
+        re.IGNORECASE,
+    ),
 )
 
 ROUTE_STATUS_SUBJECTS = (
@@ -187,6 +198,16 @@ def padded_lower(value: Any) -> str:
 
 def contains_any(text: str, needles: set[str] | tuple[str, ...]) -> bool:
     return any(needle in text for needle in needles)
+
+
+def has_handoff_directive(value: Any) -> bool:
+    """Recognize only standalone transfer commands, never incidental prose."""
+
+    prompt = clean_prompt(value)
+    return bool(
+        prompt
+        and any(pattern.fullmatch(prompt) for pattern in _HANDOFF_DIRECTIVE_PATTERNS)
+    )
 
 
 def looks_like_status_word(token: str) -> bool:
@@ -264,10 +285,18 @@ def is_route_status_diagnostic(value: Any) -> bool:
     )
     if not asks_status:
         return False
-    mutating_order = re.search(
-        r"\b(?:apply|change|commit|deploy|edit|fix|implement|install|patch|push|restart|run|sync|update)\b",
+    mutation_verbs = (
+        r"apply|change|commit|deploy|edit|fix|generate|implement|install|make|"
+        r"patch|push|rebuild|regenerate|render|restart|run|sync|update"
+    )
+    explicit_mutating_order = re.search(
+        rf"\b(?:and|can|could|do it|go ahead|make it|need to|please|proceed|"
+        rf"should|then|will|would|you should)\b.{{0,80}}\b(?:{mutation_verbs})\b",
         lower,
     )
+    if explicit_mutating_order:
+        return False
+    mutating_order = re.search(rf"\b(?:{mutation_verbs})\b", lower)
     diagnostic_intro = re.search(
         r"\b(?:why|what|which|how|did|does|do|is|are|was|were|can|could|should)\b",
         lower,
@@ -276,7 +305,7 @@ def is_route_status_diagnostic(value: Any) -> bool:
         return False
     return not re.search(
         r"\b(?:go ahead|proceed|do it|make it|please)\b"
-        r".{0,80}\b(?:deploy|fix|implement|install|patch|push|restart|run|sync|update)\b",
+        rf".{{0,80}}\b(?:{mutation_verbs})\b",
         lower,
     )
 
@@ -295,7 +324,7 @@ def requested_action(value: Any) -> str:
         return "verify_response"
     if contains_any(lower, DIG_PHRASES):
         return "dig_deeper"
-    if contains_any(lower, HANDOFF_PHRASES):
+    if has_handoff_directive(lower):
         return "handoff_or_relay"
     if contains_any(lower, PROCEED_PHRASES):
         return "proceed_or_next"
@@ -318,7 +347,7 @@ def button_intent(value: Any) -> str:
         return "verify_response"
     if contains_any(lower, DIG_PHRASES):
         return "dig_deeper"
-    if contains_any(lower, HANDOFF_PHRASES):
+    if has_handoff_directive(lower):
         return "handoff_or_relay"
     if contains_any(lower, PROCEED_PHRASES):
         return "make_it_so"

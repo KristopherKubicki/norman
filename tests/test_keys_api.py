@@ -45,6 +45,7 @@ def _seed_policy(
     allowed_modes: list[str],
     secret_prefix: str = "networking/",
     requester_id: str = "norman-prime",
+    allowed_hosts: list[str] | None = None,
 ):
     policy = SecretPolicy(
         name=name,
@@ -56,12 +57,102 @@ def _seed_policy(
         max_ttl_seconds=900,
         approval_required=approval_required,
         raw_reveal_allowed=raw_reveal_allowed,
+        allowed_hosts=allowed_hosts or [],
         enabled=True,
     )
     db.add(policy)
     db.commit()
     db.refresh(policy)
     return policy
+
+
+def test_keys_request_denies_host_outside_policy(test_app, db, tmp_path):
+    _, alias = _seed_file_alias(db, tmp_path, suffix="-host-denied")
+    _seed_policy(
+        db,
+        name="networking-host-denied",
+        approval_required=False,
+        raw_reveal_allowed=True,
+        allowed_modes=["read"],
+        allowed_hosts=["norman.lollie.org"],
+    )
+
+    response = test_app.post(
+        "/api/v1/keys/requests",
+        json={
+            "name": alias.name,
+            "requested_mode": "read",
+            "requester_type": "agent",
+            "requester_id": "norman-prime",
+            "lane": "shared_infra",
+            "target_host": "other.home.arpa",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "No secret policy matched request"
+
+
+def test_keys_request_accepts_normalized_allowed_host(test_app, db, tmp_path):
+    _, alias = _seed_file_alias(db, tmp_path, suffix="-host-allowed")
+    _seed_policy(
+        db,
+        name="networking-host-allowed",
+        approval_required=False,
+        raw_reveal_allowed=True,
+        allowed_modes=["read"],
+        allowed_hosts=["norman.lollie.org"],
+    )
+
+    response = test_app.post(
+        "/api/v1/keys/requests",
+        json={
+            "name": alias.name,
+            "requested_mode": "read",
+            "requester_type": "agent",
+            "requester_id": "norman-prime",
+            "lane": "shared_infra",
+            "target_host": "NORMAN.LOLLIE.ORG.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["request"]["status"] == "issued"
+
+
+def test_keys_request_does_not_fall_back_from_host_bound_policy(test_app, db, tmp_path):
+    _, alias = _seed_file_alias(db, tmp_path, suffix="-host-precedence")
+    _seed_policy(
+        db,
+        name="networking-host-broad",
+        approval_required=False,
+        raw_reveal_allowed=True,
+        allowed_modes=["read"],
+    )
+    _seed_policy(
+        db,
+        name="networking-host-specific",
+        approval_required=False,
+        raw_reveal_allowed=True,
+        allowed_modes=["read"],
+        secret_prefix=alias.name,
+        allowed_hosts=["norman.lollie.org"],
+    )
+
+    response = test_app.post(
+        "/api/v1/keys/requests",
+        json={
+            "name": alias.name,
+            "requested_mode": "read",
+            "requester_type": "agent",
+            "requester_id": "norman-prime",
+            "lane": "shared_infra",
+            "target_host": "other.home.arpa",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "No secret policy matched request"
 
 
 def _seed_env_file_alias(db, tmp_path: Path, *, name: str = "norman/runtime-token"):

@@ -92,6 +92,17 @@ class TuiVllmSenseTests(unittest.TestCase):
         self.assertIn("http://192.168.2.50:8000", endpoints)
         self.assertNotIn("http://169.254.1.10:8000", endpoints)
 
+    def test_explicit_endpoint_precedes_defaults_and_frontdoor_is_first_default(self):
+        module = load_module()
+
+        endpoints = module.configured_endpoints(
+            ["http://explicit-spark:8000"],
+            autosense_lan=False,
+        )
+
+        self.assertEqual(endpoints[0], "http://explicit-spark:8000")
+        self.assertEqual(module.DEFAULT_ENDPOINTS[0], "https://llm.home.arpa")
+
     def test_build_report_marks_model_missing(self):
         module = load_module()
 
@@ -170,6 +181,26 @@ class TuiVllmSenseTests(unittest.TestCase):
             result = module.probe_endpoint("spark:8000", timeout=0.5)
 
         self.assertTrue(result.ok)
+
+    def test_build_report_stops_after_first_usable_endpoint(self):
+        module = load_module()
+        requested_urls = []
+
+        def fake_urlopen(req, timeout, context=None):
+            requested_urls.append(req.full_url)
+            return DummyResponse({"data": [{"id": "qwen3.6:35b-a3b-q4_K_M"}]})
+
+        with mock.patch.object(module, "urlopen", fake_urlopen):
+            report = module.build_report(
+                ["http://frontdoor:8000", "http://fallback:8000"],
+                timeout=0.5,
+                stop_after_usable=True,
+            )
+
+        self.assertEqual(report["summary"]["candidate_endpoint_count"], 2)
+        self.assertEqual(report["summary"]["total_endpoints"], 1)
+        self.assertEqual(report["summary"]["best_endpoint"], "http://frontdoor:8000")
+        self.assertEqual(requested_urls, ["http://frontdoor:8000/v1/models"])
 
 
 if __name__ == "__main__":

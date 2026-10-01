@@ -70,6 +70,7 @@ def test_listen_and_process(monkeypatch):
 
     class TestConnector(mod.AMQPConnector):
         async def process_incoming(self, message):
+            await asyncio.sleep(0)
             processed.append(message)
 
     connector = TestConnector("amqp://", "q")

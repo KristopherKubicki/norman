@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
@@ -63,7 +63,7 @@ def decide(
     reason: str = "",
 ) -> CommandApproval:
     approval.status = status
-    approval.decided_at = datetime.utcnow()
+    approval.decided_at = datetime.now(UTC)
     if reason:
         approval.reason = reason
     db.commit()

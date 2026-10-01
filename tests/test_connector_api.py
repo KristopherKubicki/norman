@@ -249,10 +249,12 @@ def test_connector_bundle_export_omits_oauth_and_includes_routing_rules(
     assert slack_bundle["config"]["channel_id"] == "#ops-export"
     assert "oauth_access_token" not in slack_bundle["config"]
     assert "oauth_provider" not in slack_bundle["config"]
-    assert payload["routing_rules"][0]["name"] == "Export Rule"
-    assert payload["routing_rules"][0]["connector_name"] == "Slack Export"
-    assert payload["routing_rules"][0]["destination_connector_name"] == "TMUX Export"
-    assert payload["routing_rules"][0]["bot_session_id"] == "ops-export"
+    export_rule = next(
+        item for item in payload["routing_rules"] if item["name"] == "Export Rule"
+    )
+    assert export_rule["connector_name"] == "Slack Export"
+    assert export_rule["destination_connector_name"] == "TMUX Export"
+    assert export_rule["bot_session_id"] == "ops-export"
 
 
 def test_connector_bundle_import_upserts_connectors_and_rules(

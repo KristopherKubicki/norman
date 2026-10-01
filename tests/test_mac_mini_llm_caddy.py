@@ -34,9 +34,7 @@ def test_mac_mini_llm_caddy_renders_local_and_canonical_proxies() -> None:
         "    }\n"
         "}"
     ) in rendered
-    assert (
-        "http://llm.home.arpa {\n" "    redir https://{host}{uri} 308\n" "}"
-    ) in rendered
+    assert ("http://llm.home.arpa {\n    redir https://{host}{uri} 308\n}") in rendered
     assert (
         "llm.home.arpa {\n"
         "    import mac_mini_llm_tls\n"
@@ -44,7 +42,7 @@ def test_mac_mini_llm_caddy_renders_local_and_canonical_proxies() -> None:
         "}"
     ) in rendered
     assert (
-        "http://llm.knox.lollie.org {\n" "    redir https://{host}{uri} 308\n" "}"
+        "http://llm.knox.lollie.org {\n    redir https://{host}{uri} 308\n}"
     ) in rendered
     assert (
         "llm.knox.lollie.org {\n"

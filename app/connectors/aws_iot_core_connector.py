@@ -17,6 +17,12 @@ except ImportError:  # pragma: no cover - optional dependency
 from .base_connector import BaseConnector
 
 
+def _is_configured_value(value: Optional[str]) -> bool:
+    """Return whether an AWS setting is a real configured value."""
+
+    return bool(value and value.strip() and not value.strip().startswith("your_"))
+
+
 class AWSIoTCoreConnector(BaseConnector):
     """Connector for AWS IoT Core using boto3 and MQTT."""
 
@@ -43,7 +49,7 @@ class AWSIoTCoreConnector(BaseConnector):
         self.key_path = key_path
         self.ca_path = ca_path
 
-        if boto3:
+        if boto3 and _is_configured_value(self.region):
             params: Dict[str, Any] = {"region_name": self.region}
             if self.endpoint:
                 params["endpoint_url"] = self.endpoint
@@ -71,6 +77,8 @@ class AWSIoTCoreConnector(BaseConnector):
     async def send_message(self, message: str) -> Any:
         if not boto3:
             raise RuntimeError("boto3 not installed")
+        if self.client is None:
+            raise RuntimeError("AWS IoT Core region is not configured")
         return self.client.publish(topic=self.topic, qos=1, payload=message)
 
     def _parse_host(self) -> Optional[str]:
@@ -122,7 +130,7 @@ class AWSIoTCoreConnector(BaseConnector):
         """Return ``True`` if IoT endpoint can be resolved."""
         if not super().is_connected():
             return False
-        if not boto3:
+        if not boto3 or self.client is None:
             return False
         try:
             resp = self.client.describe_endpoint(endpointType="iot:Data-ATS")

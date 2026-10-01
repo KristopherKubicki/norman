@@ -7,6 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from app.core.config import settings
 from app.services.norllama.capability_catalog import default_model_for_task_kind
+from app.services.norllama.fast_lane_outcomes import evaluate_fast_lane_outcome
 from app.services.norllama.specialist_lanes import (
     evaluate_specialist_cascade,
     specialist_cascade_template,
@@ -1113,6 +1114,10 @@ def route_receipt_payload(
         if isinstance(selection.get("benchmark_quality"), dict)
         else {}
     )
+    lane_policy = _dict(selection.get("lane_policy"))
+    capacity_evidence = _dict(selection.get("capacity_evidence"))
+    expected_p50_latency_ms = _token_count(capacity_evidence, "p50_latency_ms")
+    expected_p95_latency_ms = _token_count(capacity_evidence, "p95_latency_ms")
     gateway_receipt = _gateway_receipt(output)
     guardrail = (
         selection.get("route_guardrail")
@@ -1296,6 +1301,18 @@ def route_receipt_payload(
             lane=phase,
         )
     )
+    cloud_credentials = (
+        output.get("cloud_credentials")
+        if isinstance(output.get("cloud_credentials"), dict)
+        else attribution.get("cloud_credentials")
+        if isinstance(attribution.get("cloud_credentials"), dict)
+        else {}
+    )
+    cloud_credentials = {
+        key: _clean(cloud_credentials.get(key))
+        for key in ("source", "secret_name", "lease_id", "request_id", "expires_at")
+        if _clean(cloud_credentials.get(key))
+    }
     policy_validation = (
         policy_authorization.get("validation")
         if isinstance(policy_authorization.get("validation"), dict)
@@ -1499,6 +1516,10 @@ def route_receipt_payload(
             quality.get("promotion_authoritative")
             or selection.get("promotion_authoritative")
         ),
+        "lane_policy": lane_policy,
+        "capacity_evidence": capacity_evidence,
+        "expected_p50_latency_ms": expected_p50_latency_ms,
+        "expected_p95_latency_ms": expected_p95_latency_ms,
         "cold_start_ms": _token_count(output, "cold_start_ms"),
         "first_token_ms": _token_count(output, "first_token_ms"),
         "completion_ms": _token_count(output, "completion_ms", "latency_ms"),
@@ -1525,6 +1546,8 @@ def route_receipt_payload(
         )
         or "unknown",
     }
+    if cloud_credentials:
+        receipt_payload["cloud_credentials"] = cloud_credentials
     receipt_payload["specialist_cascade"] = evaluate_specialist_cascade(
         specialist_cascade,
         route_receipt=receipt_payload,
@@ -1534,6 +1557,10 @@ def route_receipt_payload(
     from app.services.norllama.route_proof import audit_route_receipt
 
     receipt_payload["receipt_audit"] = audit_route_receipt(receipt_payload)
+    receipt_payload["fast_lane_outcome"] = evaluate_fast_lane_outcome(
+        receipt_payload,
+        audit=receipt_payload["receipt_audit"],
+    )
     return receipt_payload
 
 

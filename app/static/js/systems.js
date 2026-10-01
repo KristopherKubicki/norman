@@ -253,27 +253,38 @@
     const lower = value.toLowerCase();
     if (!value) return '';
     if (isTailnetHostLike(lower)) return 'Tailnet';
-    if (lower.includes('127.0.0.1') || lower.includes('localhost')) return 'Local';
+    if (networkHostname(value) === '127.0.0.1' || networkHostname(value) === 'localhost') return 'Local';
     if (isLanHostLike(lower)) return 'LAN';
     return 'Web';
   }
 
+  function networkHostname(value) {
+    const text = String(value || '').trim();
+    if (!text || text.startsWith('/') || /[\\\s]/.test(text)) return '';
+    try {
+      const url = new URL(text.includes('://') ? text : `https://${text}`);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return '';
+      return url.hostname.toLowerCase().replace(/\.$/, '');
+    } catch (_) {
+      return '';
+    }
+  }
+
   function isTailnetHostLike(value) {
-    const text = String(value || '').trim().toLowerCase();
-    if (!text) return false;
-    if (text.includes('.ts.net') || text.includes('tailscale')) return true;
-    return /\b100\.(6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/.test(text);
+    const host = networkHostname(value);
+    if (!host) return false;
+    return host.endsWith('.ts.net')
+      || /^100\.(6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(host);
   }
 
   function isLanHostLike(value) {
-    const text = String(value || '').trim().toLowerCase();
-    if (!text) return false;
-    if (text.includes('127.0.0.1') || text.includes('localhost')) return true;
-    if (text.includes('.local') || text.endsWith('.lan') || text.endsWith('.arpa')) return true;
-    if (/\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/.test(text)) return true;
-    if (/\b192\.168\.\d{1,3}\.\d{1,3}\b/.test(text)) return true;
-    if (/\b172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b/.test(text)) return true;
-    return false;
+    const host = networkHostname(value);
+    if (!host) return false;
+    if (host === '127.0.0.1' || host === 'localhost') return true;
+    if (host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.arpa')) return true;
+    return /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+      || /^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)
+      || /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host);
   }
 
   function currentDirectoryRoutePreference() {
@@ -369,9 +380,10 @@
       || routeText.includes('pef')
       || routeText.includes('private')
     ) return 'Private';
-    if (PERSONAL_SERVICE_SLUGS.has(slug) || routeText.includes('toy-box') || routeText.includes('192.168.2.146')) return 'Personal';
-    if (WORK_SERVICE_SLUGS.has(slug) || routeText.includes('work-special') || routeText.includes('192.168.2.147')) return 'Work';
-    if (SHARED_SERVICE_SLUGS.has(slug) || routeText.includes('networking.tail94915.ts.net') || routeText.includes('192.168.2.242')) return 'Shared';
+    if (PERSONAL_SERVICE_SLUGS.has(slug) || routeText.includes('toy-box')) return 'Personal';
+    if (WORK_SERVICE_SLUGS.has(slug) || routeText.includes('work-special')) return 'Work';
+    if (SHARED_SERVICE_SLUGS.has(slug) || [service?.web_url, service?.web_url_tailnet, service?.console_url, service?.console_url_tailnet]
+      .some((value) => networkHostname(value) === 'networking.tail94915.ts.net')) return 'Shared';
     if (String(principal?.slug || '').trim().toLowerCase() === 'openbrand') return 'Work';
     return 'Shared';
   }

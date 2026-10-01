@@ -7,7 +7,7 @@ from app.schemas.filter import FilterCreate, FilterUpdate
 
 def create(db: Session, filter_create: FilterCreate) -> FilterModel:
     """Create a new channel filter."""
-    db_obj = FilterModel(**filter_create.dict())
+    db_obj = FilterModel(**filter_create.model_dump())
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
@@ -31,7 +31,7 @@ def update(
     db_obj = get(db, filter_id)
     if not db_obj:
         return None
-    for field, value in filter_update.dict(exclude_unset=True).items():
+    for field, value in filter_update.model_dump(exclude_unset=True).items():
         setattr(db_obj, field, value)
     db.commit()
     db.refresh(db_obj)

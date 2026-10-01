@@ -32,7 +32,7 @@ def get_multi_by_user(db: Session, user_id: int):
 
 
 def create(db: Session, obj_in: FilterCreate) -> models.Filter:
-    filter_ = models.Filter(**obj_in.dict())
+    filter_ = models.Filter(**obj_in.model_dump())
     db.add(filter_)
     db.commit()
     db.refresh(filter_)
@@ -53,7 +53,7 @@ def update(
     filter_ = get(db, filter_id)
     if filter_ is None:
         return None
-    for key, value in obj_in.dict(exclude_unset=True).items():
+    for key, value in obj_in.model_dump(exclude_unset=True).items():
         setattr(filter_, key, value)
     db.commit()
     db.refresh(filter_)

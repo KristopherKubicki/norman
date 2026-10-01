@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -113,7 +113,7 @@ async def test_routing_rule_destination_connector_is_used_for_delivery(db, monke
         status="pending",
         attempts=0,
         max_attempts=3,
-        next_attempt_at=datetime.utcnow(),
+        next_attempt_at=datetime.now(UTC),
         payload={"text": "hello"},
         normalized={"text": "hello"},
     )
@@ -209,7 +209,7 @@ async def test_reply_webhook_payload_carries_sms_reply_context(db, monkeypatch):
         status="pending",
         attempts=0,
         max_attempts=3,
-        next_attempt_at=datetime.utcnow(),
+        next_attempt_at=datetime.now(UTC),
         payload={"Body": "hello", "From": "+15551230000", "To": "+15557654321"},
         normalized={"text": "hello", "from": "+15551230000", "to": "+15557654321"},
     )

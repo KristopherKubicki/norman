@@ -10,16 +10,12 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from caddy_internal_tls import (
-    INTERNAL_LEAF_LIFETIME as SHARED_INTERNAL_LEAF_LIFETIME,
-)
-from caddy_internal_tls import (
-    render_internal_tls_snippet as _render_internal_tls_snippet,
-)
 from sync_agent_console_template import HOSTS, host_canonical_host, host_frontdoor_hosts
 
 INTERNAL_TLS_SNIPPET_NAME = "norman_internal_tls"
-INTERNAL_LEAF_LIFETIME = SHARED_INTERNAL_LEAF_LIFETIME
+LOLLIE_ACME_DIRECTORY = "https://ca.home.arpa/acme/acme/directory"
+TAILNET_CERT_PATH = "/etc/caddy/certs/norman.tail94915.ts.net.crt"
+TAILNET_KEY_PATH = "/etc/caddy/certs/norman.tail94915.ts.net.key"
 
 
 def _indent_block(block: str, prefix: str = "    ") -> list[str]:
@@ -27,7 +23,21 @@ def _indent_block(block: str, prefix: str = "    ") -> list[str]:
 
 
 def render_internal_tls_snippet() -> str:
-    return _render_internal_tls_snippet(INTERNAL_TLS_SNIPPET_NAME)
+    return f"""
+({INTERNAL_TLS_SNIPPET_NAME}) {{
+    tls {{
+        ca {LOLLIE_ACME_DIRECTORY}
+    }}
+}}
+""".strip()
+
+
+def render_global_options() -> str:
+    return f"""
+{{
+    acme_ca {LOLLIE_ACME_DIRECTORY}
+}}
+""".strip()
 
 
 def _comma_join(hosts: tuple[str, ...]) -> str:
@@ -63,6 +73,22 @@ def render_frontdoor_snippet() -> str:
 (norman_frontdoor) {
     encode gzip zstd
 
+    @bridge_document path /bridge /bridge.html
+    header @bridge_document Cache-Control "no-store, max-age=0"
+
+    @bridge_live_assets path /static/css/bridge.css /static/js/bridge.js
+    handle @bridge_live_assets {
+        reverse_proxy 127.0.0.1:8000 {
+            header_down Cache-Control "no-store, max-age=0"
+        }
+    }
+
+    handle_path /static/* {
+        root * /var/www/norman-static
+        header Cache-Control "public, max-age=300, stale-while-revalidate=86400"
+        file_server
+    }
+
     redir /host /host/ 308
     handle_path /host/* {
         root * /var/www/host-home
@@ -71,11 +97,33 @@ def render_frontdoor_snippet() -> str:
 
     redir /codex /codex/ 308
     handle_path /codex/* {
-        reverse_proxy 127.0.0.1:8788
+        reverse_proxy 127.0.0.1:8788 {
+            header_up X-Forwarded-Prefix /codex
+        }
     }
 
     redir /bot /bot/ 308
     import /etc/caddy/includes/norman-bots.caddy
+
+    handle /v1/responses {
+        reverse_proxy 127.0.0.1:8000 {
+            flush_interval -1
+            header_up X-Norman-Gateway-Route norman
+            header_up X-Forwarded-For 127.0.0.2
+        }
+    }
+
+    handle /v1/* {
+        reverse_proxy 127.0.0.1:8000 {
+            header_up X-Norman-Gateway-Route norman
+            header_up X-Forwarded-For 127.0.0.2
+        }
+    }
+
+    @norman_root path /
+    handle @norman_root {
+        redir * /bridge 302
+    }
 
     handle {
         reverse_proxy 127.0.0.1:8000
@@ -84,11 +132,7 @@ def render_frontdoor_snippet() -> str:
 """.strip()
 
 
-def render_caddy(
-    *,
-    canonical_cert: str = "",
-    canonical_key: str = "",
-) -> str:
+def render_caddy() -> str:
     norman = HOSTS["norman"]
     canonical_host = host_canonical_host(norman)
     shortcut_hosts = tuple(
@@ -108,17 +152,17 @@ def render_caddy(
             ]
         )
 
-    canonical_tls = (
-        f"tls {canonical_cert} {canonical_key}"
-        if canonical_cert and canonical_key
-        else internal_tls
-    )
     blocks = [
+        render_global_options(),
+        "",
         render_internal_tls_snippet(),
         "",
         *blocks,
         "",
-        _render_site_block((canonical_host,), tls_config=canonical_tls),
+        _render_site_block(
+            (canonical_host,),
+            tls_config=f"tls {TAILNET_CERT_PATH} {TAILNET_KEY_PATH}",
+        ),
         "",
         "import /etc/caddy/includes/norman-bot-hosts.caddy",
     ]
@@ -129,23 +173,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Render the Norman front-door Caddy config."
     )
-    parser.add_argument(
-        "--canonical-cert",
-        default="",
-        help="Optional certificate file path for Norman's canonical host.",
-    )
-    parser.add_argument(
-        "--canonical-key",
-        default="",
-        help="Optional private key path for Norman's canonical host.",
-    )
-    args = parser.parse_args()
-    print(
-        render_caddy(
-            canonical_cert=args.canonical_cert,
-            canonical_key=args.canonical_key,
-        )
-    )
+    parser.parse_args()
+    print(render_caddy())
 
 
 if __name__ == "__main__":

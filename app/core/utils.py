@@ -1,7 +1,7 @@
 import uuid
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Set
 
-from pydantic import BaseModel, EmailStr, validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def generate_unique_id() -> str:
@@ -9,19 +9,12 @@ def generate_unique_id() -> str:
 
 
 class CustomBaseModel(BaseModel):
-    class Config:
-        allow_mutation = False
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(
+        frozen=True,
+        arbitrary_types_allowed=True,
+    )
 
-        json_encoders = {
-            uuid.UUID: str,
-        }
-
-    id: Optional[uuid.UUID] = None
-
-    @validator("id", pre=True, always=True)
-    def default_id(cls, value: Any) -> Any:
-        return value or generate_unique_id()
+    id: uuid.UUID = Field(default_factory=generate_unique_id, validate_default=True)
 
 
 def get_subdict(d: Dict[str, Any], keys: Set[str]) -> Dict[str, Any]:

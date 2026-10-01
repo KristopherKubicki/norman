@@ -141,6 +141,10 @@ def test_build_report_surfaces_pointer_proof_and_shadow_gate(monkeypatch) -> Non
     assert report["summary"]["rows_with_older_reference_proof"] == 1
     assert report["summary"]["shadow_run_ready"] is True
     assert report["summary"]["activation_safe"] is False
+    assert report["summary"]["saturated_long_context_run"] is False
+    assert (
+        report["summary"]["long_context_status"] == "not_a_saturated_long_context_run"
+    )
 
     control_plane = next(
         row for row in report["row_proofs"] if row["slug"] == "control-plane"
@@ -208,5 +212,6 @@ def test_cli_writes_replay_report_and_answer_template(
 
     assert report["summary"]["total_saved_tokens"] == 16000
     assert "TUI Context Replay Benchmark" in output_md.read_text(encoding="utf-8")
+    assert "Long-context status" in output_md.read_text(encoding="utf-8")
     assert answers["schema"] == "norman.tui.quality-shadow-answers.v1"
     assert len(answers["answers"]) == 6

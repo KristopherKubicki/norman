@@ -8,6 +8,7 @@ import html
 import json
 import mimetypes
 import os
+import re
 import socketserver
 import sys
 import threading
@@ -21,6 +22,7 @@ from email.parser import BytesParser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Callable
 
 if not os.getenv("NORMAN_NORLLAMA_ROUTE_POLICY_PATH"):
     local_policy_artifact = Path(__file__).with_name("route_policy.json")
@@ -28,6 +30,9 @@ if not os.getenv("NORMAN_NORLLAMA_ROUTE_POLICY_PATH"):
         os.environ["NORMAN_NORLLAMA_ROUTE_POLICY_PATH"] = str(local_policy_artifact)
 
 try:
+    from app.services.norllama.escalation_policy import (
+        build_shadow_escalation_decision,
+    )
     from app.services.norllama.route_policy import (
         ROUTE_POLICY_VERSION,
         capability_gate_allows_production_default,
@@ -139,13 +144,30 @@ except (
             "request_production_route_eligible": False,
         }
 
+    def build_shadow_escalation_decision(
+        payload: dict[str, object] | None,
+        *,
+        policy_id: str = "",
+        policy_hash: str = "",
+        controller: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return {
+            "schema": "norman.norllama.escalation-decision.v1",
+            "mode": "shadow_only",
+            "status": "policy_unavailable",
+            "policy_id": policy_id,
+            "policy_hash": policy_hash,
+            "execution_model_unchanged": True,
+            "execution_authority_changed": False,
+        }
+
 
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 18151
 DEFAULT_TIMEOUT_S = 120
 DEFAULT_OLLAMA_BASES = ("http://127.0.0.1:11434",)
-DEFAULT_DS4_BASES = ("http://127.0.0.1:8002",)
-DEFAULT_DS4_BASE = DEFAULT_DS4_BASES[0]
+DEFAULT_DS4_BASES: tuple[str, ...] = ()
+DEFAULT_DS4_BASE = ""
 DEFAULT_MEDIA_BASES = ("http://127.0.0.1:8100",)
 DEFAULT_TRANSCRIBE_BASES = ("http://127.0.0.1:8097",)
 DEFAULT_OCR_BASES = ("http://127.0.0.1:8098",)
@@ -190,11 +212,32 @@ DEFAULT_PREFLIGHT_PACKET_PATHS = tuple(
 )
 DEFAULT_MODEL_CACHE_TTL_S = 15
 DEFAULT_INVENTORY_TIMEOUT_S = 3
+DEFAULT_HEALTH_PROBE_TIMEOUT_S = 3
 DEFAULT_ACTIVITY_LIMIT = 200
 DEFAULT_PEER_TIMEOUT_S = 1.0
 DEFAULT_MAX_PEER_HOPS = 1
 DEFAULT_PREFETCH_JOB_TTL_S = 3600
 DEFAULT_PREFETCH_JOB_LIMIT = 100
+DEFAULT_CHAT_MAX_ACTIVE = 1
+DEFAULT_CHAT_QUEUE_LIMIT = 1
+DEFAULT_CHAT_QUEUE_WAIT_S = 10
+DEFAULT_CHAT_RETRY_AFTER_S = 10
+DEFAULT_CHAT_QUEUE_UPDATE_S = 1
+DEFAULT_ASR_MAX_ACTIVE = 1
+DEFAULT_ASR_QUEUE_LIMIT = 0
+DEFAULT_ASR_RETRY_AFTER_S = 60
+DEFAULT_ASR_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+DEFAULT_ASR_FAILURE_COOLDOWN_S = 300
+DEFAULT_TRANSCRIBE_MAX_ATTEMPTS = 1
+ADMISSION_RESPONSE_HEADERS = {
+    "x-norllama-admission",
+    "x-norllama-work-class",
+    "x-norllama-queue-wait-ms",
+    "x-norllama-queue-depth",
+    "x-norllama-queue-limit",
+    "x-norllama-active",
+    "x-norllama-active-limit",
+}
 DEFAULT_EMBEDDING_MODEL = os.getenv("NORLLAMA_DEFAULT_EMBEDDING_MODEL", "bge-m3:latest")
 BGE_RERANKER_MODEL = os.getenv(
     "NORLLAMA_NATIVE_RERANK_MODEL", "BAAI/bge-reranker-v2-m3"
@@ -203,13 +246,27 @@ DEFAULT_RERANK_MODEL = os.getenv("NORLLAMA_DEFAULT_RERANK_MODEL", BGE_RERANKER_M
 QWEN3GUARD_MODEL = os.getenv(
     "NORLLAMA_DEFAULT_SAFETY_MODEL", "Qwen/Qwen3Guard-Stream-0.6B"
 )
-QWEN36_ROUTER_MODEL = "qwen3.6:35b-a3b-q4_K_M"
-QWEN36_CODE_MODEL = "qwen3.6:27b"
+
+
+def compiled_resident_model() -> str:
+    try:
+        policy = route_policy_contract()
+        controller = policy.get("escalation_controller")
+        roles = controller.get("roles") if isinstance(controller, dict) else {}
+        resident = roles.get("resident") if isinstance(roles, dict) else {}
+        model = resident.get("model") if isinstance(resident, dict) else ""
+        return str(model or "").strip()
+    except Exception:
+        return ""
+
+
+QWEN3_CODER_MODEL = compiled_resident_model() or "resident"
+# Retain the legacy constant names while downstream callers migrate to the
+# signed resident role.
+QWEN36_ROUTER_MODEL = QWEN3_CODER_MODEL
+QWEN36_CODE_MODEL = QWEN3_CODER_MODEL
 QWEN35_JUDGE_MODEL = "qwen3.5:122b-a10b-q4_K_M"
 QWEN3_VL_MODEL = "qwen3-vl:30b-a3b-instruct-q4_K_M"
-QWEN35_JUDGE_KEEP_ALIVE = (
-    os.getenv("NORLLAMA_QWEN35_JUDGE_KEEP_ALIVE", "30s").strip() or "30s"
-)
 PREFERRED_UI_CHAT_MODEL = os.getenv("NORLLAMA_UI_DEFAULT_MODEL", QWEN36_ROUTER_MODEL)
 USER_AGENT = "norllama-gateway/0.1"
 GATEWAY_VERSION = os.getenv("NORLLAMA_GATEWAY_VERSION", "0.1.20260710-route-proof")
@@ -320,14 +377,13 @@ WARM_POLICY_OBSERVE_ONLY_MODEL_NEEDLES = (
     "openfugu",
 )
 LIVE_POLICY_OVERRIDE_REASON = (
-    "Live Qwen-first Spark policy overrides stale Gemma-era benchmark defaults until "
-    "the next Uplink packet is regenerated."
+    "Emergency overlay is subordinate to the signed model-role policy."
 )
 LIVE_POLICY_OVERRIDE_EXPIRES_AT_ENV = "NORLLAMA_LIVE_POLICY_OVERRIDE_EXPIRES_AT"
 LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
     "chat": {
-        "default_model": QWEN36_ROUTER_MODEL,
-        "default_profile": "qwen36_35_local",
+        "default_model": QWEN3_CODER_MODEL,
+        "default_profile": "qwen3_coder_30b_local",
         "status": "routable_live_policy",
         "production_state": "production",
         "benchmark_confidence": "refresh_required",
@@ -335,18 +391,13 @@ LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
         "guardrail": "Use Qwen-first local routing; keep irreversible work behind verifier receipts and explicit policy gates.",
         "alternates_prepend": [
             {
-                "model": QWEN36_CODE_MODEL,
-                "profile": "qwen36_27_local",
+                "model": QWEN3_CODER_MODEL,
+                "profile": "qwen3_coder_30b_local",
                 "role": "coding_operator",
-            },
-            {
-                "model": QWEN35_JUDGE_MODEL,
-                "profile": "qwen35_122_local",
-                "role": "heavyweight_judge",
             },
         ],
         "notes_append": [
-            "Live override: Qwen 3.6 35B is the default interactive router/planner/filter lane.",
+            "Live override: Qwen3-Coder 30B is the default interactive router/planner/filter lane.",
             "Gemma lanes remain visible as lab or fallback comparisons, not production defaults.",
         ],
     },
@@ -360,8 +411,8 @@ LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
         "guardrail": "Use as visual triage only until GroundNext or an equivalent coordinate-grounding service passes live smoke tests.",
         "alternates_prepend": [
             {
-                "model": QWEN36_ROUTER_MODEL,
-                "profile": "qwen36_35_local",
+                "model": QWEN3_CODER_MODEL,
+                "profile": "qwen3_coder_30b_local",
                 "role": "screen_reasoning",
             },
         ],
@@ -447,16 +498,16 @@ LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
         ],
     },
     "entity_event_extract": {
-        "default_model": QWEN36_ROUTER_MODEL,
-        "default_profile": "qwen36_35_local",
+        "default_model": QWEN3_CODER_MODEL,
+        "default_profile": "qwen3_coder_30b_local",
         "status": "routable_live_policy",
         "production_state": "production",
         "benchmark_confidence": "refresh_required",
         "selection_method": "live_model_reality_policy",
     },
     "ops_anomaly": {
-        "default_model": QWEN36_ROUTER_MODEL,
-        "default_profile": "qwen36_35_local",
+        "default_model": QWEN3_CODER_MODEL,
+        "default_profile": "qwen3_coder_30b_local",
         "status": "routable_live_policy",
         "production_state": "production",
         "benchmark_confidence": "refresh_required",
@@ -466,26 +517,21 @@ LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
         ],
     },
     "code_risk": {
-        "default_model": QWEN36_CODE_MODEL,
-        "default_profile": "qwen36_27_local",
+        "default_model": QWEN3_CODER_MODEL,
+        "default_profile": "qwen3_coder_30b_local",
         "status": "routable_live_policy",
         "production_state": "production",
         "benchmark_confidence": "refresh_required",
         "selection_method": "live_model_reality_policy",
         "alternates_prepend": [
             {
-                "model": QWEN35_JUDGE_MODEL,
-                "profile": "qwen35_122_local",
-                "role": "heavyweight_judge",
-            },
-            {
-                "model": QWEN36_ROUTER_MODEL,
-                "profile": "qwen36_35_local",
+                "model": QWEN3_CODER_MODEL,
+                "profile": "qwen3_coder_30b_local",
                 "role": "fast_reviewer",
             },
         ],
         "notes_append": [
-            "Qwen 3.6 27B is the production local coding/risk lane; deterministic experts should still run for real patches.",
+            "Qwen3-Coder 30B is the production local coding/risk lane; deterministic experts should still run for real patches.",
         ],
     },
 }
@@ -506,10 +552,10 @@ HIGH_PAYBACK_MODEL_LANES: list[dict[str, object]] = [
     },
     {
         "lane": "heavyweight_judge",
-        "state": "production_available",
+        "state": "manual_only",
         "models": [QWEN35_JUDGE_MODEL],
         "serving_path": "/v1/chat/completions",
-        "notes": "Local high-cost judge for difficult verification and escalation avoidance.",
+        "notes": "Explicit manual-review lane; automatic routing, warming, and prefetch are prohibited.",
     },
     {
         "lane": "text_memory_retrieval",
@@ -580,6 +626,28 @@ def env_flag(name: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: int, *, minimum: int = 0, maximum: int = 3600) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def env_float(
+    name: str,
+    default: float,
+    *,
+    minimum: float = 0.0,
+    maximum: float = 3600.0,
+) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
 
 
 def unique_items(values: list[str]) -> list[str]:
@@ -1097,25 +1165,26 @@ def live_policy_override_state() -> dict[str, object]:
 
 def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, object]:
     override_state = live_policy_override_state()
-    if not override_state["active"]:
-        return dict(row)
     contract_id = str(row.get("contract_id") or "").strip().lower().replace("-", "_")
-    override = LIVE_CAPABILITY_CONTRACT_OVERRIDES.get(contract_id)
-    if not override:
-        return dict(row)
     updated = dict(row)
+    override = (
+        LIVE_CAPABILITY_CONTRACT_OVERRIDES.get(contract_id)
+        if override_state["active"]
+        else None
+    )
     previous_default_model = str(updated.get("default_model") or "")
     previous_default_profile = str(updated.get("default_profile") or "")
-    for key, value in override.items():
-        if key in {"notes_append", "alternates_prepend", "notes_suppress_contains"}:
-            continue
-        updated[key] = value
+    if override:
+        for key, value in override.items():
+            if key in {"notes_append", "alternates_prepend", "notes_suppress_contains"}:
+                continue
+            updated[key] = value
     notes = [
         str(item) for item in (updated.get("notes") or []) if str(item or "").strip()
     ]
     suppress_needles = [
         str(item)
-        for item in (override.get("notes_suppress_contains") or [])
+        for item in ((override or {}).get("notes_suppress_contains") or [])
         if str(item or "").strip()
     ]
     if suppress_needles:
@@ -1124,7 +1193,7 @@ def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, obj
             for note in notes
             if not any(needle in note for needle in suppress_needles)
         ]
-    for note in override.get("notes_append") or []:
+    for note in (override or {}).get("notes_append") or []:
         text = str(note or "").strip()
         if text and text not in notes:
             notes.append(text)
@@ -1132,9 +1201,35 @@ def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, obj
         updated["notes"] = notes
     preferred = [
         row
-        for row in (override.get("alternates_prepend") or [])
+        for row in ((override or {}).get("alternates_prepend") or [])
         if isinstance(row, dict)
     ]
+    resident_contracts = {"chat", "code_risk", "entity_event_extract", "ops_anomaly"}
+    if contract_id in resident_contracts:
+        resident = model_role_rows().get("resident") or {}
+        resident_model = str(resident.get("model") or "").strip()
+        if resident_model:
+            updated.update(
+                {
+                    "default_model": resident_model,
+                    "default_profile": "resident_role",
+                    "selection_method": "signed_model_role_policy",
+                }
+            )
+            preferred = [
+                {
+                    "model": resident_model,
+                    "profile": "resident_role",
+                    "role": "resident",
+                }
+            ]
+            signed_note = (
+                "Active model selection is resolved from the signed resident role; "
+                "benchmark model IDs are historical evidence only."
+            )
+            if signed_note not in notes:
+                notes.append(signed_note)
+            updated["notes"] = notes
     if preferred:
         updated["alternates"] = merge_preferred_model_rows(
             preferred, updated.get("alternates")
@@ -1162,56 +1257,110 @@ def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, obj
                 if model and model not in suppressed_models:
                     suppressed_models.append(model)
             updated[key] = filtered
-    updated["live_policy_override"] = {
-        "active": True,
-        "emergency_overlay": True,
-        "requires_expiration": True,
-        "expires_at": str(override_state.get("expires_at") or ""),
+    updated["model_authority"] = {
+        "source": "signed_route_policy",
         "policy_version": ROUTE_POLICY_VERSION,
-        "reason": LIVE_POLICY_OVERRIDE_REASON,
         "previous_default_model": previous_default_model,
         "previous_default_profile": previous_default_profile,
         "default_model": str(updated.get("default_model") or ""),
         "default_profile": str(updated.get("default_profile") or ""),
         "suppressed_stale_candidate_models": suppressed_models,
     }
+    if override:
+        updated["live_policy_override"] = {
+            "active": True,
+            "emergency_overlay": True,
+            "requires_expiration": True,
+            "expires_at": str(override_state.get("expires_at") or ""),
+            "policy_version": ROUTE_POLICY_VERSION,
+            "reason": LIVE_POLICY_OVERRIDE_REASON,
+        }
     return updated
 
 
+def active_escalation_controller() -> dict[str, object]:
+    loaded = load_route_policy_artifact(allow_missing_default=False)
+    artifact = loaded.get("artifact") if isinstance(loaded, dict) else {}
+    controller = (
+        artifact.get("escalation_controller") if isinstance(artifact, dict) else {}
+    )
+    return dict(controller) if isinstance(controller, dict) else {}
+
+
+def model_role_rows() -> dict[str, dict[str, object]]:
+    roles = active_escalation_controller().get("roles")
+    if not isinstance(roles, dict):
+        return {}
+    return {
+        str(role): dict(row) for role, row in roles.items() if isinstance(row, dict)
+    }
+
+
+def canonical_model_id(model_id: str) -> str:
+    requested = str(model_id or "").strip()
+    if not requested:
+        return requested
+    lowered = requested.lower()
+    for row in model_role_rows().values():
+        canonical = str(row.get("model") or "").strip()
+        aliases = row.get("aliases")
+        accepted = {canonical.lower()}
+        if isinstance(aliases, list):
+            accepted.update(str(alias).strip().lower() for alias in aliases)
+        if lowered in accepted:
+            return canonical or requested
+    return requested
+
+
+def resident_ollama_bases_from_policy() -> list[str]:
+    resident = model_role_rows().get("resident") or {}
+    endpoints = resident.get("endpoints")
+    if not isinstance(endpoints, list):
+        return []
+    return unique_items(
+        [str(endpoint).strip() for endpoint in endpoints if str(endpoint).strip()]
+    )
+
+
+def model_requires_native_non_thinking_bridge(model_id: str) -> bool:
+    requested = str(model_id or "").strip().lower()
+    if not requested:
+        return False
+    for row in model_role_rows().values():
+        model = str(row.get("model") or "").strip().lower()
+        aliases = row.get("aliases")
+        model_ids = {model}
+        if isinstance(aliases, list):
+            model_ids.update(str(alias).strip().lower() for alias in aliases)
+        if requested in model_ids:
+            capabilities = row.get("capabilities")
+            return bool(
+                capabilities.get("native_non_thinking_bridge")
+                if isinstance(capabilities, dict)
+                else row.get("native_non_thinking_bridge")
+            )
+    return False
+
+
 def should_disable_qwen_thinking(model_id: str) -> bool:
-    lower = str(model_id or "").strip().lower()
-    return "qwen3.6:" in lower or "qwen3.5:" in lower
+    """Compatibility wrapper for the policy-driven native bridge decision."""
+
+    return model_requires_native_non_thinking_bridge(model_id)
 
 
 def normalize_chat_payload_for_local_qwen(
     payload: dict[str, object],
 ) -> tuple[dict[str, object], bool]:
-    model = str(payload.get("model") or "").strip()
-    if not should_disable_qwen_thinking(model) or "think" in payload:
-        return payload, False
     normalized = dict(payload)
-    normalized["think"] = False
-    return normalized, True
-
-
-def default_keep_alive_for_model(model_id: str) -> str:
-    if str(model_id or "").strip() == QWEN35_JUDGE_MODEL:
-        return QWEN35_JUDGE_KEEP_ALIVE
-    return ""
-
-
-def apply_model_keep_alive_default(
-    payload: dict[str, object],
-) -> tuple[dict[str, object], bool]:
-    model = str(payload.get("model") or "").strip()
-    default_keep_alive = default_keep_alive_for_model(model)
-    if not default_keep_alive:
-        return payload, False
-    if payload.get("keep_alive") not in (None, ""):
-        return payload, False
-    normalized = dict(payload)
-    normalized["keep_alive"] = default_keep_alive
-    return normalized, True
+    requested_model = str(normalized.get("model") or "").strip()
+    model = canonical_model_id(requested_model)
+    changed = model != requested_model
+    if changed:
+        normalized["model"] = model
+    if should_disable_qwen_thinking(model) and "think" not in normalized:
+        normalized["think"] = False
+        changed = True
+    return normalized, changed
 
 
 def openai_chat_payload_to_ollama(payload: dict[str, object]) -> dict[str, object]:
@@ -1224,10 +1373,6 @@ def openai_chat_payload_to_ollama(payload: dict[str, object]) -> dict[str, objec
     }
     if payload.get("keep_alive") is not None:
         native["keep_alive"] = payload.get("keep_alive")
-    else:
-        default_keep_alive = default_keep_alive_for_model(model)
-        if default_keep_alive:
-            native["keep_alive"] = default_keep_alive
     options: dict[str, object] = {}
     existing_options = payload.get("options")
     if isinstance(existing_options, dict):
@@ -1266,31 +1411,27 @@ def target_bases_from_payload(
         if isinstance(values, list):
             requested.extend(str(item) for item in values if str(item).strip())
     normalized = unique_items([normalize_base_url(item) for item in requested])
-    accepted = [base for base in normalized if base in allowed]
+    # Select the configured value itself, never forward the request's URL text.
+    accepted = [
+        configured
+        for requested_base in normalized
+        for configured in allowed
+        if requested_base == configured
+    ]
     rejected = [base for base in normalized if base not in allowed]
     return accepted, rejected
 
 
-def resident_model_ids_from_ps(ps_doc: dict[str, object] | None) -> set[str]:
-    rows = []
-    if isinstance(ps_doc, dict):
-        rows = list(ps_doc.get("models") or [])
-    return {
-        str(item.get("model") or item.get("name") or "").strip()
-        for item in rows
-        if isinstance(item, dict)
-        and str(item.get("model") or item.get("name") or "").strip()
-    }
-
-
-def should_evict_heavy_judge_for_interactive_load(
-    requested_model: str,
-    resident_models: set[str],
-) -> bool:
-    clean_model = str(requested_model or "").strip()
-    if clean_model not in {QWEN36_ROUTER_MODEL, QWEN36_CODE_MODEL}:
-        return False
-    return QWEN35_JUDGE_MODEL in resident_models and clean_model not in resident_models
+def is_manual_only_model(model_id: str) -> bool:
+    normalized = (
+        str(model_id or "")
+        .strip()
+        .lower()
+        .replace("_", "-")
+        .replace("/", "-")
+        .replace(":", "-")
+    )
+    return "qwen3.5-122b" in normalized
 
 
 def ollama_chat_payload_to_openai(
@@ -1386,14 +1527,10 @@ def infer_model_summary(model_id: str, provider: str, capabilities: list[str]) -
         return "Legacy benchmark winner kept for comparison and fallback; Qwen-first policy is now preferred."
     if lower.startswith("gemma4:31b"):
         return "Legacy larger Gemma lane kept for fallback and benchmark comparison."
-    if "qwen3.6:35b" in lower:
-        return "Production local router/planner/filter lane for the Spark fleet."
-    if "qwen3.6:27b" in lower or "qwen3.5:27b" in lower:
-        return "Production local coding/operator lane for repo and implementation work."
-    if "qwen3.5:122b" in lower:
-        return "Heavyweight local judge lane for difficult verification and escalation avoidance."
     if "qwen3-coder-next" in lower or "qwen3-coder:" in lower:
-        return "Code-focused Qwen lane for repo and implementation work."
+        return "Production local router, planning, and coding lane for the Spark fleet."
+    if is_manual_only_model(model_id):
+        return "Heavyweight local judge lane available only for explicit manual review."
     if "qwen3-vl" in lower:
         return "Vision-capable Qwen lane; local visual reasoning is live, dedicated grounding/OCR is still partial."
     if "gpt-oss:120b" in lower:
@@ -1421,6 +1558,37 @@ def infer_model_summary(model_id: str, provider: str, capabilities: list[str]) -
     return "Specialized local model."
 
 
+def same_origin_url(base_url: str, target: str) -> str:
+    """Resolve a peer URL without allowing it to select another service."""
+    if any(ord(char) < 32 or ord(char) == 127 for char in target) or "\\" in target:
+        raise ValueError("upstream URL contains invalid characters")
+    base = urllib.parse.urlsplit(base_url)
+    resolved = urllib.parse.urlsplit(urllib.parse.urljoin(base_url, target))
+    if (
+        base.scheme not in {"http", "https"}
+        or not base.hostname
+        or resolved.scheme != base.scheme
+        or resolved.hostname != base.hostname
+        or (resolved.port or (443 if resolved.scheme == "https" else 80))
+        != (base.port or (443 if base.scheme == "https" else 80))
+        or resolved.username is not None
+        or resolved.password is not None
+    ):
+        raise ValueError("upstream URL must stay on the configured service origin")
+    # Rebuild with the trusted authority, retaining only the peer's path and query.
+    return urllib.parse.urlunsplit(
+        (base.scheme, base.netloc, resolved.path, resolved.query, "")
+    )
+
+
+class SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Allow service redirects without following them to another origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        safe_url = same_origin_url(req.full_url, newurl)
+        return super().redirect_request(req, fp, code, msg, headers, safe_url)
+
+
 def fetch_url(
     url: str,
     *,
@@ -1434,7 +1602,9 @@ def fetch_url(
         request_headers.update(headers)
     req = urllib.request.Request(url, data=body, method=method, headers=request_headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        with urllib.request.build_opener(SameOriginRedirectHandler()).open(
+            req, timeout=timeout_s
+        ) as resp:
             return int(resp.status), dict(resp.headers.items()), resp.read()
     except urllib.error.HTTPError as exc:
         return int(exc.code), dict(exc.headers.items()), exc.read()
@@ -1497,6 +1667,294 @@ def extract_ollama_metrics(body: bytes, content_type: str) -> dict[str, object]:
     return metrics
 
 
+def is_loopback_base_url(base_url: str) -> bool:
+    try:
+        hostname = urllib.parse.urlsplit(base_url).hostname
+    except ValueError:
+        return False
+    return (hostname or "").lower() in {"127.0.0.1", "localhost", "::1"}
+
+
+class ChatAdmissionReservation:
+    """A cancellable active or queued local-generation admission."""
+
+    def __init__(
+        self,
+        controller: "ChatAdmissionController",
+        *,
+        state: str,
+        queued_at: float,
+        deadline: float,
+        priority: str,
+        sequence: int,
+    ) -> None:
+        self._controller = controller
+        self._state = state
+        self._was_queued = state == "queued"
+        self._queued_at = queued_at
+        self._deadline = deadline
+        self.priority = priority
+        self.sequence = sequence
+        self._closed = False
+
+    @property
+    def queued(self) -> bool:
+        return self._state == "queued" and not self._closed
+
+    @property
+    def queued_at(self) -> float:
+        return self._queued_at
+
+    @property
+    def was_queued(self) -> bool:
+        return self._was_queued
+
+    def wait(self, *, timeout_s: float) -> tuple[str, dict[str, int]]:
+        return self._controller.wait_for_reservation(self, timeout_s=timeout_s)
+
+    def release(self) -> None:
+        self._controller.release_reservation(self)
+
+
+class ChatAdmissionController:
+    """Bound local generations with foreground-first, best-effort background work."""
+
+    def __init__(
+        self,
+        *,
+        max_active: int,
+        queue_limit: int,
+        queue_wait_s: float,
+        retry_after_s: float,
+    ) -> None:
+        self.max_active = max(1, int(max_active))
+        self.queue_limit = max(0, int(queue_limit))
+        self.queue_wait_s = max(0.0, float(queue_wait_s))
+        self.retry_after_s = max(1.0, float(retry_after_s))
+        self._condition = threading.Condition()
+        self._active = 0
+        self._waiters: list[ChatAdmissionReservation] = []
+        self._sequence = 0
+
+    def snapshot(self) -> dict[str, int]:
+        with self._condition:
+            return self._snapshot_locked()
+
+    @staticmethod
+    def _priority_rank(priority: str) -> int:
+        return {"high": 0, "normal": 1, "background": 2}.get(priority, 1)
+
+    def _remove_waiter_locked(self, reservation: ChatAdmissionReservation) -> None:
+        try:
+            self._waiters.remove(reservation)
+        except ValueError:
+            pass
+
+    def _sort_waiters_locked(self) -> None:
+        self._waiters.sort(
+            key=lambda item: (self._priority_rank(item.priority), item.sequence)
+        )
+
+    def reserve(
+        self,
+        *,
+        priority: str = "normal",
+        queue_wait_s: float | None = None,
+    ) -> tuple[ChatAdmissionReservation | None, dict[str, int]]:
+        """Reserve an active or queued slot without blocking the HTTP response."""
+
+        with self._condition:
+            now = time.monotonic()
+            normalized_priority = priority if priority in PRIORITY_LEVELS else "normal"
+            effective_wait_s = min(
+                self.queue_wait_s,
+                max(
+                    0.0,
+                    self.queue_wait_s if queue_wait_s is None else float(queue_wait_s),
+                ),
+            )
+            self._sequence += 1
+            if self._active < self.max_active and not self._waiters:
+                self._active += 1
+                return (
+                    ChatAdmissionReservation(
+                        self,
+                        state="active",
+                        queued_at=now,
+                        deadline=now,
+                        priority=normalized_priority,
+                        sequence=self._sequence,
+                    ),
+                    self._snapshot_locked(),
+                )
+            if (
+                self.queue_limit <= len(self._waiters)
+                and normalized_priority != "background"
+            ):
+                background_waiter = next(
+                    (
+                        item
+                        for item in reversed(self._waiters)
+                        if item.priority == "background"
+                    ),
+                    None,
+                )
+                if background_waiter is not None:
+                    self._remove_waiter_locked(background_waiter)
+                    background_waiter._state = "preempted"
+                    self._condition.notify_all()
+            if self.queue_limit <= len(self._waiters) or effective_wait_s <= 0:
+                return None, self._snapshot_locked()
+
+            reservation = ChatAdmissionReservation(
+                self,
+                state="queued",
+                queued_at=now,
+                deadline=now + effective_wait_s,
+                priority=normalized_priority,
+                sequence=self._sequence,
+            )
+            self._waiters.append(reservation)
+            self._sort_waiters_locked()
+            return (
+                reservation,
+                self._snapshot_locked(),
+            )
+
+    def wait_for_reservation(
+        self,
+        reservation: ChatAdmissionReservation,
+        *,
+        timeout_s: float,
+    ) -> tuple[str, dict[str, int]]:
+        """Wait briefly for a reserved queued slot without losing cancellation."""
+
+        with self._condition:
+            if reservation._closed:
+                return "cancelled", self._snapshot_locked()
+            if reservation._state == "active":
+                return "admitted", self._snapshot_locked()
+            if reservation._state == "preempted":
+                return "preempted", self._snapshot_locked()
+            if reservation._state != "queued":
+                return "cancelled", self._snapshot_locked()
+
+            now = time.monotonic()
+            if now >= reservation._deadline:
+                self._remove_waiter_locked(reservation)
+                reservation._state = "expired"
+                self._condition.notify_all()
+                return "expired", self._snapshot_locked()
+
+            wait_s = min(
+                max(0.0, float(timeout_s)),
+                max(0.0, reservation._deadline - now),
+            )
+            if wait_s:
+                self._condition.wait(wait_s)
+
+            if reservation._closed:
+                return "cancelled", self._snapshot_locked()
+            if reservation._state == "preempted":
+                return "preempted", self._snapshot_locked()
+            if reservation._state != "queued":
+                return "cancelled", self._snapshot_locked()
+            if (
+                self._active < self.max_active
+                and self._waiters
+                and self._waiters[0] is reservation
+            ):
+                self._remove_waiter_locked(reservation)
+                self._active += 1
+                reservation._state = "active"
+                return "admitted", self._snapshot_locked()
+            if time.monotonic() >= reservation._deadline:
+                self._remove_waiter_locked(reservation)
+                reservation._state = "expired"
+                self._condition.notify_all()
+                return "expired", self._snapshot_locked()
+            return "queued", self._snapshot_locked()
+
+    def release_reservation(self, reservation: ChatAdmissionReservation) -> None:
+        with self._condition:
+            if reservation._closed:
+                return
+            reservation._closed = True
+            if reservation._state == "active":
+                self._active = max(0, self._active - 1)
+            elif reservation._state == "queued":
+                self._remove_waiter_locked(reservation)
+            reservation._state = "released"
+            self._condition.notify_all()
+
+    def acquire(
+        self,
+        *,
+        priority: str = "normal",
+        queue_wait_s: float | None = None,
+    ) -> tuple[bool, dict[str, int]]:
+        reservation, snapshot = self.reserve(
+            priority=priority,
+            queue_wait_s=queue_wait_s,
+        )
+        if reservation is None:
+            return False, snapshot
+        if not reservation.queued:
+            return True, snapshot
+        while True:
+            state, snapshot = reservation.wait(timeout_s=self.queue_wait_s)
+            if state == "queued":
+                continue
+            return state == "admitted", snapshot
+
+    def release(self) -> None:
+        with self._condition:
+            if self._active:
+                self._active -= 1
+            self._condition.notify_all()
+
+    def _snapshot_locked(self) -> dict[str, int]:
+        return {
+            "active": self._active,
+            "active_limit": self.max_active,
+            "queue_depth": len(self._waiters),
+            "queue_limit": self.queue_limit,
+            "retry_after_seconds": max(1, int(self.retry_after_s)),
+        }
+
+
+class UpstreamStream:
+    """Own an open upstream response and the local admission lease, if any."""
+
+    def __init__(
+        self,
+        *,
+        status: int,
+        headers: dict[str, str],
+        response: object,
+        release: Callable[[], None] | None = None,
+    ) -> None:
+        self.status = int(status)
+        self.headers = dict(headers)
+        self.response = response
+        self._release = release
+        self._closed = False
+
+    def read(self) -> bytes:
+        return self.response.read()  # type: ignore[no-any-return, union-attr]
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.response.close()  # type: ignore[union-attr]
+        finally:
+            if self._release is not None:
+                self._release()
+                self._release = None
+
+
 class App:
     def __init__(self) -> None:
         self.bind = os.getenv("NORLLAMA_BIND", DEFAULT_BIND).strip() or DEFAULT_BIND
@@ -1508,6 +1966,12 @@ class App:
         self.inventory_timeout_s = float(
             os.getenv("NORLLAMA_INVENTORY_TIMEOUT_S", str(DEFAULT_INVENTORY_TIMEOUT_S))
         )
+        self.health_probe_timeout_s = float(
+            os.getenv(
+                "NORLLAMA_HEALTH_PROBE_TIMEOUT_S",
+                str(DEFAULT_HEALTH_PROBE_TIMEOUT_S),
+            )
+        )
         self.activity_limit = int(
             os.getenv("NORLLAMA_ACTIVITY_LIMIT", str(DEFAULT_ACTIVITY_LIMIT))
         )
@@ -1517,6 +1981,86 @@ class App:
         self.prefetch_job_limit = int(
             os.getenv("NORLLAMA_PREFETCH_JOB_LIMIT", str(DEFAULT_PREFETCH_JOB_LIMIT))
         )
+        self.chat_admission = ChatAdmissionController(
+            max_active=env_int(
+                "NORLLAMA_CHAT_MAX_ACTIVE",
+                DEFAULT_CHAT_MAX_ACTIVE,
+                minimum=1,
+                maximum=16,
+            ),
+            queue_limit=env_int(
+                "NORLLAMA_CHAT_QUEUE_LIMIT",
+                DEFAULT_CHAT_QUEUE_LIMIT,
+                minimum=0,
+                maximum=128,
+            ),
+            queue_wait_s=env_float(
+                "NORLLAMA_CHAT_QUEUE_WAIT_S",
+                DEFAULT_CHAT_QUEUE_WAIT_S,
+                minimum=0.0,
+                maximum=300.0,
+            ),
+            retry_after_s=env_float(
+                "NORLLAMA_CHAT_RETRY_AFTER_S",
+                DEFAULT_CHAT_RETRY_AFTER_S,
+                minimum=1.0,
+                maximum=300.0,
+            ),
+        )
+        self.chat_queue_update_s = env_float(
+            "NORLLAMA_CHAT_QUEUE_UPDATE_S",
+            DEFAULT_CHAT_QUEUE_UPDATE_S,
+            minimum=0.25,
+            maximum=10.0,
+        )
+        # Audio is both large and memory-intensive to parse. Do not accept a
+        # second upload while the first is still buffered or transcribed.
+        self.asr_admission = ChatAdmissionController(
+            max_active=env_int(
+                "NORLLAMA_ASR_MAX_ACTIVE",
+                DEFAULT_ASR_MAX_ACTIVE,
+                minimum=1,
+                maximum=4,
+            ),
+            queue_limit=env_int(
+                "NORLLAMA_ASR_QUEUE_LIMIT",
+                DEFAULT_ASR_QUEUE_LIMIT,
+                minimum=0,
+                maximum=16,
+            ),
+            queue_wait_s=0,
+            retry_after_s=env_float(
+                "NORLLAMA_ASR_RETRY_AFTER_S",
+                DEFAULT_ASR_RETRY_AFTER_S,
+                minimum=1.0,
+                maximum=3600.0,
+            ),
+        )
+        self.asr_max_upload_bytes = env_int(
+            "NORLLAMA_ASR_MAX_UPLOAD_BYTES",
+            DEFAULT_ASR_MAX_UPLOAD_BYTES,
+            minimum=1024 * 1024,
+            maximum=4 * 1024 * 1024 * 1024,
+        )
+        self.asr_failure_cooldown_s = env_float(
+            "NORLLAMA_ASR_FAILURE_COOLDOWN_S",
+            DEFAULT_ASR_FAILURE_COOLDOWN_S,
+            minimum=1.0,
+            maximum=3600.0,
+        )
+        self._asr_cooldown_lock = threading.Lock()
+        self._asr_cooldown_until = 0.0
+        self._asr_cooldown_status = 0
+        self.transcribe_max_attempts = env_int(
+            "NORLLAMA_TRANSCRIBE_MAX_ATTEMPTS",
+            DEFAULT_TRANSCRIBE_MAX_ATTEMPTS,
+            minimum=1,
+            maximum=4,
+        )
+        self.transcribe_allow_peer_failover = env_flag(
+            "NORLLAMA_TRANSCRIBE_ALLOW_PEER_FAILOVER",
+            False,
+        )
         self.expose_upstream_details = env_flag(
             "NORLLAMA_EXPOSE_UPSTREAM_DETAILS", False
         )
@@ -1524,9 +2068,22 @@ class App:
         self.public_provider_name = (
             os.getenv("NORLLAMA_PUBLIC_PROVIDER_NAME", "norllama").strip() or "norllama"
         )
-        self.ollama_bases = split_env_urls(
-            "NORLLAMA_OLLAMA_BASES", DEFAULT_OLLAMA_BASES
+        configured_resident_bases = os.getenv("NORLLAMA_RESIDENT_OLLAMA_BASES")
+        resident_bases = (
+            split_env_urls("NORLLAMA_RESIDENT_OLLAMA_BASES", ())
+            if configured_resident_bases is not None
+            else resident_ollama_bases_from_policy()
         )
+        self.ollama_bases = unique_items(
+            [
+                *split_env_urls("NORLLAMA_OLLAMA_BASES", DEFAULT_OLLAMA_BASES),
+                *resident_bases,
+            ]
+        )
+        self.admission_bases = {
+            normalize_base_url(base)
+            for base in split_env_urls("NORLLAMA_ADMISSION_BASES", ())
+        }
         self.peer_timeout_s = float(
             os.getenv("NORLLAMA_PEER_TIMEOUT_S", str(DEFAULT_PEER_TIMEOUT_S))
         )
@@ -1924,12 +2481,10 @@ class App:
                     "base_url": base,
                     "healthy": False,
                     "http_status": 0,
-                    "loaded_models": None,
                     "model_count": 0,
                     "models": [],
                     "model_docs": [],
                     "tag_docs": [],
-                    "ps_docs": [],
                 }
                 tags_doc = self.fetch_json_or_none(
                     base.rstrip("/") + "/api/tags", timeout_s=inventory_timeout_s
@@ -1989,13 +2544,6 @@ class App:
                     and row.get("http_status") == 0
                 ):
                     row["error"] = "inventory_unavailable"
-                ps_doc = self.fetch_json_or_none(
-                    base.rstrip("/") + "/api/ps", timeout_s=inventory_timeout_s
-                )
-                if ps_doc is not None:
-                    ps_models = list(ps_doc.get("models") or [])
-                    row["ps_docs"] = ps_models
-                    row["loaded_models"] = len(ps_models)
                 rows.append(row)
             return rows
 
@@ -2186,25 +2734,6 @@ class App:
                 base = str(row.get("base_url") or "").strip()
                 if not base:
                     continue
-                ps_doc = self.fetch_json_or_none(
-                    base.rstrip("/") + "/api/ps?scope=local", timeout_s=timeout_s
-                )
-                ps_rows = list((ps_doc or {}).get("models") or [])
-                active_docs = [
-                    item
-                    for item in ps_rows
-                    if isinstance(item, dict)
-                    and str(item.get("model") or item.get("name") or "").strip()
-                    == clean_model
-                ]
-                if active_docs:
-                    doc = active_docs[0]
-                    size = max(1, int(doc.get("size") or 0))
-                    size_vram = max(0, int(doc.get("size_vram") or 0))
-                    row["model_active"] = True
-                    row["model_vram_ratio"] = round(size_vram / size, 6)
-                    row["model_size_vram"] = size_vram
-                    continue
                 tags_doc = self.fetch_json_or_none(
                     base.rstrip("/") + "/api/tags", timeout_s=timeout_s
                 )
@@ -2217,23 +2746,8 @@ class App:
                     == clean_model
                     for item in tag_rows
                 )
-            model_aware = [
-                row
-                for row in healthy
-                if row.get("model_active") or row.get("model_available")
-            ]
-            if model_aware:
-                healthy = model_aware
-            healthy.sort(
-                key=lambda row: (
-                    0 if row.get("model_active") else 1,
-                    -float(row.get("model_vram_ratio") or 0.0),
-                    -int(row.get("model_size_vram") or 0),
-                    str(row.get("base_url") or ""),
-                )
-            )
-        else:
-            healthy.sort(key=lambda row: str(row.get("base_url") or ""))
+            healthy = [row for row in healthy if row.get("model_available")]
+        healthy.sort(key=lambda row: str(row.get("base_url") or ""))
         return [str(row["base_url"]) for row in healthy], rows
 
     def ollama_candidate_bases(
@@ -2245,16 +2759,7 @@ class App:
             healthy = [
                 row for row in healthy if model_id in set(row.get("models") or [])
             ]
-        healthy.sort(
-            key=lambda row: (
-                int(
-                    row.get("loaded_models")
-                    if row.get("loaded_models") is not None
-                    else 10**9
-                ),
-                str(row.get("base_url") or ""),
-            )
-        )
+        healthy.sort(key=lambda row: str(row.get("base_url") or ""))
         return [str(row["base_url"]) for row in healthy], rows
 
     def choose_ollama_base(
@@ -2314,9 +2819,14 @@ class App:
 
     def merged_ollama_ps(self, *, include_peers: bool = False) -> dict:
         models: list[dict] = []
-        for row in self.ollama_host_rows():
-            base = str(row.get("base_url") or "")
-            for model in row.get("ps_docs") or []:
+        for base in self.ollama_bases:
+            doc = self.fetch_json_or_none(
+                base.rstrip("/") + "/api/ps",
+                timeout_s=min(self.timeout_s, self.inventory_timeout_s),
+            )
+            for model in (doc or {}).get("models") or []:
+                if not isinstance(model, dict):
+                    continue
                 model_id = str(model.get("model") or model.get("name") or "").strip()
                 if not model_id or model_id in HIDDEN_MODEL_IDS:
                     continue
@@ -2368,9 +2878,10 @@ class App:
 
     def choose_media_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.media_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2401,9 +2912,10 @@ class App:
 
     def choose_transcribe_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.transcribe_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2425,9 +2937,10 @@ class App:
 
     def choose_ocr_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.ocr_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2465,9 +2978,10 @@ class App:
 
     def choose_rerank_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.rerank_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2507,9 +3021,10 @@ class App:
 
     def choose_safety_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.safety_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2843,6 +3358,9 @@ class App:
             model_row = dict(row)
             provider = str(model_row.get("provider") or "")
             model_row["provider"] = self.public_provider(provider)
+            model_row["manual_only"] = is_manual_only_model(
+                str(model_row.get("id") or "")
+            )
             if not self.expose_upstream_details:
                 model_row.pop("host", None)
                 model_row.pop("hosts", None)
@@ -2877,7 +3395,8 @@ class App:
             "evict_api": True,
             "request_ids": True,
             "priority_hints": True,
-            "priority_queue": False,
+            "priority_queue": True,
+            "background_best_effort": True,
             "async_jobs": True,
             "prefetch_jobs": True,
             "structured_logging": True,
@@ -3279,22 +3798,6 @@ class App:
             ).strip()
             if model_id and model_id.lower() not in catalog:
                 catalog[model_id.lower()] = row
-        ps_doc = self.merged_ollama_ps(include_peers=True)
-        active_hosts_by_model: dict[str, list[str]] = {}
-        for row in ps_doc.get("models") or []:
-            if not isinstance(row, dict):
-                continue
-            model_id = str(row.get("model") or row.get("name") or "").strip().lower()
-            if not model_id:
-                continue
-            host = str(row.get("gateway_host") or row.get("host") or "").strip()
-            if host:
-                active_hosts_by_model.setdefault(model_id, [])
-                if host not in active_hosts_by_model[model_id]:
-                    active_hosts_by_model[model_id].append(host)
-            else:
-                active_hosts_by_model.setdefault(model_id, [])
-        active_models = set(active_hosts_by_model)
         prefetch_doc = self.prefetch_jobs_doc(limit=50)
         warming_models = {
             str(row.get("model") or "").strip().lower()
@@ -3343,8 +3846,11 @@ class App:
                 model = str(model_row.get("model") or "").strip()
                 catalog_row = catalog.get(model.lower()) or {}
                 available = bool(catalog_row)
-                active = model.lower() in active_models
-                active_hosts = active_hosts_by_model.get(model.lower(), [])
+                # Loaded-model residency is intentionally observability-only.
+                # The warm-policy route can reason about installed inventory and
+                # its own prefetch jobs without polling Ollama's /api/ps endpoint.
+                active = False
+                active_hosts: list[str] = []
                 warming = model.lower() in warming_models
                 hosts = [
                     str(host)
@@ -3354,6 +3860,23 @@ class App:
                 if not hosts and str(catalog_row.get("host") or "").strip():
                     hosts = [str(catalog_row.get("host"))]
                 tool_only = dispatch in WARM_POLICY_TOOL_ONLY_DISPATCHES
+                manual_only = bool(
+                    catalog_row.get("manual_only")
+                ) or is_manual_only_model(model)
+                if manual_only:
+                    entry = self.warm_policy_entry(
+                        contract,
+                        model_row,
+                        action="manual_only",
+                        authority="manual_only",
+                        state="manual_only",
+                        available=available,
+                        active=False,
+                        hosts=hosts,
+                    )
+                    for lane in lane_ids:
+                        lanes[lane]["blocked_models"].append(entry)
+                    continue
                 if (
                     self.warm_policy_model_observe_only(model)
                     or status in WARM_POLICY_CANARY_STATUSES
@@ -3418,7 +3941,7 @@ class App:
                     ),
                 )
                 qwen_production_default = (
-                    "qwen3." in model.lower()
+                    model.lower().startswith("qwen3")
                     and str(model_row.get("role") or "").strip() == "default"
                 )
                 if qwen_production_default and (
@@ -3580,11 +4103,7 @@ class App:
             "route_posture": "blocked"
             if not policy_authorization.get("allowed")
             else route_posture,
-            "residency_posture": "warm"
-            if active_models
-            else "warming"
-            if warming_models
-            else "cold",
+            "residency_posture": "warm" if warming_models else "unknown",
             "source": {
                 "kind": "benchmark_packet",
                 "path": benchmark_path,
@@ -3592,7 +4111,8 @@ class App:
             },
             "catalog": {
                 "visible_model_count": len(catalog_rows),
-                "active_model_count": len(active_models),
+                "active_model_count": None,
+                "residency_observation": "available_only_via_api_ps",
             },
             "route_guardrails": {
                 "schema": "norman.norllama.route-guardrail-matrix.v1",
@@ -3727,9 +4247,9 @@ class App:
                 "policy_lifecycle": policy_lifecycle,
                 "mode": "qwen_first_local",
                 "frontdoor": "https://llm.home.arpa",
-                "preferred_chat_model": QWEN36_ROUTER_MODEL,
-                "preferred_code_model": QWEN36_CODE_MODEL,
-                "heavyweight_judge_model": QWEN35_JUDGE_MODEL,
+                "preferred_chat_model": QWEN3_CODER_MODEL,
+                "preferred_code_model": QWEN3_CODER_MODEL,
+                "manual_review_model": QWEN35_JUDGE_MODEL,
                 "embedding_model": DEFAULT_EMBEDDING_MODEL,
                 "rerank_model": DEFAULT_RERANK_MODEL,
                 "safety_model": QWEN3GUARD_MODEL,
@@ -3759,9 +4279,17 @@ class App:
                     "X-Request-Id": "Optional client-supplied request id. Norllama generates one when absent.",
                     "X-Norllama-Priority": {
                         "accepted": sorted(PRIORITY_LEVELS),
-                        "mode": "hint_only",
+                        "mode": "foreground_first",
                         "default": "normal",
                     },
+                    "X-Norllama-Work-Class": {
+                        "accepted": ["foreground", "background"],
+                        "default": "foreground",
+                    },
+                    "X-Norllama-Max-Queue-Wait-Ms": (
+                        "Optional caller queue budget. Background callers should "
+                        "use a short value and treat deferral as success."
+                    ),
                 },
                 "response": response_headers,
             },
@@ -3776,9 +4304,12 @@ class App:
             },
             "priority": {
                 "supported": True,
-                "mode": "hint_only",
+                "mode": "foreground_first",
                 "levels": sorted(PRIORITY_LEVELS),
-                "notes": "Priority is exposed in headers and logs now. It does not yet reorder execution.",
+                "notes": (
+                    "Foreground waiters are admitted before background work. "
+                    "Queued background work may be preempted or deferred."
+                ),
             },
             "endpoints": self.public_endpoints(),
         }
@@ -3791,11 +4322,14 @@ class App:
             hosts = [str(item) for item in (row.get("hosts") or [])]
             capabilities = infer_model_capabilities(model_id, provider)
             access = infer_model_access(model_id, provider, capabilities)
+            manual_only = is_manual_only_model(model_id)
             model_row: dict[str, object] = {
                 "id": model_id,
                 "provider": self.public_provider(provider),
                 "capabilities": capabilities,
                 "access": access,
+                "manual_only": manual_only,
+                "tool_only": not access.startswith("unified_chat"),
                 "recommended_path": self.recommended_path(
                     provider, capabilities, access
                 ),
@@ -3994,7 +4528,8 @@ class App:
             "recent_activity": recent,
             "contract": {
                 "async_mode": "prefetch_jobs",
-                "priority_mode": "hint_only",
+                "priority_mode": "foreground_first",
+                "background_mode": "best_effort",
                 "structured_logging": True,
                 "request_ids": True,
                 "head_support_count": len(
@@ -4238,8 +4773,8 @@ class App:
             ):
                 status_url = str(response_doc.get("status_url") or "").strip()
                 if status_url:
-                    poll_url = urllib.parse.urljoin(
-                        normalize_base_url(base_url) + "/", status_url.lstrip("/")
+                    poll_url = same_origin_url(
+                        normalize_base_url(base_url) + "/", status_url
                     )
                     poll_deadline = time.time() + max(
                         5.0, min(self.timeout_s, float(timeout_s or 30.0))
@@ -4524,7 +5059,7 @@ class App:
 
         fleet_rows = "".join(
             "<tr>"
-            f"<td><strong>{html.escape(str(row.get('label') or ''))}</strong><div class=\"subcell\">{html.escape(str(row.get('base_url') or ''))}</div></td>"
+            f'<td><strong>{html.escape(str(row.get("label") or ""))}</strong><div class="subcell">{html.escape(str(row.get("base_url") or ""))}</div></td>'
             f"<td>{html.escape(lane_state(row, 'ollama'))}</td>"
             f"<td>{html.escape(lane_state(row, 'media'))}</td>"
             f"<td>{html.escape(lane_state(row, 'transcribe'))}</td>"
@@ -4599,10 +5134,10 @@ class App:
         route_cards = (
             f"""
     <div class="grid">
-      <div class="card"><div class="k">Ollama Route</div><div class="v mono">{html.escape(str(routes.get('ollama') or ''))}</div></div>
-      <div class="card"><div class="k">DS4 Route</div><div class="v mono">{html.escape(str(routes.get('ds4') or ''))}</div></div>
-      <div class="card"><div class="k">Media Route</div><div class="v mono">{html.escape(str(routes.get('media') or ''))}</div></div>
-      <div class="card"><div class="k">Transcribe Route</div><div class="v mono">{html.escape(str(routes.get('transcribe') or ''))}</div></div>
+      <div class="card"><div class="k">Ollama Route</div><div class="v mono">{html.escape(str(routes.get("ollama") or ""))}</div></div>
+      <div class="card"><div class="k">DS4 Route</div><div class="v mono">{html.escape(str(routes.get("ds4") or ""))}</div></div>
+      <div class="card"><div class="k">Media Route</div><div class="v mono">{html.escape(str(routes.get("media") or ""))}</div></div>
+      <div class="card"><div class="k">Transcribe Route</div><div class="v mono">{html.escape(str(routes.get("transcribe") or ""))}</div></div>
     </div>
 """
             if self.expose_upstream_details
@@ -4705,12 +5240,12 @@ class App:
         <h1>Norllama</h1>
         <div class="sub">{html.escape(hero_sub)}</div>
         <div class="chips">
-          <span class="chip">status: {html.escape(str(overview.get('status') or 'unknown'))}</span>
-          <span class="chip">async: {html.escape(str(contract.get('async_mode') or 'unknown'))}</span>
-          <span class="chip">priority: {html.escape(str(contract.get('priority_mode') or 'unknown'))}</span>
-          <span class="chip">structured logs: {html.escape(str(contract.get('structured_logging') or False).lower())}</span>
-          <span class="chip">request ids: {html.escape(str(contract.get('request_ids') or False).lower())}</span>
-          <span class="chip">head paths: {html.escape(str(contract.get('head_support_count') or 0))}</span>
+          <span class="chip">status: {html.escape(str(overview.get("status") or "unknown"))}</span>
+          <span class="chip">async: {html.escape(str(contract.get("async_mode") or "unknown"))}</span>
+          <span class="chip">priority: {html.escape(str(contract.get("priority_mode") or "unknown"))}</span>
+          <span class="chip">structured logs: {html.escape(str(contract.get("structured_logging") or False).lower())}</span>
+          <span class="chip">request ids: {html.escape(str(contract.get("request_ids") or False).lower())}</span>
+          <span class="chip">head paths: {html.escape(str(contract.get("head_support_count") or 0))}</span>
         </div>
       </div>
       <div class="card">
@@ -4727,12 +5262,12 @@ class App:
       </div>
     </div>
     <div class="grid">
-      <div class="card"><div class="k">Visible Models</div><div class="v">{html.escape(str(summary.get('visible_model_count') or 0))}</div></div>
-      <div class="card"><div class="k">Unified Chat Models</div><div class="v">{html.escape(str(summary.get('chat_models') or 0))}</div></div>
-      <div class="card"><div class="k">Specialized Models</div><div class="v">{html.escape(str(summary.get('specialized_models') or 0))}</div></div>
-      <div class="card"><div class="k">Hidden Catalog Rows</div><div class="v">{html.escape(str(summary.get('hidden_model_count') or 0))}</div></div>
-      <div class="card"><div class="k">Recent Requests</div><div class="v">{html.escape(str(recent.get('count') or 0))}</div></div>
-      <div class="card"><div class="k">Rendered At</div><div class="v mono">{html.escape(str(overview.get('time') or ''))}</div></div>
+      <div class="card"><div class="k">Visible Models</div><div class="v">{html.escape(str(summary.get("visible_model_count") or 0))}</div></div>
+      <div class="card"><div class="k">Unified Chat Models</div><div class="v">{html.escape(str(summary.get("chat_models") or 0))}</div></div>
+      <div class="card"><div class="k">Specialized Models</div><div class="v">{html.escape(str(summary.get("specialized_models") or 0))}</div></div>
+      <div class="card"><div class="k">Hidden Catalog Rows</div><div class="v">{html.escape(str(summary.get("hidden_model_count") or 0))}</div></div>
+      <div class="card"><div class="k">Recent Requests</div><div class="v">{html.escape(str(recent.get("count") or 0))}</div></div>
+      <div class="card"><div class="k">Rendered At</div><div class="v mono">{html.escape(str(overview.get("time") or ""))}</div></div>
     </div>
     {route_cards}
     {fleet_section}
@@ -4803,7 +5338,7 @@ class App:
           <tr><th>Model</th><th>Provider</th><th>Capabilities</th><th>Access</th><th>{html.escape(host_header)}</th><th>Recommended Path</th><th>Brief</th></tr>
         </thead>
         <tbody>
-          {''.join(model_rows)}
+          {"".join(model_rows)}
         </tbody>
       </table>
     </div>
@@ -4942,10 +5477,16 @@ class App:
 
     def readyz(self) -> dict:
         identity = active_route_policy_identity(allow_missing_default=False)
+        configured_chat_backends = {
+            str(base).rstrip("/")
+            for base in (*self.ollama_bases, *self.ds4_bases, *self.peer_bases)
+            if str(base).strip()
+        }
         ready = bool(
             identity.get("integrity_valid")
             and identity.get("default_route_allowed")
             and identity.get("lifecycle_state") in {"valid", "expiring_soon"}
+            and configured_chat_backends
         )
         return {
             "service": "norllama",
@@ -4954,16 +5495,93 @@ class App:
             "ready": ready,
             "time": now_iso(),
             "policy": identity,
+            "readiness_basis": "signed_policy_and_configured_chat_backends",
+            "configured_chat_backend_count": len(configured_chat_backends),
+            "inventory_endpoint": "/v1/models",
             "features": self.feature_flags(),
+        }
+
+    def asr_cooldown(self) -> dict[str, object]:
+        """Return the local ASR circuit-breaker state without extending it."""
+
+        now = time.monotonic()
+        with self._asr_cooldown_lock:
+            remaining = max(0.0, self._asr_cooldown_until - now)
+            if remaining <= 0:
+                self._asr_cooldown_until = 0.0
+            return {
+                "active": remaining > 0,
+                "retry_after_seconds": max(0, int(remaining + 0.999)),
+                "last_failure_status": self._asr_cooldown_status,
+            }
+
+    def trip_asr_cooldown(self, status: int) -> None:
+        """Fail closed after a backend 5xx so the next upload is never read."""
+
+        if int(status) < 500:
+            return
+        with self._asr_cooldown_lock:
+            self._asr_cooldown_until = max(
+                self._asr_cooldown_until,
+                time.monotonic() + self.asr_failure_cooldown_s,
+            )
+            self._asr_cooldown_status = int(status)
+
+    def asr_readyz(self) -> dict:
+        selected, rows = self.choose_transcribe_base()
+        capacity = self.asr_admission.snapshot()
+        cooldown = self.asr_cooldown()
+        ready = (
+            selected is not None
+            and capacity["active"] < capacity["active_limit"]
+            and not bool(cooldown["active"])
+        )
+        healthy_count = len([row for row in rows if row.get("status") == "ok"])
+        if bool(cooldown["active"]):
+            status = "asr_backend_cooldown"
+        elif ready:
+            status = "ok"
+        elif selected is None:
+            status = "asr_unavailable"
+        else:
+            status = "asr_busy"
+        return {
+            "service": "norllama",
+            "gateway": gateway_identity(),
+            "status": status,
+            "ready": ready,
+            "healthy_backend_count": healthy_count,
+            "capacity": capacity,
+            "cooldown": cooldown,
+            "max_upload_bytes": self.asr_max_upload_bytes,
+            "time": now_iso(),
         }
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 128
+
+
+def safe_header_value(value: object) -> str:
+    """Strip HTTP line delimiters before handing metadata to the HTTP server."""
+    return str(value).replace("\r", "").replace("\n", "")
+
+
+def safe_header_name(value: str) -> str:
+    """Validate upstream header names before they reach a response sink."""
+    clean = safe_header_value(value)
+    if clean != value or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", clean):
+        raise ValueError("invalid HTTP response header name")
+    return clean
 
 
 class Handler(BaseHTTPRequestHandler):
+    def send_header(self, keyword: str, value: str) -> None:
+        """Keep untrusted metadata inside a single HTTP response header."""
+        super().send_header(safe_header_name(keyword), safe_header_value(value))
+
     protocol_version = "HTTP/1.1"
     server_version = "Norllama/0.1"
 
@@ -4982,6 +5600,24 @@ class Handler(BaseHTTPRequestHandler):
         priority = self.headers.get("X-Norllama-Priority", "").strip().lower()
         if priority not in PRIORITY_LEVELS:
             priority = "normal"
+        work_class = self.headers.get("X-Norllama-Work-Class", "").strip().lower()
+        if work_class not in {"foreground", "background"}:
+            work_class = "background" if priority == "background" else "foreground"
+        if work_class == "background":
+            priority = "background"
+        try:
+            requested_queue_wait_ms = int(
+                self.headers.get("X-Norllama-Max-Queue-Wait-Ms", "").strip() or "-1"
+            )
+        except Exception:
+            requested_queue_wait_ms = -1
+        if requested_queue_wait_ms < 0:
+            queue_wait_s = None
+        else:
+            queue_wait_s = min(
+                self.app.chat_admission.queue_wait_s,
+                max(0.0, requested_queue_wait_ms / 1000),
+            )
         try:
             peer_hop = int(self.headers.get("X-Norllama-Peer-Hop", "0").strip() or "0")
         except Exception:
@@ -4992,6 +5628,8 @@ class Handler(BaseHTTPRequestHandler):
             self.headers.get("X-Request-Id", "").strip() or uuid.uuid4().hex
         )
         self._priority = priority
+        self._work_class = work_class
+        self._queue_wait_s = queue_wait_s
         self._peer_hop = peer_hop
         self._started_at = time.perf_counter()
         self._log_sent = False
@@ -5148,14 +5786,17 @@ class Handler(BaseHTTPRequestHandler):
             self._activity_extra = activity_extra
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
         self.send_header(
-            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
+        )
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
         )
         for key, value in (extra_headers or {}).items():
             if key.lower() not in {"content-length", "content-type"}:
-                self.send_header(key, value)
-        self.send_header("Content-Length", str(len(body)))
+                self.send_header(safe_header_name(key), safe_header_value(value))
+        self.send_header("Content-Length", safe_header_value(str(len(body))))
         self.end_headers()
         self.wfile.write(body)
         self.emit_request_log(
@@ -5166,15 +5807,29 @@ class Handler(BaseHTTPRequestHandler):
             attempts=attempts,
         )
 
+    def send_local_model_not_installed(self, model: str) -> None:
+        self.send_json(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            {
+                "ok": False,
+                "error": "local_model_not_installed",
+                "model": model,
+                "candidates": [],
+            },
+        )
+
     def send_html(self, status: int, body_text: str) -> None:
         body = body_text.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
         self.send_header(
-            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
         )
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
+        )
+        self.send_header("Content-Length", safe_header_value(str(len(body))))
         self.end_headers()
         self.wfile.write(body)
         self.emit_request_log(
@@ -5195,13 +5850,19 @@ class Handler(BaseHTTPRequestHandler):
             if (
                 lower_key in HOP_HEADERS
                 or lower_key in {"server", "date"}
-                or lower_key.startswith("x-norllama-")
+                or (
+                    lower_key.startswith("x-norllama-")
+                    and lower_key not in ADMISSION_RESPONSE_HEADERS
+                )
             ):
                 continue
-            self.send_header(key, value)
-        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
+            self.send_header(safe_header_name(key), safe_header_value(value))
         self.send_header(
-            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
+        )
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
         )
         if self.app.expose_upstream_details:
             worker_endpoint = ""
@@ -5217,7 +5878,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.app.self_base_urls[0] if self.app.self_base_urls else ""
                 )
             if worker_endpoint:
-                self.send_header("X-Norllama-Worker-Endpoint", worker_endpoint)
+                self.send_header(
+                    "X-Norllama-Worker-Endpoint", safe_header_value(worker_endpoint)
+                )
         if extra_headers:
             for key, value in extra_headers.items():
                 if not self.app.expose_upstream_details and key in {
@@ -5225,8 +5888,8 @@ class Handler(BaseHTTPRequestHandler):
                     "X-Norllama-Attempts",
                 }:
                     continue
-                self.send_header(key, value)
-        self.send_header("Content-Length", str(len(body)))
+                self.send_header(safe_header_name(key), safe_header_value(value))
+        self.send_header("Content-Length", safe_header_value(str(len(body))))
         self.end_headers()
         self.wfile.write(body)
         upstream = ""
@@ -5248,16 +5911,130 @@ class Handler(BaseHTTPRequestHandler):
             attempts=attempts,
         )
 
+    def send_upstream_stream(
+        self,
+        upstream: UpstreamStream,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
+        status = upstream.status
+        headers = upstream.headers
+        self.send_response(status)
+        for key, value in headers.items():
+            lower_key = key.lower()
+            if (
+                lower_key in HOP_HEADERS
+                or lower_key
+                in {
+                    "content-length",
+                    "connection",
+                    "server",
+                    "date",
+                }
+                or (
+                    lower_key.startswith("x-norllama-")
+                    and lower_key not in ADMISSION_RESPONSE_HEADERS
+                )
+            ):
+                continue
+            self.send_header(safe_header_name(key), safe_header_value(value))
+        self.send_header(
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
+        )
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
+        )
+        if self.app.expose_upstream_details:
+            worker_endpoint = ""
+            if extra_headers:
+                upstream_base = extra_headers.get("X-Norllama-Upstream", "")
+                normalized_upstream = (
+                    normalize_base_url(upstream_base) if upstream_base else ""
+                )
+                if normalized_upstream and normalized_upstream in set(
+                    self.app.peer_bases
+                ):
+                    worker_endpoint = normalized_upstream
+            if not worker_endpoint:
+                worker_endpoint = (
+                    self.app.self_base_urls[0] if self.app.self_base_urls else ""
+                )
+            if worker_endpoint:
+                self.send_header(
+                    "X-Norllama-Worker-Endpoint", safe_header_value(worker_endpoint)
+                )
+        if extra_headers:
+            for key, value in extra_headers.items():
+                if not self.app.expose_upstream_details and key in {
+                    "X-Norllama-Upstream",
+                    "X-Norllama-Attempts",
+                }:
+                    continue
+                self.send_header(safe_header_name(key), safe_header_value(value))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        content_length, disconnected = self.copy_upstream_stream_body(upstream)
+
+        activity_extra = dict(getattr(self, "_activity_extra", {}) or {})
+        activity_extra["streaming"] = True
+        if disconnected:
+            activity_extra["client_disconnected"] = True
+        self._activity_extra = activity_extra
+        upstream_base = ""
+        attempts = ""
+        if extra_headers:
+            upstream_base = extra_headers.get("X-Norllama-Upstream", "")
+            attempts = extra_headers.get("X-Norllama-Attempts", "")
+        self.emit_request_log(
+            status=status,
+            content_length=content_length,
+            content_type=headers.get("Content-Type", "application/octet-stream"),
+            upstream=upstream_base,
+            attempts=attempts,
+        )
+
+    def copy_upstream_stream_body(self, upstream: UpstreamStream) -> tuple[int, bool]:
+        """Copy an already-open upstream stream and always release its lease."""
+
+        content_length = 0
+        disconnected = False
+        try:
+            while True:
+                chunk = upstream.response.read(64 * 1024)  # type: ignore[union-attr]
+                if not chunk:
+                    break
+                content_length += len(chunk)
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (
+            BrokenPipeError,
+            ConnectionAbortedError,
+            ConnectionResetError,
+            OSError,
+        ):
+            disconnected = True
+        finally:
+            upstream.close()
+        return content_length, disconnected
+
     def send_head_only(
         self, status: int, *, content_type: str, content_length: int
     ) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
+        self.send_header("Content-Type", safe_header_value(content_type))
         self.send_header(
-            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
         )
-        self.send_header("Content-Length", str(content_length))
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
+        )
+        self.send_header("Content-Length", safe_header_value(str(content_length)))
         self.end_headers()
         self.emit_request_log(
             status=status, content_length=content_length, content_type=content_type
@@ -5267,14 +6044,17 @@ class Handler(BaseHTTPRequestHandler):
         self, status: int, *, extra_headers: dict[str, str] | None = None
     ) -> None:
         self.send_response(status)
-        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
         self.send_header(
-            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
+        )
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
         )
         self.send_header("Content-Length", "0")
         if extra_headers:
             for key, value in extra_headers.items():
-                self.send_header(key, value)
+                self.send_header(safe_header_name(key), safe_header_value(value))
         self.end_headers()
         self.emit_request_log(status=status, content_length=0, content_type="")
 
@@ -5287,6 +6067,115 @@ class Handler(BaseHTTPRequestHandler):
         if content_length <= 0:
             return b""
         return self.rfile.read(content_length)
+
+    def request_content_length(self) -> int | None:
+        raw_length = self.headers.get("Content-Length", "").strip()
+        if not raw_length:
+            return None
+        try:
+            content_length = int(raw_length)
+        except (TypeError, ValueError):
+            return None
+        return content_length if content_length >= 0 else None
+
+    def reject_unread_asr_upload(
+        self,
+        status: int,
+        payload: dict[str, object],
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
+        # The request body is deliberately unread in these cases. Closing the
+        # connection prevents it from being interpreted as the next request.
+        self.close_connection = True
+        headers = {"Connection": "close"}
+        if extra_headers:
+            headers.update(extra_headers)
+        self.send_json(status, payload, extra_headers=headers)
+
+    def send_asr_capacity_response(self, snapshot: dict[str, int]) -> None:
+        retry_after = str(max(1, int(self.app.asr_admission.retry_after_s)))
+        self.reject_unread_asr_upload(
+            HTTPStatus.TOO_MANY_REQUESTS,
+            {
+                "ok": False,
+                "error": "asr_capacity_exhausted",
+                "message": (
+                    "Local transcription capacity is busy; retry after "
+                    f"{retry_after} seconds"
+                ),
+                "norllama": {
+                    "schema": "norllama.asr_capacity.v1",
+                    **snapshot,
+                },
+            },
+            extra_headers={"Retry-After": retry_after},
+        )
+
+    def send_asr_backend_cooldown_response(self, cooldown: dict[str, object]) -> None:
+        retry_after = str(max(1, int(cooldown.get("retry_after_seconds") or 1)))
+        self.reject_unread_asr_upload(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {
+                "ok": False,
+                "error": "asr_backend_cooldown",
+                "message": (
+                    "Local transcription backend recently failed; retry after "
+                    f"{retry_after} seconds"
+                ),
+                "norllama": {
+                    "schema": "norllama.asr_cooldown.v1",
+                    **cooldown,
+                },
+            },
+            extra_headers={"Retry-After": retry_after},
+        )
+
+    def handle_asr_post(self, path: str) -> None:
+        content_length = self.request_content_length()
+        if content_length is None:
+            self.reject_unread_asr_upload(
+                HTTPStatus.LENGTH_REQUIRED,
+                {
+                    "ok": False,
+                    "error": "missing_content_length",
+                    "message": "ASR uploads require a valid Content-Length header",
+                },
+            )
+            return
+        if content_length > self.app.asr_max_upload_bytes:
+            self.reject_unread_asr_upload(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {
+                    "ok": False,
+                    "error": "asr_upload_too_large",
+                    "max_upload_bytes": self.app.asr_max_upload_bytes,
+                    "received_content_length": content_length,
+                },
+            )
+            return
+
+        cooldown_fn = getattr(self.app, "asr_cooldown", None)
+        cooldown = (
+            cooldown_fn()
+            if callable(cooldown_fn)
+            else {"active": False, "retry_after_seconds": 0}
+        )
+        if bool(cooldown.get("active")):
+            self.send_asr_backend_cooldown_response(cooldown)
+            return
+
+        reservation, snapshot = self.app.asr_admission.reserve()
+        if reservation is None:
+            self.send_asr_capacity_response(snapshot)
+            return
+        try:
+            body = self.read_body()
+            if not self.enforce_policy_for_request(path, body):
+                return
+            self.handle_unified_transcribe(body)
+        finally:
+            reservation.release()
 
     def forward(
         self,
@@ -5307,6 +6196,329 @@ class Handler(BaseHTTPRequestHandler):
             extra_headers={"X-Norllama-Upstream": base_url},
         )
 
+    def request_wants_stream(self, upstream_path: str, body: bytes | None) -> bool:
+        path = urllib.parse.urlsplit(upstream_path).path
+        if path not in {"/api/chat", "/api/generate", "/v1/chat/completions"}:
+            return False
+        try:
+            payload = json.loads((body or b"{}").decode("utf-8"))
+        except (TypeError, ValueError, UnicodeDecodeError):
+            return False
+        return isinstance(payload, dict) and bool(payload.get("stream"))
+
+    def local_generation_request(self, base_url: str, upstream_path: str) -> bool:
+        owns_capacity = is_loopback_base_url(base_url) or normalize_base_url(
+            base_url
+        ) in getattr(self.app, "admission_bases", set())
+        return owns_capacity and urllib.parse.urlsplit(upstream_path).path in {
+            "/api/chat",
+            "/api/generate",
+            "/v1/chat/completions",
+        }
+
+    def local_capacity_response(
+        self,
+        *,
+        body: bytes | None,
+        snapshot: dict[str, int],
+        model_hint: str | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        model = (
+            self.extract_ollama_model(body or b"")
+            or str(model_hint or "").strip()
+            or getattr(self, "_model_hint", "")
+        )
+        retry_after = str(max(1, int(self.app.chat_admission.retry_after_s)))
+        background = getattr(self, "_work_class", "foreground") == "background"
+        error = "background_deferred" if background else "local_capacity_exhausted"
+        capacity_meta = {
+            "schema": "norllama.capacity.v2" if background else "norllama.capacity.v1",
+            **snapshot,
+        }
+        if background:
+            capacity_meta.update(
+                {
+                    "work_class": "background",
+                    "outcome": "deferred",
+                }
+            )
+        payload = {
+            "ok": False,
+            "error": error,
+            "message": (
+                "Best-effort background work was deferred for foreground capacity"
+                if background
+                else f"Local coding capacity is busy; retry after {retry_after} seconds"
+            ),
+            "model": model,
+            "norllama": capacity_meta,
+        }
+        return (
+            int(HTTPStatus.TOO_MANY_REQUESTS),
+            {
+                "Content-Type": "application/json; charset=utf-8",
+                "Retry-After": retry_after,
+            },
+            json.dumps(payload, sort_keys=True).encode("utf-8"),
+        )
+
+    def local_admission_headers(
+        self,
+        snapshot: dict[str, int],
+        *,
+        queue_wait_s: float,
+    ) -> dict[str, str]:
+        queue_wait_ms = max(0, min(int(queue_wait_s * 1000), 3600000))
+        return {
+            "X-Norllama-Admission": "queued" if queue_wait_ms else "immediate",
+            "X-Norllama-Work-Class": getattr(self, "_work_class", "foreground"),
+            "X-Norllama-Queue-Wait-Ms": str(queue_wait_ms),
+            "X-Norllama-Queue-Depth": str(max(0, snapshot.get("queue_depth", 0))),
+            "X-Norllama-Queue-Limit": str(max(0, snapshot.get("queue_limit", 0))),
+            "X-Norllama-Active": str(max(0, snapshot.get("active", 0))),
+            "X-Norllama-Active-Limit": str(max(0, snapshot.get("active_limit", 0))),
+        }
+
+    def local_stream_admission_frame(
+        self,
+        *,
+        event: str,
+        reservation: ChatAdmissionReservation,
+        snapshot: dict[str, int],
+    ) -> dict[str, object]:
+        queue_wait_ms = max(
+            0,
+            min(int((time.monotonic() - reservation.queued_at) * 1000), 3600000),
+        )
+        return {
+            "norllama": {
+                "schema": "norllama.stream-admission.v1",
+                "event": event,
+                "work_class": getattr(self, "_work_class", "foreground"),
+                "admission": "queued" if reservation.was_queued else "immediate",
+                "queue_wait_ms": queue_wait_ms,
+                **snapshot,
+            }
+        }
+
+    def local_stream_capacity_frame(
+        self,
+        *,
+        body: bytes | None,
+        snapshot: dict[str, int],
+        model_hint: str | None = None,
+    ) -> dict[str, object]:
+        model = (
+            self.extract_ollama_model(body or b"")
+            or str(model_hint or "").strip()
+            or getattr(self, "_model_hint", "")
+        )
+        return {
+            "error": (
+                "background_deferred"
+                if getattr(self, "_work_class", "foreground") == "background"
+                else "local_capacity_exhausted"
+            ),
+            "done": True,
+            "model": model,
+            "norllama": {
+                "schema": "norllama.capacity.v2",
+                "work_class": getattr(self, "_work_class", "foreground"),
+                "outcome": (
+                    "deferred"
+                    if getattr(self, "_work_class", "foreground") == "background"
+                    else "busy"
+                ),
+                **snapshot,
+            },
+        }
+
+    def write_stream_frame(self, payload: dict[str, object]) -> int:
+        chunk = json.dumps(payload, sort_keys=True).encode("utf-8") + b"\n"
+        self.wfile.write(chunk)
+        self.wfile.flush()
+        return len(chunk)
+
+    def send_queued_local_generation_stream(
+        self,
+        *,
+        reservation: ChatAdmissionReservation,
+        snapshot: dict[str, int],
+        base_url: str,
+        upstream_path: str,
+        headers: dict[str, str] | None,
+        body: bytes | None,
+        method: str | None,
+        model_hint: str | None,
+        attempts: list[str],
+    ) -> None:
+        """Keep an admitted queue reservation visible until its stream opens."""
+
+        admission_headers = self.local_admission_headers(snapshot, queue_wait_s=0)
+        admission_headers["X-Norllama-Admission"] = "queued"
+        content_length = 0
+        disconnected = False
+        upstream: UpstreamStream | None = None
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header(
+                "X-Norllama-Request-Id",
+                safe_header_value(getattr(self, "_request_id", "")),
+            )
+            self.send_header(
+                "X-Norllama-Priority-Applied",
+                safe_header_value(getattr(self, "_priority", "normal")),
+            )
+            for key, value in admission_headers.items():
+                self.send_header(safe_header_name(key), safe_header_value(value))
+            if self.app.expose_upstream_details:
+                self.send_header("X-Norllama-Upstream", safe_header_value(base_url))
+                self.send_header(
+                    "X-Norllama-Attempts", safe_header_value(",".join(attempts))
+                )
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            content_length += self.write_stream_frame(
+                self.local_stream_admission_frame(
+                    event="queued",
+                    reservation=reservation,
+                    snapshot=snapshot,
+                )
+            )
+            while True:
+                state, updated_snapshot = reservation.wait(
+                    timeout_s=self.app.chat_queue_update_s
+                )
+                if state == "queued":
+                    content_length += self.write_stream_frame(
+                        self.local_stream_admission_frame(
+                            event="queued",
+                            reservation=reservation,
+                            snapshot=updated_snapshot,
+                        )
+                    )
+                    continue
+                if state == "admitted":
+                    content_length += self.write_stream_frame(
+                        self.local_stream_admission_frame(
+                            event="admitted",
+                            reservation=reservation,
+                            snapshot=updated_snapshot,
+                        )
+                    )
+                    try:
+                        upstream = self.open_upstream_stream(
+                            base_url,
+                            upstream_path,
+                            headers=headers,
+                            body=body,
+                            method=method,
+                            model_hint=model_hint,
+                            admission_reservation=reservation,
+                        )
+                    except Exception as exc:
+                        content_length += self.write_stream_frame(
+                            {
+                                "error": "upstream_unavailable",
+                                "detail": str(exc),
+                                "done": True,
+                            }
+                        )
+                        return
+                    if 200 <= upstream.status < 300:
+                        copied_length, disconnected = self.copy_upstream_stream_body(
+                            upstream
+                        )
+                        content_length += copied_length
+                        upstream = None
+                        return
+                    try:
+                        response_body = upstream.read()
+                    finally:
+                        upstream.close()
+                        upstream = None
+                    payload = extract_jsonish_final_object(response_body) or {
+                        "error": "upstream_unavailable"
+                    }
+                    if not payload.get("done"):
+                        payload["done"] = True
+                    content_length += self.write_stream_frame(payload)
+                    return
+                if state == "expired":
+                    content_length += self.write_stream_frame(
+                        self.local_stream_capacity_frame(
+                            body=body,
+                            snapshot=updated_snapshot,
+                            model_hint=model_hint,
+                        )
+                    )
+                elif state == "preempted":
+                    content_length += self.write_stream_frame(
+                        {
+                            "error": "background_preempted",
+                            "done": True,
+                            "norllama": {
+                                "schema": "norllama.capacity.v2",
+                                "work_class": "background",
+                                "outcome": "preempted",
+                                **updated_snapshot,
+                            },
+                        }
+                    )
+                return
+        except (
+            BrokenPipeError,
+            ConnectionAbortedError,
+            ConnectionResetError,
+            OSError,
+        ):
+            disconnected = True
+        finally:
+            if upstream is not None:
+                upstream.close()
+            reservation.release()
+
+            activity_extra = dict(getattr(self, "_activity_extra", {}) or {})
+            activity_extra.update(
+                {
+                    "streaming": True,
+                    "stream_admission": "queued",
+                    "stream_admission_visible": True,
+                }
+            )
+            if disconnected:
+                activity_extra["client_disconnected"] = True
+            self._activity_extra = activity_extra
+            self.emit_request_log(
+                status=HTTPStatus.OK,
+                content_length=content_length,
+                content_type="application/x-ndjson; charset=utf-8",
+                upstream=base_url,
+                attempts=",".join(attempts),
+            )
+
+    def candidate_is_retryable(self, status: int, body: bytes) -> bool:
+        if status == 503 or status >= 500:
+            return True
+        if status != HTTPStatus.TOO_MANY_REQUESTS:
+            return False
+        payload = extract_jsonish_final_object(body) or {}
+        raw_error = payload.get("error")
+        error = (
+            (
+                str(raw_error.get("code") or raw_error.get("type") or "")
+                if isinstance(raw_error, dict)
+                else str(raw_error or "")
+            )
+            .strip()
+            .lower()
+        )
+        return error in {"local_capacity_exhausted", "capacity_exhausted"}
+
     def forward_candidates(
         self,
         bases: list[str],
@@ -5318,6 +6530,17 @@ class Handler(BaseHTTPRequestHandler):
         peer_bases: set[str] | None = None,
         model_hint: str | None = None,
     ) -> None:
+        if self.request_wants_stream(upstream_path, body):
+            self.forward_candidates_stream(
+                bases,
+                upstream_path,
+                headers=headers,
+                body=body,
+                method=method,
+                peer_bases=peer_bases,
+                model_hint=model_hint,
+            )
+            return
         attempted: list[str] = []
         last: tuple[int, dict[str, str], bytes] | None = None
         last_base = ""
@@ -5328,17 +6551,13 @@ class Handler(BaseHTTPRequestHandler):
                 is_peer = bool(peer_bases and normalize_base_url(base) in peer_bases)
                 if is_peer:
                     request_headers = self.peer_forward_headers(request_headers)
-                self.maybe_evict_heavy_judge_for_interactive_load(
-                    base,
-                    requested_model=model_hint or "",
-                    is_peer=is_peer,
-                )
                 result = self.request_upstream(
                     base,
                     upstream_path,
                     headers=request_headers or None,
                     body=body,
                     method=method,
+                    model_hint=model_hint,
                 )
             except Exception as exc:
                 last = (
@@ -5356,7 +6575,7 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             last = result
             last_base = base
-            if result[0] == 503 or result[0] >= 500:
+            if self.candidate_is_retryable(result[0], result[2]):
                 continue
             self.send_upstream(
                 result[0],
@@ -5383,92 +6602,124 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
-    def resident_models_for_base(self, base: str, *, is_peer: bool) -> set[str]:
-        path = "/api/ps?scope=local" if is_peer else "/api/ps"
-        headers = self.peer_forward_headers({}) if is_peer else {}
-        status, response_headers, response_body = self.request_upstream(
-            base,
-            path,
-            headers=headers or None,
-            method="GET",
-            timeout_s=min(self.app.timeout_s, self.app.inventory_timeout_s),
-        )
-        content_type = response_headers.get("Content-Type", "application/json")
-        if not (200 <= int(status) < 300) or "json" not in content_type.lower():
-            return set()
-        try:
-            ps_doc = json.loads(response_body.decode("utf-8"))
-        except Exception:
-            return set()
-        if not isinstance(ps_doc, dict):
-            return set()
-        return resident_model_ids_from_ps(ps_doc)
-
-    def maybe_evict_heavy_judge_for_interactive_load(
+    def forward_candidates_stream(
         self,
-        base: str,
+        bases: list[str],
+        upstream_path: str,
         *,
-        requested_model: str,
-        is_peer: bool,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        method: str | None = None,
+        peer_bases: set[str] | None = None,
+        model_hint: str | None = None,
     ) -> None:
-        clean_model = str(requested_model or "").strip()
-        if clean_model not in {QWEN36_ROUTER_MODEL, QWEN36_CODE_MODEL}:
-            return
-        try:
-            resident_models = self.resident_models_for_base(base, is_peer=is_peer)
-        except Exception as exc:
-            self.merge_activity_extra(
-                {
-                    "load_pressure_guard": "ps_probe_failed",
-                    "load_pressure_guard_error": str(exc)[:200],
-                    "load_pressure_requested_model": clean_model,
-                }
+        attempted: list[str] = []
+        last: tuple[int, dict[str, str], bytes] | None = None
+        last_base = ""
+        for base in bases:
+            attempted.append(base)
+            try:
+                request_headers = dict(headers or {})
+                is_peer = bool(peer_bases and normalize_base_url(base) in peer_bases)
+                if is_peer:
+                    request_headers = self.peer_forward_headers(request_headers)
+                admission_reservation: ChatAdmissionReservation | None = None
+                if urllib.parse.urlsplit(
+                    upstream_path
+                ).path == "/api/generate" and self.local_generation_request(
+                    base, upstream_path
+                ):
+                    admission_reservation, snapshot = self.app.chat_admission.reserve(
+                        priority=getattr(self, "_priority", "normal"),
+                        queue_wait_s=getattr(self, "_queue_wait_s", None),
+                    )
+                    if admission_reservation is None:
+                        last = self.local_capacity_response(
+                            body=body,
+                            snapshot=snapshot,
+                            model_hint=model_hint,
+                        )
+                        last_base = base
+                        continue
+                    if admission_reservation.queued:
+                        self.send_queued_local_generation_stream(
+                            reservation=admission_reservation,
+                            snapshot=snapshot,
+                            base_url=base,
+                            upstream_path=upstream_path,
+                            headers=request_headers or None,
+                            body=body,
+                            method=method,
+                            model_hint=model_hint,
+                            attempts=attempted,
+                        )
+                        return
+                upstream = self.open_upstream_stream(
+                    base,
+                    upstream_path,
+                    headers=request_headers or None,
+                    body=body,
+                    method=method,
+                    model_hint=model_hint,
+                    admission_reservation=admission_reservation,
+                )
+            except Exception as exc:
+                last = (
+                    int(HTTPStatus.BAD_GATEWAY),
+                    {"Content-Type": "application/json; charset=utf-8"},
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": "upstream_unavailable",
+                            "detail": str(exc),
+                        }
+                    ).encode("utf-8"),
+                )
+                last_base = base
+                continue
+
+            if 200 <= upstream.status < 300:
+                self.send_upstream_stream(
+                    upstream,
+                    extra_headers={
+                        "X-Norllama-Upstream": base,
+                        "X-Norllama-Attempts": ",".join(attempted),
+                    },
+                )
+                return
+
+            try:
+                response_body = upstream.read()
+            finally:
+                upstream.close()
+            last = (upstream.status, upstream.headers, response_body)
+            last_base = base
+            if self.candidate_is_retryable(upstream.status, response_body):
+                continue
+            self.send_upstream(
+                upstream.status,
+                upstream.headers,
+                response_body,
+                extra_headers={
+                    "X-Norllama-Upstream": base,
+                    "X-Norllama-Attempts": ",".join(attempted),
+                },
             )
             return
-        if not should_evict_heavy_judge_for_interactive_load(
-            clean_model, resident_models
-        ):
+
+        if last is None:
+            self.send_json(
+                HTTPStatus.BAD_GATEWAY, {"ok": False, "error": "no_upstream_candidates"}
+            )
             return
-        evict_body = json.dumps(
-            {
-                "model": QWEN35_JUDGE_MODEL,
-                "timeout_s": 30,
-                "reason": "interactive_qwen36_load_pressure",
-            }
-        ).encode("utf-8")
-        evict_path = "/v1/evict" if is_peer else "/api/generate"
-        evict_headers = {"Content-Type": "application/json"}
-        if is_peer:
-            evict_headers = self.peer_forward_headers(evict_headers)
-        if not is_peer:
-            evict_body = json.dumps(
-                {
-                    "model": QWEN35_JUDGE_MODEL,
-                    "prompt": "",
-                    "stream": False,
-                    "keep_alive": 0,
-                }
-            ).encode("utf-8")
-        started = time.perf_counter()
-        status, _response_headers, _response_body = self.request_upstream(
-            base,
-            evict_path,
-            headers=evict_headers,
-            body=evict_body,
-            method="POST",
-            timeout_s=30,
-        )
-        self.merge_activity_extra(
-            {
-                "load_pressure_guard": "evicted_heavy_judge",
-                "load_pressure_requested_model": clean_model,
-                "load_pressure_evicted_model": QWEN35_JUDGE_MODEL,
-                "load_pressure_evict_status": int(status),
-                "load_pressure_evict_duration_ms": round(
-                    (time.perf_counter() - started) * 1000, 3
-                ),
-                "load_pressure_worker": self.app.host_alias(base),
-            }
+        self.send_upstream(
+            last[0],
+            last[1],
+            last[2],
+            extra_headers={
+                "X-Norllama-Upstream": last_base,
+                "X-Norllama-Attempts": ",".join(attempted),
+            },
         )
 
     def request_upstream(
@@ -5480,6 +6731,7 @@ class Handler(BaseHTTPRequestHandler):
         body: bytes | None = None,
         method: str | None = None,
         timeout_s: float | None = None,
+        model_hint: str | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
         outgoing_headers: dict[str, str] = {}
         for key, value in self.headers.items():
@@ -5488,6 +6740,35 @@ class Handler(BaseHTTPRequestHandler):
             outgoing_headers[key] = value
         if headers:
             outgoing_headers.update(headers)
+        if self.local_generation_request(base_url, upstream_path):
+            wait_started_at = time.monotonic()
+            admitted, snapshot = self.app.chat_admission.acquire(
+                priority=getattr(self, "_priority", "normal"),
+                queue_wait_s=getattr(self, "_queue_wait_s", None),
+            )
+            admitted_at = time.monotonic()
+            if not admitted:
+                return self.local_capacity_response(
+                    body=body, snapshot=snapshot, model_hint=model_hint
+                )
+            try:
+                status, response_headers, response_body = fetch_url(
+                    base_url.rstrip("/") + upstream_path,
+                    method=method or self.command,
+                    headers=outgoing_headers,
+                    body=body,
+                    timeout_s=self.app.timeout_s if timeout_s is None else timeout_s,
+                )
+                response_headers = dict(response_headers)
+                response_headers.update(
+                    self.local_admission_headers(
+                        snapshot,
+                        queue_wait_s=admitted_at - wait_started_at,
+                    )
+                )
+                return status, response_headers, response_body
+            finally:
+                self.app.chat_admission.release()
         return fetch_url(
             base_url.rstrip("/") + upstream_path,
             method=method or self.command,
@@ -5495,6 +6776,108 @@ class Handler(BaseHTTPRequestHandler):
             body=body,
             timeout_s=self.app.timeout_s if timeout_s is None else timeout_s,
         )
+
+    def open_upstream_stream(
+        self,
+        base_url: str,
+        upstream_path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        method: str | None = None,
+        model_hint: str | None = None,
+        admission_reservation: ChatAdmissionReservation | None = None,
+    ) -> UpstreamStream:
+        outgoing_headers: dict[str, str] = {}
+        for key, value in self.headers.items():
+            if key.lower() in HOP_HEADERS or key.lower() == "authorization":
+                continue
+            outgoing_headers[key] = value
+        if headers:
+            outgoing_headers.update(headers)
+
+        release: Callable[[], None] | None = None
+        admission_headers: dict[str, str] = {}
+        if self.local_generation_request(base_url, upstream_path):
+            if admission_reservation is not None:
+                if admission_reservation.queued:
+                    raise RuntimeError("queued reservation must be admitted before use")
+                release = admission_reservation.release
+                admission_headers = self.local_admission_headers(
+                    self.app.chat_admission.snapshot(),
+                    queue_wait_s=(
+                        time.monotonic() - admission_reservation.queued_at
+                        if admission_reservation.was_queued
+                        else 0
+                    ),
+                )
+            else:
+                wait_started_at = time.monotonic()
+                admitted, snapshot = self.app.chat_admission.acquire(
+                    priority=getattr(self, "_priority", "normal"),
+                    queue_wait_s=getattr(self, "_queue_wait_s", None),
+                )
+                admitted_at = time.monotonic()
+                if not admitted:
+                    status, response_headers, response_body = (
+                        self.local_capacity_response(
+                            body=body, snapshot=snapshot, model_hint=model_hint
+                        )
+                    )
+
+                    class LocalCapacityBody:
+                        def __init__(self, payload: bytes) -> None:
+                            self.payload = payload
+
+                        def read(self, size: int = -1) -> bytes:
+                            if size is None or size < 0:
+                                result, self.payload = self.payload, b""
+                                return result
+                            result, self.payload = (
+                                self.payload[:size],
+                                self.payload[size:],
+                            )
+                            return result
+
+                        def close(self) -> None:
+                            self.payload = b""
+
+                    return UpstreamStream(
+                        status=status,
+                        headers=response_headers,
+                        response=LocalCapacityBody(response_body),
+                    )
+                release = self.app.chat_admission.release
+                admission_headers = self.local_admission_headers(
+                    snapshot,
+                    queue_wait_s=admitted_at - wait_started_at,
+                )
+
+        request = urllib.request.Request(
+            base_url.rstrip("/") + upstream_path,
+            data=body,
+            method=method or self.command,
+            headers={"User-Agent": USER_AGENT, **outgoing_headers},
+        )
+        try:
+            response = urllib.request.urlopen(request, timeout=self.app.timeout_s)
+            return UpstreamStream(
+                status=int(response.status),
+                headers={**dict(response.headers.items()), **admission_headers},
+                response=response,
+                release=release,
+            )
+        except urllib.error.HTTPError as exc:
+            return UpstreamStream(
+                status=int(exc.code),
+                headers={**dict(exc.headers.items()), **admission_headers},
+                response=exc,
+                release=release,
+            )
+        except Exception:
+            if release is not None:
+                release()
+            raise
 
     def extract_ollama_model(self, body: bytes) -> str | None:
         content_type = (
@@ -5540,7 +6923,7 @@ class Handler(BaseHTTPRequestHandler):
         self, model: str
     ) -> tuple[list[str], list[dict], set[str]]:
         bases, rows = self.app.ollama_candidate_bases(model or None)
-        peer_bases, peer_rows = self.peer_candidate_bases()
+        peer_bases, peer_rows = self.peer_candidate_bases(model or None)
         return (
             bases + peer_bases,
             rows + peer_rows,
@@ -5696,12 +7079,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def native_rerank_candidates(self) -> tuple[list[str], list[dict], set[str]]:
         health_bases, health_rows = self.app.rerank_candidate_bases()
-        configured_local = [
-            normalize_base_url(base)
-            for base in self.app.rerank_bases
-            if normalize_base_url(base)
-        ]
-        ordered_local = unique_items([*health_bases, *configured_local])
+        ordered_local = unique_items(
+            [
+                normalize_base_url(base)
+                for base in health_bases
+                if normalize_base_url(base)
+            ]
+        )
         static_peer_bases: list[str] = []
         if int(getattr(self, "_peer_hop", 0)) < self.app.max_peer_hops:
             static_peer_bases = [
@@ -5750,12 +7134,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def safety_candidates(self) -> tuple[list[str], list[dict], set[str]]:
         health_bases, health_rows = self.app.safety_candidate_bases()
-        configured_local = [
-            normalize_base_url(base)
-            for base in self.app.safety_bases
-            if normalize_base_url(base)
-        ]
-        ordered_local = unique_items([*health_bases, *configured_local])
+        ordered_local = unique_items(
+            [
+                normalize_base_url(base)
+                for base in health_bases
+                if normalize_base_url(base)
+            ]
+        )
         static_peer_bases: list[str] = []
         if int(getattr(self, "_peer_hop", 0)) < self.app.max_peer_hops:
             static_peer_bases = [
@@ -6275,13 +7660,29 @@ class Handler(BaseHTTPRequestHandler):
                 {"ok": False, "error": "invalid_json", "detail": str(exc)},
             )
             return
-        model = str(payload.get("model") or "").strip()
+        model = canonical_model_id(str(payload.get("model") or "").strip())
         if not model:
             self.send_json(
                 HTTPStatus.BAD_REQUEST, {"ok": False, "error": "missing_model"}
             )
             return
+        payload["model"] = model
+        body = json.dumps(payload).encode("utf-8")
         self._model_hint = model
+        if is_manual_only_model(model):
+            self.send_json(
+                HTTPStatus.FORBIDDEN,
+                {
+                    "ok": False,
+                    "error": "manual_only_model",
+                    "model": model,
+                    "detail": (
+                        "This model is available only for explicit manual review; "
+                        "automatic prefetch and warming are disabled."
+                    ),
+                },
+            )
+            return
         keep_alive = str(payload.get("keep_alive") or "30m").strip() or "30m"
         num_ctx_raw = payload.get("num_ctx")
         num_ctx = (
@@ -6419,7 +7820,7 @@ class Handler(BaseHTTPRequestHandler):
                 {"ok": False, "error": "invalid_json", "detail": str(exc)},
             )
             return
-        model = str(payload.get("model") or "").strip()
+        model = canonical_model_id(str(payload.get("model") or "").strip())
         if not model:
             self.send_json(
                 HTTPStatus.BAD_REQUEST, {"ok": False, "error": "missing_model"}
@@ -6527,8 +7928,6 @@ class Handler(BaseHTTPRequestHandler):
             self.headers.get("Content-Type", "").strip() or "application/json"
         )
         model = self.extract_ollama_model(body)
-        if model:
-            self._model_hint = model
         if content_type.startswith("application/json") and upstream_path in {
             "/api/chat",
             "/api/generate",
@@ -6543,23 +7942,23 @@ class Handler(BaseHTTPRequestHandler):
                 normalized_payload, changed = normalize_chat_payload_for_local_qwen(
                     normalized_payload
                 )
-                normalized_payload, keep_alive_changed = apply_model_keep_alive_default(
-                    normalized_payload
-                )
-                changed = changed or keep_alive_changed
                 if changed:
                     body = json.dumps(normalized_payload).encode("utf-8")
+                model = str(normalized_payload.get("model") or model or "").strip()
+        if model:
+            self._model_hint = model
         bases, rows = self.app.ollama_candidate_bases(model)
         peer_bases, peer_rows = self.peer_candidate_bases(model)
         candidates = bases + peer_bases
         if not candidates:
+            if model:
+                self.send_local_model_not_installed(model)
+                return
             self.send_json(
                 HTTPStatus.BAD_GATEWAY,
                 {
                     "ok": False,
-                    "error": "ollama_model_unavailable"
-                    if model
-                    else "ollama_unavailable",
+                    "error": "ollama_unavailable",
                     "model": model,
                     "candidates": self.app.public_candidate_rows(
                         "ollama", rows + peer_rows
@@ -6597,11 +7996,6 @@ class Handler(BaseHTTPRequestHandler):
             if is_peer:
                 headers = self.peer_forward_headers(headers)
             try:
-                self.maybe_evict_heavy_judge_for_interactive_load(
-                    base,
-                    requested_model=model,
-                    is_peer=is_peer,
-                )
                 status, response_headers, response_body = self.request_upstream(
                     base,
                     "/api/chat",
@@ -6625,7 +8019,7 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             last = (status, response_headers, response_body)
             last_base = base
-            if status == 503 or status >= 500:
+            if self.candidate_is_retryable(status, response_body):
                 continue
             if status < 200 or status >= 300:
                 self.send_upstream(
@@ -6717,10 +8111,10 @@ class Handler(BaseHTTPRequestHandler):
                 {"ok": False, "error": "invalid_json", "detail": str(exc)},
             )
             return
+        payload, changed = normalize_chat_payload_for_local_qwen(payload)
         model = str(payload.get("model") or "").strip()
         if model:
             self._model_hint = model
-        payload, changed = normalize_chat_payload_for_local_qwen(payload)
         if changed:
             body = json.dumps(payload).encode("utf-8")
         ds4_models = self.app.ds4_model_ids()
@@ -6759,13 +8153,14 @@ class Handler(BaseHTTPRequestHandler):
         peer_bases, peer_rows = self.peer_candidate_bases(model or None)
         candidates = bases + peer_bases
         if not candidates:
+            if model:
+                self.send_local_model_not_installed(model)
+                return
             self.send_json(
                 HTTPStatus.BAD_GATEWAY,
                 {
                     "ok": False,
-                    "error": "ollama_model_unavailable"
-                    if model
-                    else "ollama_unavailable",
+                    "error": "ollama_unavailable",
                     "model": model or None,
                     "candidates": self.app.public_candidate_rows(
                         "ollama", rows + peer_rows
@@ -6839,7 +8234,7 @@ class Handler(BaseHTTPRequestHandler):
         last: tuple[int, dict[str, str], bytes] | None = None
         attempted: list[str] = []
         last_base: str | None = None
-        for base in candidates:
+        for base in candidates[: self.app.transcribe_max_attempts]:
             key = self.app.transcribe_key(base)
             if not key:
                 continue
@@ -6858,6 +8253,9 @@ class Handler(BaseHTTPRequestHandler):
             last = result
             last_base = base
             if result[0] == 503 or result[0] >= 500:
+                trip_cooldown = getattr(self.app, "trip_asr_cooldown", None)
+                if callable(trip_cooldown):
+                    trip_cooldown(result[0])
                 continue
             self.send_upstream(
                 result[0],
@@ -6870,7 +8268,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         peer_bases, peer_rows = self.peer_candidate_bases()
-        if peer_bases:
+        if peer_bases and self.app.transcribe_allow_peer_failover:
             self.forward_candidates(
                 peer_bases,
                 "/transcribe",
@@ -7097,6 +8495,7 @@ class Handler(BaseHTTPRequestHandler):
             "/v1/catalog",
             "/v1/capabilities",
             "/v1/warm-policy",
+            "/v1/escalation/shadow",
             "/v1/activity",
             "/v1/prefetch/status",
             "/api/version",
@@ -7120,6 +8519,7 @@ class Handler(BaseHTTPRequestHandler):
             "/rerank",
             "/v1/safety/classify",
             "/safety/classify",
+            "/v1/escalation/shadow",
         }:
             return ["POST", "OPTIONS"]
         if path.startswith("/media/"):
@@ -7142,6 +8542,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/readyz":
             payload = self.app.readyz()
+            self.send_json(
+                HTTPStatus.OK
+                if bool(payload.get("ready"))
+                else HTTPStatus.SERVICE_UNAVAILABLE,
+                payload,
+            )
+            return
+        if parsed.path == "/asr-readyz":
+            payload = self.app.asr_readyz()
             self.send_json(
                 HTTPStatus.OK
                 if bool(payload.get("ready"))
@@ -7452,8 +8861,9 @@ class Handler(BaseHTTPRequestHandler):
                 "X-Norllama-Async-Supported": "true"
                 if parsed.path in {"/v1/prefetch", "/v1/prefetch/status"}
                 else "false",
-                "X-Norllama-Priority-Mode": "hint_only",
+                "X-Norllama-Priority-Mode": "foreground_first",
                 "X-Norllama-Priority-Levels": ",".join(sorted(PRIORITY_LEVELS)),
+                "X-Norllama-Background-Mode": "best_effort",
             },
         )
 
@@ -7549,7 +8959,50 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self.begin_request()
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path in {"/transcribe", "/v1/audio/transcriptions"}:
+            self.handle_asr_post(parsed.path)
+            return
         body = self.read_body()
+        if parsed.path == "/v1/escalation/shadow":
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+            except Exception as exc:
+                self.send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "invalid_json", "detail": str(exc)},
+                )
+                return
+            if not isinstance(payload, dict):
+                self.send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "payload_must_be_object"},
+                )
+                return
+            loaded = load_route_policy_artifact(allow_missing_default=False)
+            artifact = loaded.get("artifact") if isinstance(loaded, dict) else {}
+            controller = (
+                artifact.get("escalation_controller")
+                if isinstance(artifact, dict)
+                else {}
+            )
+            identity = active_route_policy_identity(allow_missing_default=False)
+            decision = build_shadow_escalation_decision(
+                payload,
+                policy_id=str(identity.get("policy_id") or ""),
+                policy_hash=str(identity.get("policy_hash") or ""),
+                controller=controller if isinstance(controller, dict) else None,
+            )
+            self.merge_activity_extra(
+                {
+                    "mode": "resident_escalation_shadow",
+                    "proposed_role": str(decision.get("proposed_role") or ""),
+                    "proposed_model": str(decision.get("proposed_model") or ""),
+                    "proposed_tier": str(decision.get("proposed_tier") or ""),
+                    "approval_required": bool(decision.get("approval_required")),
+                }
+            )
+            self.send_json(HTTPStatus.OK, decision)
+            return
         if parsed.path == "/v1/prefetch":
             if not self.enforce_policy_for_request(parsed.path, body):
                 return
@@ -7593,11 +9046,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.handle_ollama_compat_post(parsed.path, body)
             return
-        if parsed.path in {"/transcribe", "/v1/audio/transcriptions"}:
-            if not self.enforce_policy_for_request(parsed.path, body):
-                return
-            self.handle_unified_transcribe(body)
-            return
         if parsed.path.startswith("/media/"):
             self.handle_media(
                 parsed.path + (f"?{parsed.query}" if parsed.query else ""), body
@@ -7609,16 +9057,17 @@ class Handler(BaseHTTPRequestHandler):
             )
             model = self.extract_ollama_model(body)
             bases, rows = self.app.ollama_candidate_bases(model)
-            peer_bases, peer_rows = self.peer_candidate_bases()
+            peer_bases, peer_rows = self.peer_candidate_bases(model)
             candidates = bases + peer_bases
             if not candidates:
+                if model:
+                    self.send_local_model_not_installed(model)
+                    return
                 self.send_json(
                     HTTPStatus.BAD_GATEWAY,
                     {
                         "ok": False,
-                        "error": "ollama_model_unavailable"
-                        if model
-                        else "ollama_unavailable",
+                        "error": "ollama_unavailable",
                         "model": model,
                         "candidates": self.app.public_candidate_rows(
                             "ollama", rows + peer_rows

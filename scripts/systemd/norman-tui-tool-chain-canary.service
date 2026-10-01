@@ -1,0 +1,17 @@
+[Unit]
+Description=Run the synthetic Norman Responses tool-chain canary
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+EnvironmentFile=-/etc/norman/codex-route-proof.env
+Environment=NORMAN_TUI_TOOL_CHAIN_CANARY_ENDPOINT=https://cp.kris.openbrand.com/v1/responses
+Environment=NORMAN_TUI_TOOL_CHAIN_CANARY_TOKEN_SECRET=control-plane/prompt-proxy-token
+Environment=NORMAN_TUI_TOOL_CHAIN_CANARY_OUTPUT_JSON=/home/kristopher/.local/state/norman/tui-tool-chain-canary.json
+ExecStartPre=/usr/bin/mkdir -p /home/kristopher/.local/state/norman
+ExecStart=/usr/local/libexec/norman-tui-tool-chain-canary --stream
+TimeoutStartSec=3min
+PrivateTmp=true

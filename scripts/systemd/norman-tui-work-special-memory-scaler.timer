@@ -1,0 +1,12 @@
+[Unit]
+Description=Check work-special LXC live memory scaling every minute
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=1m
+AccuracySec=15s
+Persistent=true
+Unit=norman-tui-work-special-memory-scaler.service
+
+[Install]
+WantedBy=timers.target

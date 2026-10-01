@@ -1,3 +1,4 @@
+from app.core.estate_registry import resident_model
 from app.services.norllama.routing import (
     build_task_receipt,
     route_task,
@@ -47,6 +48,9 @@ def test_norllama_tool_task_routes_to_local_capability_lane(monkeypatch):
     assert route_receipt["selected_model"] == "BAAI/bge-reranker-v2-m3"
     assert route_receipt["target_model"] == "BAAI/bge-reranker-v2-m3"
     assert route_receipt["effective_runtime_model"] == "BAAI/bge-reranker-v2-m3"
+    outcome = route_receipt["fast_lane_outcome"]
+    assert outcome["schema"] == "norman.fast-lane-outcome.v1"
+    assert outcome["lane"]["kind"] == "local"
     assert route_receipt["frontdoor"] == "http://127.0.0.1:11434"
     assert route_receipt["cloud_proxy"] is False
     assert route_receipt["usage_bucket"] == "offline_local"
@@ -210,10 +214,11 @@ def test_norllama_catalog_model_selection_for_code_and_judge():
     judge_route = route_task(judge_request)
 
     assert code_route.capability == "code"
-    assert code_route.model == "qwen3.6:27b"
+    assert code_route.model == resident_model()
     assert code_route.tool_lane is False
     assert judge_route.capability == "judge"
-    assert judge_route.model == "qwen3.5:122b-a10b-q4_K_M"
+    assert judge_route.model == resident_model()
+    assert judge_route.model != "qwen3.5:122b-a10b-q4_K_M"
     assert judge_route.tool_lane is False
 
 
@@ -233,7 +238,7 @@ def test_norllama_catalog_model_selection_for_world_and_faster_whisper_asr():
     asr_route = route_task(asr_request)
 
     assert world_route.capability == "world"
-    assert world_route.model == "qwen3.6:35b-a3b-q4_K_M"
+    assert world_route.model == resident_model()
     assert world_route.tool_lane is True
     assert asr_route.capability == "asr"
     assert asr_route.model == "faster-whisper:distil-large-v3"
@@ -312,6 +317,19 @@ def test_norllama_warm_policy_overrides_explicit_model_with_proof(monkeypatch):
                 },
                 "promotion_authoritative": True,
             },
+            "lane_policy": {
+                "schema": "norman.norllama.lane-policy.v1",
+                "lane": "coder",
+                "allowed": True,
+                "route_mode": "local_draft_with_verifier",
+            },
+            "capacity_evidence": {
+                "schema": "norman.norllama.capacity-evidence.v1",
+                "state": "available",
+                "target_worker": "spark-151",
+                "p50_latency_ms": 640,
+                "p95_latency_ms": 900,
+            },
         },
     )
     request = NorllamaTaskRequest(
@@ -357,6 +375,10 @@ def test_norllama_warm_policy_overrides_explicit_model_with_proof(monkeypatch):
     assert receipt["promotion_authoritative"] is True
     assert receipt["benchmark_score"] == 0.95
     assert receipt["coverage_ratio"] == 1.0
+    assert receipt["lane_policy"]["lane"] == "coder"
+    assert receipt["capacity_evidence"]["target_worker"] == "spark-151"
+    assert receipt["expected_p50_latency_ms"] == 640
+    assert receipt["expected_p95_latency_ms"] == 900
 
 
 def test_norllama_tool_task_ignores_cloud_without_explicit_tool_proxy():
@@ -534,7 +556,7 @@ def test_norllama_response_attribution_maps_live_gateway_upstream(monkeypatch):
             "headers": {
                 "x-norllama-upstream": "http://192.168.2.150:18151",
                 "x-norllama-attempts": (
-                    "http://192.168.2.133:18151," "http://192.168.2.150:18151"
+                    "http://192.168.2.133:18151,http://192.168.2.150:18151"
                 ),
             }
         },
@@ -760,5 +782,5 @@ def test_norllama_response_attribution_preserves_target_worker_on_failover(
     )
     assert (
         "qwen_default_without_production_benchmark_gate"
-        in receipt["receipt_audit"]["failures"]
+        not in receipt["receipt_audit"]["failures"]
     )

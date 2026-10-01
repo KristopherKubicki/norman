@@ -5,9 +5,12 @@ import uuid
 import pytest
 
 from app import crud
+from app.core.command_policy import CommandDecision
 from app.schemas.user import UserCreate
-from app.services.console_runtime import ConsoleJobContract
+from app.services.console_runtime import ConsoleJobContract, ConsoleSubtaskContract
+from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
 from app.services.console_runtime.adapters.fake import FakeModelAdapter
+from app.services.console_runtime.adapters.shell import ShellResult
 from app.services.console_runtime.store import DbConsoleRuntimeStore
 from app.services.console_runtime.types import ModelResult, ModelUsage
 from app.services.console_runtime.worker import (
@@ -15,6 +18,7 @@ from app.services.console_runtime.worker import (
     DbConsoleRuntimeWorker,
     _structured_response_signal,
 )
+from app.services.console_runtime import worker as worker_module
 from app.services.norllama.route_policy import route_policy_contract
 
 
@@ -170,17 +174,29 @@ def test_db_console_runtime_worker_completes_one_dry_run_step(db):
     model_completed = next(
         event for event in events if event.event_type == "model.completed"
     )
+    route_decided = next(
+        event for event in events if event.event_type == "route.decided"
+    )
     tool_completed = next(
         event for event in events if event.event_type == "tool.completed"
     )
 
     plan = behavior.payload["reasoning_orchestration"]
+    work_classification = behavior.payload["work_classification"]
     assert plan["schema"] == "norman.reasoning-orchestrator.plan.v1"
     assert plan["plan_id"]
+    assert work_classification["work_class"] == "local_review"
+    assert plan["work_classification"] == work_classification
     assert result["reasoning_orchestration"]["plan_id"] == plan["plan_id"]
     assert model_requested.payload["reasoning_plan_id"] == plan["plan_id"]
     assert model_completed.payload["reasoning_plan_id"] == plan["plan_id"]
     assert tool_completed.payload["reasoning_plan_id"] == plan["plan_id"]
+    assert route_decided.payload["metadata"]["work_classification"] == (
+        work_classification
+    )
+    assert model_requested.payload["work_classification"] == work_classification
+    assert model_completed.payload["work_classification"] == work_classification
+    assert tool_completed.payload["work_classification"] == work_classification
     assert model_completed.payload["reasoning_receipt"]["schema"] == (
         "norman.reasoning-orchestrator.receipt.v1"
     )
@@ -478,8 +494,13 @@ def test_db_console_runtime_worker_normalizes_verifier_before_audit_and_gate(db)
     assert audit_event.payload["receipt_audit"]["pass"] is True
     assert model_event.payload["route_receipt"]["verifier_result"] == "pass"
     assert model_event.payload["route_receipt"]["receipt_audit"]["pass"] is True
+    audit_outcome = audit_event.payload["fast_lane_outcome"]
+    assert audit_outcome["schema"] == "norman.fast-lane-outcome.v1"
+    assert audit_outcome["lane"]["kind"] == "local"
+    assert model_event.payload["fast_lane_outcome"] == audit_outcome
     assert gate_event.payload["route_receipt"] == audit_event.payload["route_receipt"]
     assert gate_event.payload["receipt_audit"] == audit_event.payload["receipt_audit"]
+    assert gate_event.payload["fast_lane_outcome"] == audit_outcome
     assert gate_event.payload["completion_gate"]["gate_passed"] is True
 
 
@@ -822,6 +843,274 @@ def test_db_console_runtime_worker_runs_bounded_goal_loop(db):
     assert result["snapshot"]["route_summary"]["cloud_evidence_count"] == 0
 
 
+def test_db_console_runtime_worker_durable_verify_requires_exact_status_line(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-status-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Verify the durable workstream before completion",
+            durable_workstream=True,
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=["STATUS: COMPLETE - verification is finished."],
+        name="runtime-dry-run",
+        model="runtime-dry-run",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-status-test",
+            dry_run=True,
+            complete=True,
+            durable_workstream=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "verify"},
+        ),
+        adapter=adapter,
+    )
+
+    capsule = result["job"]["checkpoint_capsules"][-1]
+
+    assert result["job"]["status"] == "checkpointed"
+    assert result["verification_signal"] == ""
+    assert "Phase: verify" in capsule["facts"]
+    assert "Verifier state: pending" in capsule["facts"]
+    assert len(capsule["progress_fingerprint"]) == 64
+
+
+def test_db_console_runtime_worker_durable_verify_completes_with_proof(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-complete-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Verify the durable workstream before completion",
+            durable_workstream=True,
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=[_proof_model_result(job_id, "STATUS: COMPLETE\nVerified.")],
+        name="norllama",
+        model="qwen3:8b",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-complete-test",
+            dry_run=True,
+            complete=True,
+            durable_workstream=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "verify"},
+        ),
+        adapter=adapter,
+    )
+
+    assert result["job"]["status"] == "done"
+    assert result["verification_signal"] == "complete"
+    assert result["route_proof"]["gate_passed"] is True
+    assert result["job"]["verification_receipts"][-1]["status"] == "pass"
+
+
+def test_db_console_runtime_worker_durable_verify_checkpoints_needs_more_work(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-needs-work-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Verify the durable workstream before completion",
+            durable_workstream=True,
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=["STATUS: NEEDS_MORE_WORK\nAdd the missing evidence."],
+        name="runtime-dry-run",
+        model="runtime-dry-run",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-needs-work-test",
+            dry_run=True,
+            complete=True,
+            durable_workstream=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "verify"},
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+
+    assert result["job"]["status"] == "checkpointed"
+    assert result["verification_signal"] == "needs_more_work"
+    assert any(event.event_type == "verification.needs_more_work" for event in events)
+
+
+def test_db_console_runtime_worker_durable_pauses_on_repeated_output(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-no-progress-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Continue the substantive work until it is verified",
+            durable_workstream=True,
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=[
+            "No change from the prior work step.",
+            "No change from the prior work step.",
+        ],
+        name="runtime-dry-run",
+        model="runtime-dry-run",
+    )
+
+    result = worker.run_continuous(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-no-progress-test",
+            dry_run=True,
+            continuous=True,
+            durable_workstream=True,
+            max_steps=2,
+            goal_phase_sequence=["work"],
+            include_capabilities=False,
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    no_progress = next(
+        event for event in events if event.event_type == "goal.no_progress"
+    )
+
+    assert result["job"]["status"] == "checkpointed"
+    assert result["steps_completed"] == 2
+    assert result["stop_reason"] == "no_progress"
+    assert no_progress.payload["reason"] == "repeated_model_output"
+
+
+def test_db_console_runtime_worker_durable_pauses_on_repeated_verifier_deferral(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-repeated-deferral-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Keep working through verifier feedback",
+            durable_workstream=True,
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=[
+            "Plan the remaining work.",
+            "Collect the first evidence.",
+            "STATUS: NEEDS_MORE_WORK\nA validation is still missing.",
+            "Collect the additional evidence.",
+            "STATUS: NEEDS_MORE_WORK\nA validation is still missing.",
+        ],
+        name="runtime-dry-run",
+        model="runtime-dry-run",
+    )
+
+    result = worker.run_continuous(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-repeated-deferral-test",
+            dry_run=True,
+            continuous=True,
+            durable_workstream=True,
+            max_steps=5,
+            goal_phase_sequence=["plan", "work", "verify"],
+            include_capabilities=False,
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    no_progress = next(
+        event for event in events if event.event_type == "goal.no_progress"
+    )
+
+    assert result["job"]["status"] == "checkpointed"
+    assert result["steps_completed"] == 5
+    assert result["stop_reason"] == "no_progress"
+    assert no_progress.payload["reason"] == "repeated_needs_more_work"
+
+
+def test_db_console_runtime_worker_honors_durable_authority_flag(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-authority-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Do not complete without durable verifier evidence",
+            authority_flags={"durable_workstream": True},
+            route_policy={"provider": "norllama"},
+        ),
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-authority-test",
+            dry_run=True,
+            complete=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "work"},
+        ),
+    )
+
+    assert result["durable_workstream"] is True
+    assert result["job"]["status"] == "checkpointed"
+
+
 def test_db_console_runtime_worker_runs_literal_response_phase_as_chat(db):
     user = _ensure_user(db)
     store = DbConsoleRuntimeStore()
@@ -969,10 +1258,7 @@ def test_db_console_runtime_worker_structured_requirements_override_complete_sig
     )
     adapter = FakeModelAdapter(
         responses=[
-            (
-                "STATUS: COMPLETE\n\n"
-                '{"unhealthy_service":"billing","evidence":"timeout"}'
-            )
+            ('STATUS: COMPLETE\n\n{"unhealthy_service":"billing","evidence":"timeout"}')
         ],
         name="runtime-dry-run",
         model="runtime-dry-run",
@@ -1066,7 +1352,7 @@ def test_db_console_runtime_worker_structured_verify_reuses_valid_prior_candidat
     job_id = f"job-worker-structured-prior-{uuid.uuid4().hex}"
     nonce = "prior-json-nonce"
     candidate = (
-        '{"unhealthy_service":"billing","evidence":"timeout",' f'"nonce":"{nonce}"}}'
+        f'{{"unhealthy_service":"billing","evidence":"timeout","nonce":"{nonce}"}}'
     )
     store.create_job(
         db,
@@ -1297,6 +1583,56 @@ def test_db_console_runtime_worker_requires_approval_before_live_execution(db):
     assert "model.requested" not in event_types
 
 
+def test_db_console_runtime_worker_exits_canceled_job_before_model_invocation(db):
+    class UnexpectedAdapter:
+        name = "unexpected"
+
+        @property
+        def capabilities(self):
+            return FakeModelAdapter().capabilities
+
+        def invoke(self, request):
+            raise AssertionError("canceled jobs must not invoke a model adapter")
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-canceled-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(objective="Do not invoke after cancellation"),
+    )
+    store.request_cancel_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        reason="Operator canceled before execution",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+        adapter=UnexpectedAdapter(),
+    )
+
+    assert result["canceled"] is True
+    assert result["job"]["status"] == "canceled"
+    assert result["model_result"] is None
+    event_types = [
+        event.event_type
+        for event in store.events_after(db, user_id=user.id, job_id=job_id)
+    ]
+    assert "model.requested" not in event_types
+
+
 def test_db_console_runtime_worker_allows_explicitly_approved_live_execution(db):
     user = _ensure_user(db)
     store = DbConsoleRuntimeStore()
@@ -1328,6 +1664,313 @@ def test_db_console_runtime_worker_allows_explicitly_approved_live_execution(db)
     assert result["job"]["status"] == "done"
     assert result["model_result"]["provider"] == "norllama"
     assert adapter.invocations
+
+
+def test_db_console_runtime_worker_uses_native_bedrock_for_explicit_cloud_route(
+    db, monkeypatch
+):
+    class FakeBedrockClient:
+        def __init__(self):
+            self.calls = []
+
+        def converse(self, **kwargs):
+            self.calls.append(kwargs)
+            return {
+                "stopReason": "end_turn",
+                "usage": {
+                    "inputTokens": 7,
+                    "outputTokens": 5,
+                    "totalTokens": 12,
+                },
+                "output": {
+                    "message": {
+                        "content": [{"text": "Native Bedrock route completed."}]
+                    }
+                },
+            }
+
+    client = FakeBedrockClient()
+    adapter = BedrockModelAdapter(client_factory=lambda **kwargs: client)
+    monkeypatch.setattr(worker_module, "BedrockModelAdapter", lambda: adapter)
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-bedrock-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Produce a release plan through the explicit cloud route.",
+            route_policy={
+                "provider": "bedrock",
+                "model": "anthropic.claude-test",
+                "allow_cloud_proxy": True,
+                "aws_region": "us-east-2",
+                "aws_profile": "norman-bedrock",
+            },
+        ),
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            complete=False,
+            live_execution_approved=True,
+            cloud_token_budget=4096,
+        ),
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    model_event = next(
+        event for event in events if event.event_type == "model.completed"
+    )
+    route_event = next(event for event in events if event.event_type == "route.decided")
+
+    assert client.calls
+    assert result["model_result"]["provider"] == "bedrock"
+    assert result["model_result"]["usage"]["total_tokens"] == 12
+    assert route_event.payload["selected_provider"] == "bedrock"
+    assert route_event.payload["selected_runner"] == "bedrock"
+    assert model_event.payload["provider"] == "bedrock"
+    assert model_event.payload["route"]["provider"] == "bedrock"
+    assert model_event.payload["route_receipt"]["usage_bucket"] == "bedrock_amazon"
+    assert model_event.payload["route_receipt"]["total_tokens"] == 12
+
+
+@pytest.mark.parametrize(
+    ("cloud_token_budget", "reason"),
+    [
+        (0, "cloud_token_budget_zero"),
+        (1, "cloud_token_budget_below_input_reserve"),
+    ],
+)
+def test_db_console_runtime_worker_blocks_cloud_route_without_budget(
+    db, monkeypatch, cloud_token_budget, reason
+):
+    class UnexpectedBedrockAdapter:
+        name = "bedrock"
+
+        def __init__(self):
+            self.invocations = 0
+
+        def invoke(self, request):
+            self.invocations += 1
+            raise AssertionError("cloud adapter must not run without a budget")
+
+    adapter = UnexpectedBedrockAdapter()
+    monkeypatch.setattr(worker_module, "BedrockModelAdapter", lambda: adapter)
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-cloud-budget-{cloud_token_budget}-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Do not spend cloud tokens without an explicit budget.",
+            route_policy={
+                "provider": "bedrock",
+                "model": "anthropic.claude-test",
+                "allow_cloud_proxy": True,
+            },
+        ),
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            complete=False,
+            include_capabilities=False,
+            live_execution_approved=True,
+            cloud_token_budget=cloud_token_budget,
+        ),
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    event_types = [event.event_type for event in events]
+    budget_event = next(
+        event for event in events if event.event_type == "policy.cloud_budget_blocked"
+    )
+
+    assert adapter.invocations == 0
+    assert result["job"]["status"] == "blocked"
+    assert result["route_blocked"] is True
+    assert result["cloud_budget"]["reason"] == reason
+    assert (
+        budget_event.payload["cloud_budget"]["configured_total_tokens"]
+        == cloud_token_budget
+    )
+    assert "model.requested" not in event_types
+
+
+def test_db_console_runtime_worker_reserves_cloud_input_before_invocation(
+    db, monkeypatch
+):
+    class FakeBedrockAdapter:
+        name = "bedrock"
+
+        def __init__(self):
+            self.requests = []
+
+        def invoke(self, request):
+            self.requests.append(request)
+            return ModelResult(
+                provider="bedrock",
+                model=request.model,
+                text="bounded",
+                usage=ModelUsage(input_tokens=1, output_tokens=1),
+                metadata={
+                    "norllama_route": {
+                        "provider": "bedrock",
+                        "local": False,
+                        "cloud_proxy": True,
+                    },
+                    "norllama_receipt": {
+                        "route_receipt": {
+                            "selected_provider": "bedrock",
+                            "selected_model": request.model,
+                            "usage_bucket": "bedrock_amazon",
+                            "cloud_proxy": True,
+                        }
+                    },
+                },
+            )
+
+    adapter = FakeBedrockAdapter()
+    monkeypatch.setattr(worker_module, "BedrockModelAdapter", lambda: adapter)
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-cloud-budget-cap-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Bound this native Bedrock response.",
+            route_policy={
+                "provider": "bedrock",
+                "model": "anthropic.claude-test",
+                "allow_cloud_proxy": True,
+            },
+        ),
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            complete=False,
+            include_capabilities=False,
+            live_execution_approved=True,
+            cloud_token_budget=2048,
+            max_output_tokens=4096,
+        ),
+    )
+
+    assert result["job"]["status"] == "checkpointed"
+    assert adapter.requests
+    budget = adapter.requests[0].metadata["cloud_budget"]
+    assert budget["blocked"] is False
+    assert budget["input_reserve_tokens"] > 0
+    assert adapter.requests[0].budget.max_output_tokens == budget["max_output_tokens"]
+    assert adapter.requests[0].budget.max_output_tokens < 4096
+
+
+def test_db_console_runtime_worker_fails_native_bedrock_without_fallback(
+    db, monkeypatch
+):
+    class FailingBedrockAdapter:
+        name = "bedrock"
+
+        def __init__(self):
+            self.invocations = 0
+
+        def invoke(self, request):
+            self.invocations += 1
+            raise RuntimeError("Bedrock Converse AccessDeniedException")
+
+    adapter = FailingBedrockAdapter()
+    monkeypatch.setattr(worker_module, "BedrockModelAdapter", lambda: adapter)
+
+    def unexpected_norllama_fallback():
+        raise AssertionError("native Bedrock failure must not select Norllama")
+
+    monkeypatch.setattr(
+        worker_module,
+        "NorllamaModelAdapter",
+        unexpected_norllama_fallback,
+    )
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-bedrock-failure-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Exercise native Bedrock terminal failure handling.",
+            route_policy={
+                "provider": "bedrock",
+                "model": "anthropic.claude-test",
+                "allow_cloud_proxy": True,
+            },
+        ),
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            complete=False,
+            include_capabilities=False,
+            live_execution_approved=True,
+            cloud_token_budget=4096,
+        ),
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    event_types = [event.event_type for event in events]
+    failed_event = next(event for event in events if event.event_type == "model.failed")
+    requested_events = [
+        event for event in events if event.event_type == "model.requested"
+    ]
+
+    assert adapter.invocations == 1
+    assert result["job"]["status"] == "failed"
+    assert result["model_failed"] is True
+    assert result["failure_class"] == "model_adapter_failed"
+    assert "AccessDeniedException" in result["error"]
+    assert event_types[-3:] == ["model.failed", "tool.failed", "job.failed"]
+    assert len(requested_events) == 1
+    assert requested_events[0].payload["provider"] == "bedrock"
+    assert failed_event.payload["provider"] == "bedrock"
+    assert failed_event.payload["route"]["provider"] == "bedrock"
+    assert failed_event.payload["route_receipt"]["status"] == "failed"
+    assert failed_event.payload["route_receipt"]["selected_provider"] == "bedrock"
+    assert failed_event.payload["route_receipt"]["cloud_proxy"] is True
+    assert "model.completed" not in event_types
+    assert result["route_receipt"]["status"] == "failed"
 
 
 def test_db_console_runtime_worker_blocks_cloud_route_when_cloud_llms_disabled(db):
@@ -1409,6 +2052,68 @@ def test_db_console_runtime_worker_runs_read_only_shell_step(db):
     assert "shell.started" in event_types
     assert "shell.completed" in event_types
     assert "model.requested" not in event_types
+
+
+def test_db_console_runtime_worker_holds_delegated_read_only_shell_subtask(
+    db, monkeypatch
+):
+    class UnexpectedShellAdapter:
+        def __init__(self):
+            raise AssertionError("delegated read-only subtasks must not run shell")
+
+    monkeypatch.setattr(
+        worker_module,
+        "ShellRuntimeAdapter",
+        UnexpectedShellAdapter,
+    )
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    coordinator = store.create_job(
+        db,
+        user_id=user.id,
+        job_id=f"job-worker-coordinator-{uuid.uuid4().hex}",
+        contract=ConsoleJobContract(objective="Coordinate a guarded shell subtask"),
+    )
+    workstream = store.create_workstream(
+        db,
+        user_id=user.id,
+        coordinator_job_id=coordinator.job_id,
+        title="Worker shell safety test",
+    )
+    child = store.delegate_subtasks(
+        db,
+        user_id=user.id,
+        workstream_id=workstream.workstream_id,
+        subtasks=[
+            ConsoleSubtaskContract(
+                job_id=f"job-worker-read-only-shell-{uuid.uuid4().hex}",
+                objective="Inspect the workspace without changing it",
+                route_policy={"runtime": "shell", "command": "pwd"},
+                write_mode="read_only",
+            )
+        ],
+    )[0]
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=child.job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["approval_required"] is True
+    assert result["job"]["status"] == "waiting_approval"
+    assert "Delegated read-only subtasks" in result["approval_reason"]
+    event_types = [
+        event.event_type
+        for event in store.events_after(db, user_id=user.id, job_id=child.job_id)
+    ]
+    assert "shell.started" not in event_types
 
 
 def test_db_console_runtime_worker_blocks_shell_step_in_control_only_mode(db):
@@ -1598,3 +2303,396 @@ def test_db_console_runtime_worker_holds_preflight_mutating_command_for_approval
     assert result["last_result"]["approval_required"] is True
     assert "mutating command" in result["last_result"]["approval_reason"]
     assert "shell.started" not in event_types
+
+
+def test_db_console_runtime_worker_reconciles_model_effect_before_cancellation(
+    db, monkeypatch
+):
+    class UnexpectedModelAdapter:
+        name = "unexpected-model"
+
+        def invoke(self, request):
+            raise AssertionError("canceled model effect must not be invoked")
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-model-cancel-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Cancel immediately before model invocation",
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    original_begin_effect = store.begin_effect
+    effect_keys: list[str] = []
+
+    def reserve_then_cancel(*args, **kwargs):
+        effect, should_invoke = original_begin_effect(*args, **kwargs)
+        if should_invoke and kwargs["kind"] == "model.invoke":
+            effect_keys.append(kwargs["effect_key"])
+            store.request_cancel_job(
+                db,
+                user_id=user.id,
+                job_id=job_id,
+                reason="operator canceled model effect",
+            )
+        return effect, should_invoke
+
+    monkeypatch.setattr(store, "begin_effect", reserve_then_cancel)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-effect-cancel",
+            dry_run=True,
+            include_capabilities=False,
+        ),
+        adapter=UnexpectedModelAdapter(),
+    )
+
+    assert result["canceled"] is True
+    assert result["job"]["status"] == "canceled"
+    assert len(effect_keys) == 1
+    effect = store.get_effect(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        effect_key=effect_keys[0],
+    )
+    assert effect is not None
+    assert effect.state == "failed"
+    assert effect.receipt["error"] == "Cancellation requested before model invocation"
+
+
+def test_db_console_runtime_worker_reconciles_shell_effect_before_cancellation(
+    db, monkeypatch
+):
+    class UnexpectedShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            raise AssertionError("canceled shell effect must not be invoked")
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-shell-cancel-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Cancel immediately before shell invocation",
+            route_policy={"runtime": "shell", "command": "pwd"},
+        ),
+    )
+    original_begin_effect = store.begin_effect
+    effect_keys: list[str] = []
+
+    def reserve_then_cancel(*args, **kwargs):
+        effect, should_run = original_begin_effect(*args, **kwargs)
+        if should_run and kwargs["kind"] == "shell.run":
+            effect_keys.append(kwargs["effect_key"])
+            store.request_cancel_job(
+                db,
+                user_id=user.id,
+                job_id=job_id,
+                reason="operator canceled shell effect",
+            )
+        return effect, should_run
+
+    monkeypatch.setattr(store, "begin_effect", reserve_then_cancel)
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", UnexpectedShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-effect-cancel",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["canceled"] is True
+    assert result["job"]["status"] == "canceled"
+    assert len(effect_keys) == 1
+    effect = store.get_effect(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        effect_key=effect_keys[0],
+    )
+    assert effect is not None
+    assert effect.state == "failed"
+    assert effect.receipt["error"] == "Cancellation requested before shell invocation"
+
+
+def test_db_console_runtime_worker_marks_timed_out_shell_effect_unknown(
+    db, monkeypatch
+):
+    class TimedOutShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            return ShellResult(
+                command=request.command,
+                returncode=124,
+                stderr="command timed out",
+                policy={"decision": "allow"},
+                timed_out=True,
+            )
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-shell-timeout-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Run a shell command that times out",
+            route_policy={"runtime": "shell", "command": "pwd"},
+        ),
+    )
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", TimedOutShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-timeout",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["job"]["status"] == "failed"
+    assert result["failure_class"] == "partial_effect"
+    assert result["effect"]["state"] == "unknown"
+    assert result["job"]["metadata"]["last_retry_class"] == "partial_effect"
+
+
+def test_db_console_runtime_worker_records_nonzero_shell_effect_before_failure(
+    db, monkeypatch
+):
+    class NonzeroShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            return ShellResult(
+                command=request.command,
+                returncode=7,
+                stderr="expected test failure",
+                policy={"decision": "allow"},
+            )
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-shell-nonzero-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Run a shell command that exits nonzero",
+            route_policy={"runtime": "shell", "command": "pwd"},
+        ),
+    )
+    original_begin_effect = store.begin_effect
+    effect_keys: list[str] = []
+
+    def capture_effect_key(*args, **kwargs):
+        effect, should_run = original_begin_effect(*args, **kwargs)
+        if should_run and kwargs["kind"] == "shell.run":
+            effect_keys.append(kwargs["effect_key"])
+        return effect, should_run
+
+    monkeypatch.setattr(store, "begin_effect", capture_effect_key)
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", NonzeroShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-nonzero",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["job"]["status"] == "failed"
+    assert result["job"]["metadata"]["last_retry_class"] == "partial_effect"
+    assert len(effect_keys) == 1
+    effect = store.get_effect(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        effect_key=effect_keys[0],
+    )
+    assert effect is not None
+    assert effect.state == "completed"
+    assert effect.receipt["returncode"] == 7
+
+
+def test_db_console_runtime_worker_checkpoints_shell_for_required_verification(
+    db, monkeypatch
+):
+    class SuccessfulShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            return ShellResult(
+                command=request.command,
+                returncode=0,
+                stdout="workspace",
+                policy={"decision": "allow"},
+            )
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-shell-verification-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Run a verified shell command",
+            route_policy={
+                "runtime": "shell",
+                "command": "pwd",
+                "require_verification_receipt": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", SuccessfulShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-verification",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["job"]["status"] == "checkpointed"
+    assert "pending verification receipt" in result["job"]["checkpoints"][-1]
+    assert result["job"]["verification_receipts"] == []
+
+
+def test_db_console_runtime_worker_checkpoints_durable_shell_workstream(
+    db, monkeypatch
+):
+    class SuccessfulShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            return ShellResult(
+                command=request.command,
+                returncode=0,
+                stdout="workspace",
+                policy={"decision": "allow"},
+            )
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-shell-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Inspect the working directory as durable work",
+            durable_workstream=True,
+            route_policy={"runtime": "shell", "command": "pwd"},
+        ),
+    )
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", SuccessfulShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-shell",
+            dry_run=False,
+            live_execution_approved=True,
+            durable_workstream=True,
+        ),
+    )
+
+    assert result["durable_workstream"] is True
+    assert result["job"]["status"] == "checkpointed"
+    assert "pending explicit verifier completion" in result["job"]["checkpoints"][-1]
+    assert result["job"]["verification_receipts"] == []
+
+
+def test_db_console_runtime_worker_checkpoints_duplicate_shell_reservation(
+    db, monkeypatch
+):
+    class UnexpectedShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            raise AssertionError("duplicate shell reservation must not be invoked")
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-shell-duplicate-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Reconcile an existing shell reservation",
+            route_policy={"runtime": "shell", "command": "pwd"},
+        ),
+    )
+    original_begin_effect = store.begin_effect
+
+    def reserve_duplicate_effect(*args, **kwargs):
+        original_begin_effect(*args, **kwargs)
+        return original_begin_effect(*args, **kwargs)
+
+    monkeypatch.setattr(store, "begin_effect", reserve_duplicate_effect)
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", UnexpectedShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-duplicate",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["effect_reconciliation_required"] is True
+    assert result["job"]["status"] == "checkpointed"
+    assert result["effect"]["state"] == "started"
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    assert "effect.reconciliation_required" in {event.event_type for event in events}

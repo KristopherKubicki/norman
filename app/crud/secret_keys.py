@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -116,7 +116,7 @@ def decide_request(
     approval_reason: str = "",
 ) -> SecretRequest:
     request.status = status
-    request.decided_at = datetime.utcnow()
+    request.decided_at = datetime.now(UTC)
     request.decided_by = decided_by
     if approval_reason:
         request.approval_reason = approval_reason
@@ -187,8 +187,8 @@ def update_lease(
         lease.status = status
     if revoked_by is not None:
         lease.revoked_by = revoked_by
-        lease.revoked_at = datetime.utcnow()
-    lease.last_used_at = datetime.utcnow()
+        lease.revoked_at = datetime.now(UTC)
+    lease.last_used_at = datetime.now(UTC)
     db.commit()
     db.refresh(lease)
     return lease
@@ -290,7 +290,7 @@ def list_stash_items(
         q = q.filter(
             SecretStashItem.status == "active",
             SecretStashItem.revoked_at.is_(None),
-            SecretStashItem.expires_at > datetime.utcnow(),
+            SecretStashItem.expires_at > datetime.now(UTC),
         )
     return q.order_by(SecretStashItem.id.desc()).limit(limit).all()
 
@@ -299,9 +299,161 @@ def revoke_stash_item(
     db: Session, *, item: SecretStashItem, revoked_by: int
 ) -> SecretStashItem:
     item.status = "revoked"
-    item.revoked_at = datetime.utcnow()
+    item.revoked_at = datetime.now(UTC)
     item.revoked_by = revoked_by
-    item.last_used_at = datetime.utcnow()
+    item.last_used_at = datetime.now(UTC)
     db.commit()
     db.refresh(item)
     return item
+
+
+# Capability delivery records intentionally live beside the older secret CRUD,
+# but never resolve a provider or store secret values.
+def get_host_enrollment(db: Session, *, host_id: str):
+    from app.models import KeysHostEnrollment
+
+    return (
+        db.query(KeysHostEnrollment)
+        .filter(KeysHostEnrollment.host_id == host_id)
+        .first()
+    )
+
+
+def list_host_enrollments(db: Session):
+    from app.models import KeysHostEnrollment
+
+    return db.query(KeysHostEnrollment).order_by(KeysHostEnrollment.host_id.asc()).all()
+
+
+def create_host_enrollment(db: Session, **values):
+    from app.models import KeysHostEnrollment
+
+    obj = KeysHostEnrollment(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def get_capability(db: Session, *, name: str, active_only: bool = True):
+    from app.models import KeysCapability
+
+    query = db.query(KeysCapability).filter(KeysCapability.name == name)
+    if active_only:
+        query = query.filter(KeysCapability.enabled.is_(True))
+    return query.first()
+
+
+def list_capabilities(db: Session, *, active_only: bool = False):
+    from app.models import KeysCapability
+
+    query = db.query(KeysCapability)
+    if active_only:
+        query = query.filter(KeysCapability.enabled.is_(True))
+    return query.order_by(KeysCapability.name.asc()).all()
+
+
+def create_capability(db: Session, **values):
+    from app.models import KeysCapability
+
+    obj = KeysCapability(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def get_capability_policy(db: Session, *, name: str):
+    from app.models import KeysCapabilityPolicy
+
+    return (
+        db.query(KeysCapabilityPolicy).filter(KeysCapabilityPolicy.name == name).first()
+    )
+
+
+def list_capability_policies(db: Session, *, active_only: bool = False):
+    from app.models import KeysCapabilityPolicy
+
+    query = db.query(KeysCapabilityPolicy)
+    if active_only:
+        query = query.filter(KeysCapabilityPolicy.enabled.is_(True))
+    return query.order_by(KeysCapabilityPolicy.id.asc()).all()
+
+
+def create_capability_policy(db: Session, **values):
+    from app.models import KeysCapabilityPolicy
+
+    obj = KeysCapabilityPolicy(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def create_capability_request(db: Session, **values):
+    from app.models import KeysCapabilityRequest
+
+    obj = KeysCapabilityRequest(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def get_capability_request(db: Session, *, request_id: int):
+    from app.models import KeysCapabilityRequest
+
+    return (
+        db.query(KeysCapabilityRequest)
+        .filter(KeysCapabilityRequest.id == request_id)
+        .first()
+    )
+
+
+def create_capability_lease(db: Session, **values):
+    from app.models import KeysCapabilityLease
+
+    obj = KeysCapabilityLease(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def get_capability_lease(db: Session, *, lease_uuid: str):
+    from app.models import KeysCapabilityLease
+
+    return (
+        db.query(KeysCapabilityLease)
+        .filter(KeysCapabilityLease.lease_uuid == lease_uuid)
+        .first()
+    )
+
+
+def update_capability_lease(db: Session, *, lease, **values):
+    for key, value in values.items():
+        setattr(lease, key, value)
+    db.commit()
+    db.refresh(lease)
+    return lease
+
+
+def create_capability_audit_event(db: Session, **values):
+    from app.models import KeysCapabilityAuditEvent
+
+    obj = KeysCapabilityAuditEvent(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def list_capability_audit_events(db: Session, *, limit: int = 100):
+    from app.models import KeysCapabilityAuditEvent
+
+    return (
+        db.query(KeysCapabilityAuditEvent)
+        .order_by(KeysCapabilityAuditEvent.id.desc())
+        .limit(limit)
+        .all()
+    )

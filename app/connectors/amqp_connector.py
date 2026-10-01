@@ -62,12 +62,16 @@ class AMQPConnector(BaseConnector):
         assert self._channel is not None
 
         loop = asyncio.get_running_loop()
+        pending_tasks: set[asyncio.Task[object]] = set()
+
+        def _process(message: str) -> None:
+            task = loop.create_task(self.process_incoming(message))
+            pending_tasks.add(task)
+            task.add_done_callback(pending_tasks.discard)
 
         def _callback(ch, method, properties, body):  # pragma: no cover - thread
             message = body.decode("utf-8", errors="replace")
-            loop.call_soon_threadsafe(
-                asyncio.create_task, self.process_incoming(message)
-            )
+            loop.call_soon_threadsafe(_process, message)
 
         self._channel.basic_consume(
             queue=self.queue,
@@ -77,6 +81,10 @@ class AMQPConnector(BaseConnector):
 
         try:
             await loop.run_in_executor(None, self._channel.start_consuming)
+            # Let callbacks queued by the consumer thread create their tasks.
+            await asyncio.sleep(0)
+            if pending_tasks:
+                await asyncio.gather(*pending_tasks)
         finally:
             with contextlib.suppress(Exception):
                 self._channel.stop_consuming()

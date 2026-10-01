@@ -193,8 +193,7 @@ def test_import_redacts_secret_values_before_search_and_vector_index(
                     f"{bearer_value} and NETWORK_API_TOKEN={env_value}."
                 ),
                 "response": (
-                    f"Do not store {aws_value} or "
-                    f"aws_secret_access_key={access_value}."
+                    f"Do not store {aws_value} or aws_secret_access_key={access_value}."
                 ),
                 "usage": {"total_tokens": 100},
             }
@@ -455,6 +454,50 @@ def test_memory_vector_rebuild_and_search(tmp_path: Path, monkeypatch) -> None:
     assert hybrid["mode"] == "hybrid"
     assert hybrid["vector"]["rows"]
     assert stats["memory_vector"]["indexed_turns"] == 2
+
+
+def test_memory_vector_incremental_indexing_tracks_pending_turns(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_memory_tool(monkeypatch)
+    db = tmp_path / "tui_state.sqlite3"
+    history = tmp_path / "history.jsonl"
+    _write_jsonl(
+        history,
+        [
+            {
+                "thread_id": "thread-incremental-a",
+                "started_at": 1_780_000_000,
+                "prompt": "Find the first archive handoff.",
+                "response": "First handoff evidence is available.",
+            },
+            {
+                "thread_id": "thread-incremental-b",
+                "started_at": 1_780_000_100,
+                "prompt": "Find the second archive handoff.",
+                "response": "Second handoff evidence is available.",
+            },
+        ],
+    )
+
+    with module.connect(db) as conn:
+        module.import_history_files(conn, [history])
+        first = module.incremental_memory_vectors(conn, limit=1)
+        middle_stats = module.stats(conn)
+        second = module.incremental_memory_vectors(conn, limit=8)
+        final_stats = module.stats(conn)
+        result = module.vector_search(conn, query="second archive handoff", limit=1)
+
+    assert first["turns_indexed"] == 1
+    assert first["pending_turns_before"] == 2
+    assert first["pending_turns_after"] == 1
+    assert middle_stats["memory_vector"]["tracked_turns"] == 1
+    assert middle_stats["memory_vector"]["pending_turns"] == 1
+    assert second["turns_indexed"] == 1
+    assert second["pending_turns_after"] == 0
+    assert final_stats["memory_vector"]["tracked_turns"] == 2
+    assert final_stats["memory_vector"]["pending_turns"] == 0
+    assert result["rows"][0]["thread_id"] == "thread-incremental-b"
 
 
 def test_memory_vector_synthetic_runtime_stays_bounded(

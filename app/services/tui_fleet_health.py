@@ -14,6 +14,15 @@ DEFAULT_HEALTH_PATH = Path(
     )
 )
 DEFAULT_STALE_AFTER_SECONDS = 15 * 60
+APPROVED_PUBLIC_STATUS_COMPONENTS = (
+    "Platform Access",
+    "Dashboards",
+    "Data API",
+    "Pricing & Availability Data",
+    "Product Content Data",
+    "Scheduled Reports",
+    "File Deliveries",
+)
 
 
 def tui_fleet_health_path() -> Path:
@@ -66,6 +75,73 @@ def _coerce_nonnegative_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def public_status_eligibility(
+    *,
+    verified_customer_impact: bool,
+    component: Any = None,
+) -> dict[str, Any]:
+    """Return the only allowed publication path for workflow health."""
+    clean_component = str(component or "").strip()
+    approved = {
+        item.casefold(): item for item in APPROVED_PUBLIC_STATUS_COMPONENTS
+    }.get(clean_component.casefold())
+    eligible = bool(verified_customer_impact) and approved is not None
+    if eligible:
+        return {
+            "visibility": "public",
+            "incident_eligible": True,
+            "component": approved,
+            "reason": "verified_customer_impact",
+        }
+    reason = "customer_impact_not_verified"
+    if verified_customer_impact and clean_component:
+        reason = "component_not_approved_for_public_status"
+    return {
+        "visibility": "private",
+        "incident_eligible": False,
+        "component": approved or clean_component,
+        "reason": reason,
+    }
+
+
+def _normalize_workflow_health(value: Any) -> dict[str, Any] | None:
+    """Normalize workflow metadata without promoting it to public status."""
+    if not isinstance(value, dict):
+        return None
+    controls = value.get("controls")
+    normalized_controls = (
+        [
+            {
+                **control,
+                "visibility": "private",
+                "live_status_source": False,
+                "public_status_eligible": False,
+            }
+            for control in controls
+            if isinstance(control, dict)
+        ]
+        if isinstance(controls, list)
+        else []
+    )
+    source_status = value.get("public_status")
+    source_status = source_status if isinstance(source_status, dict) else {}
+    publication = public_status_eligibility(
+        verified_customer_impact=source_status.get("verified_customer_impact") is True,
+        component=source_status.get("component"),
+    )
+    return {
+        **value,
+        "visibility": "private",
+        "controls": normalized_controls,
+        "public_status": {
+            **source_status,
+            **publication,
+            "requires_verified_customer_impact": True,
+            "approved_components": list(APPROVED_PUBLIC_STATUS_COMPONENTS),
+        },
+    }
+
+
 def _normalize_health(payload: dict[str, Any], *, path: Path) -> dict[str, Any]:
     summary = payload.get("summary")
     if not isinstance(summary, dict):
@@ -116,7 +192,7 @@ def _normalize_health(payload: dict[str, Any], *, path: Path) -> dict[str, Any]:
     if is_stale and warn_count < issue_warn_count:
         warn_count = issue_warn_count
 
-    return {
+    normalized = {
         **payload,
         "available": True,
         "status": status,
@@ -137,6 +213,10 @@ def _normalize_health(payload: dict[str, Any], *, path: Path) -> dict[str, Any]:
             "stale_after_seconds": stale_after_seconds,
         },
     }
+    workflow_health = _normalize_workflow_health(payload.get("workflow_health"))
+    if workflow_health is not None:
+        normalized["workflow_health"] = workflow_health
+    return normalized
 
 
 def read_tui_fleet_health(path: Path | None = None) -> dict[str, Any]:

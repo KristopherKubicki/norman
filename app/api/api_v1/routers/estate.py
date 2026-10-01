@@ -18,9 +18,25 @@ from app.models import (
     EstateWorker,
     User,
 )
+from app.services.bridge_stations import NON_CONVERSATIONAL_STATION_SLUGS
 
 
 router = APIRouter(tags=["estate"])
+
+
+@router.get("/estate/applications")
+async def estate_applications(_: User = Depends(get_current_user)):
+    """Expose owned applications with independently refreshed DOHIO evidence."""
+    from app.services.estate_applications import (
+        build_overview,
+        dohio_snapshot,
+        load_catalog,
+        load_app_observations,
+    )
+
+    snapshot = await dohio_snapshot()
+    snapshot["app_observations"] = load_app_observations()
+    return build_overview(load_catalog(), snapshot)
 
 
 def _serialize_model(obj, *, fields: tuple[str, ...]) -> dict:
@@ -218,4 +234,9 @@ async def estate_overview(
             "services": len(services),
         },
         "principals": principal_rows,
+        "bridge": {
+            "non_conversational_station_slugs": sorted(
+                NON_CONVERSATIONAL_STATION_SLUGS
+            ),
+        },
     }

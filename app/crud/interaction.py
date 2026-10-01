@@ -10,7 +10,7 @@ def get_interaction_by_id(db: Session, interaction_id: int) -> Interaction:
 
 def create_interaction(db: Session, interaction: InteractionCreate) -> Interaction:
     """Persist a new interaction to the database."""
-    db_interaction = Interaction(**interaction.dict())
+    db_interaction = Interaction(**interaction.model_dump())
     db.add(db_interaction)
     db.commit()
     db.refresh(db_interaction)

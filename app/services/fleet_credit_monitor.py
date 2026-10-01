@@ -53,6 +53,14 @@ class FleetCreditSnapshot:
     usage_window_total_tokens: int = 0
     usage_last_turn_at: int = 0
     usage_last_turn_total_tokens: int = 0
+    codex_subscription_capacity_state: str = "unknown"
+    codex_subscription_capacity_fresh: bool = False
+    codex_subscription_capacity_observed_at: int = 0
+    codex_subscription_capacity_percent_left: int = -1
+    codex_subscription_capacity_reset_hint: str = ""
+    codex_subscription_capacity_eligible: bool = False
+    codex_subscription_capacity_tokens_per_hour: int = 0
+    codex_subscription_capacity_projected_tokens_to_reset: int = 0
     failures: int = 0
 
 
@@ -153,6 +161,15 @@ class FleetCreditMonitorService:
             ),
             "usage_last_turn_at": max(
                 (item.usage_last_turn_at for item in items), default=0
+            ),
+            "codex_subscription_capacity_available": sum(
+                1
+                for item in items
+                if item.codex_subscription_capacity_state == "available"
+                and item.codex_subscription_capacity_fresh
+            ),
+            "codex_subscription_capacity_eligible": sum(
+                1 for item in items if item.codex_subscription_capacity_eligible
             ),
         }
 
@@ -283,6 +300,34 @@ class FleetCreditMonitorService:
                 usage_last_turn_at=int(status.get("usage_last_turn_at") or 0),
                 usage_last_turn_total_tokens=int(
                     status.get("usage_last_turn_total_tokens") or 0
+                ),
+                codex_subscription_capacity_state=str(
+                    status.get("codex_subscription_capacity_state") or "unknown"
+                ),
+                codex_subscription_capacity_fresh=bool(
+                    status.get("codex_subscription_capacity_fresh")
+                ),
+                codex_subscription_capacity_observed_at=int(
+                    status.get("codex_subscription_capacity_observed_at") or 0
+                ),
+                codex_subscription_capacity_percent_left=int(
+                    status.get("codex_subscription_capacity_percent_left")
+                    if status.get("codex_subscription_capacity_percent_left")
+                    is not None
+                    else -1
+                ),
+                codex_subscription_capacity_reset_hint=str(
+                    status.get("codex_subscription_capacity_reset_hint") or ""
+                ),
+                codex_subscription_capacity_eligible=bool(
+                    status.get("codex_subscription_capacity_eligible")
+                ),
+                codex_subscription_capacity_tokens_per_hour=int(
+                    status.get("codex_subscription_capacity_tokens_per_hour") or 0
+                ),
+                codex_subscription_capacity_projected_tokens_to_reset=int(
+                    status.get("codex_subscription_capacity_projected_tokens_to_reset")
+                    or 0
                 ),
                 failures=failures,
             )

@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel, constr, conint
+from pydantic import ConfigDict, BaseModel, constr, conint
 
 
 class ChannelBase(BaseModel):
@@ -24,5 +24,4 @@ class Channel(ChannelBase):
     operator_note: Optional[str] = None
     operator_updated_at: Optional[str] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)

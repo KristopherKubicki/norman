@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic Norman tailnet HTTPS certificate refresh
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=norman-tail-cert-renew.service
+
+[Install]
+WantedBy=timers.target

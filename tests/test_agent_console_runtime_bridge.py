@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 
 def _load_agent_console_web(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("HOUSEBOT_CODEX_WEB_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("NORMAN_CODEX_WEB_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH",
+        str(tmp_path / "host-pressure-guard.json"),
+    )
+    if "NORMAN_LOCAL_LLM_EXECUTION_ENABLED" not in os.environ:
+        monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "1")
     script_path = (
         Path(__file__).resolve().parents[1]
         / "scripts"
@@ -24,6 +33,121 @@ def _load_agent_console_web(monkeypatch, tmp_path: Path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _route_proof(
+    module,
+    *,
+    runtime: str = "",
+    model: str = "",
+    service_tier: str = "",
+) -> dict:
+    normalized_runtime = module.normalize_runtime(runtime)
+    normalized_model = module.normalize_runtime_model(normalized_runtime, model)
+    normalized_tier = module.normalize_service_tier(service_tier)
+    options = {
+        "requested_runtime": normalized_runtime,
+        "requested_model": normalized_model,
+        "requested_service_tier": normalized_tier,
+        "base_runtime": normalized_runtime,
+        "base_model": normalized_model,
+        "base_service_tier": normalized_tier,
+        "bedrock_runtime": "codex",
+        "bedrock_model": normalized_model,
+        "bedrock_service_tier": "bedrock-emergency",
+        "route_lock": True,
+        "subscription": {},
+        "norllama_available": False,
+        "norllama_safe_final": False,
+        "bedrock_available": False,
+    }
+    if normalized_tier == "flex":
+        options.update(
+            {
+                "route_lock": False,
+                "subscription": {
+                    "enabled": True,
+                    "selected": True,
+                    "state": "available",
+                    "fresh": True,
+                    "chatgpt_auth_verified": True,
+                },
+                "norllama_available": True,
+                "norllama_safe_final": True,
+                "bedrock_available": True,
+            }
+        )
+    elif normalized_runtime == "localllm":
+        options.update(
+            {
+                "route_lock": False,
+                "subscription": {
+                    "enabled": True,
+                    "selected": False,
+                    "state": "blocked",
+                    "fresh": True,
+                    "chatgpt_auth_verified": True,
+                },
+                "norllama_available": True,
+                "norllama_safe_final": True,
+            }
+        )
+    return module.build_tui_waterfall(**options)
+
+
+def _planner_selection(*candidates: str) -> dict[str, object]:
+    return {
+        "candidate_lane": "planner",
+        "guardrail_health": {},
+        "guardrail_candidates": list(candidates),
+        "lane_summary": {},
+        "env_candidates": list(candidates),
+        "degraded_fallback": False,
+        "candidate_policy": "test",
+        "candidates": list(candidates),
+        "candidate_limit": len(candidates),
+        "candidate_count": len(candidates),
+    }
+
+
+def _stub_current_snapshot_dependencies(
+    module, monkeypatch, *, route_receipts: dict | None = None
+) -> None:
+    monkeypatch.setattr(module, "recover_stale_prompt_state", lambda: None)
+    monkeypatch.setattr(module, "capture_pane", lambda: "")
+    monkeypatch.setattr(module, "service_status", lambda names: [])
+    monkeypatch.setattr(module, "usage_snapshot", lambda thread_id="": {"totals": {}})
+    monkeypatch.setattr(module, "load_draft_attachments", lambda: [])
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    monkeypatch.setattr(module, "active_codex_process_alive", lambda: False)
+    monkeypatch.setattr(module, "console_runtime_activity_snapshot", lambda: {})
+    monkeypatch.setattr(module, "console_runtime_capabilities_snapshot", lambda: {})
+    monkeypatch.setattr(
+        module, "console_runtime_local_first_proof_snapshot", lambda: {}
+    )
+    monkeypatch.setattr(module, "local_llm_health_snapshot", lambda _model: {})
+    monkeypatch.setattr(module, "local_llm_route_outcome_summary", lambda: {})
+    monkeypatch.setattr(module, "bedrock_health_snapshot", lambda snapshot_at=0: {})
+    monkeypatch.setattr(
+        module, "host_pressure_guard_snapshot", lambda snapshot_at=0: {}
+    )
+    monkeypatch.setattr(module, "usage_accounting_tags", lambda: {})
+    if route_receipts is not None:
+        monkeypatch.setattr(
+            module, "route_receipt_status_snapshot", lambda: route_receipts
+        )
+
+
+def _fast_snapshot(module) -> dict:
+    meta = module.load_status_meta()
+    queued = module.normalize_queue(meta.get("queued_prompts"))
+    return {
+        "pending": bool(meta.get("pending")),
+        "state": str(meta.get("state") or ""),
+        "status_message": str(meta.get("status_message") or ""),
+        "queue_depth": len(queued),
+        "queued_prompts": queued,
+    }
 
 
 def test_local_llm_url_does_not_duplicate_version_or_api_base(monkeypatch, tmp_path):
@@ -59,6 +183,620 @@ def test_status_snapshot_prefers_response_bound_runtime_job(monkeypatch, tmp_pat
         last_console_runtime_job_id="turn-stale-local",
     )
 
+    _stub_current_snapshot_dependencies(module, monkeypatch)
+
+    snapshot = module.current_snapshot()
+
+    assert snapshot["last_response"] == "fresh local answer"
+    assert snapshot["last_console_runtime_job_id"] == "turn-fresh-local"
+    assert snapshot["last_response_console_runtime_job_id"] == "turn-fresh-local"
+    assert snapshot["last_response_meta"]["source"] == "test"
+
+
+def test_current_snapshot_exposes_work_classification_contract(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = "Draft a plan for the next change."
+    envelope = module.build_turn_control_envelope(
+        prompt=prompt,
+        runtime="localllm",
+        model="qwen3-coder:30b-a3b-q4_K_M",
+        service_tier="default",
+        requested_runtime="codex",
+        requested_model=module.MODEL,
+        requested_service_tier="default",
+        active_work=True,
+    )
+    module.update_status_meta(
+        pending=True,
+        state="running",
+        running_prompt=prompt,
+        running_turn_envelope=envelope,
+    )
+    _stub_current_snapshot_dependencies(
+        module,
+        monkeypatch,
+        route_receipts={
+            "latest_work_classification": envelope["work_classification"],
+            "latest_route_rationale": envelope["route_rationale"],
+        },
+    )
+
+    snapshot = module.current_snapshot()
+
+    assert snapshot["running_work_classification"] == envelope["work_classification"]
+    assert snapshot["running_route_rationale"] == envelope["route_rationale"]
+    assert snapshot["latest_work_classification"] == envelope["work_classification"]
+    assert snapshot["latest_route_rationale"] == envelope["route_rationale"]
+
+
+def test_current_snapshot_exposes_sanitized_tool_chain_canary_receipt(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    receipt_path = tmp_path / "tui-tool-chain-canary.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema": "norman.tui.tool-chain-canary.v2",
+                "state": "passed",
+                "checked_at": "2026-08-09T12:00:00+00:00",
+                "elapsed_ms": 1523,
+                "bridge": {
+                    "mode": "transparent",
+                    "tool_transport": "local_text_adapter",
+                    "state_retention": "ephemeral",
+                    "effective_backend": {
+                        "provider": "norllama",
+                        "model": "qwen3-coder:30b-a3b-q4_K_M",
+                    },
+                    "output_token_budget": {
+                        "requested": 16384,
+                        "effective": 16384,
+                        "maximum": 32768,
+                    },
+                    "fallback_reason": "private fallback reason",
+                },
+                "turns": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "TOOL_CHAIN_CANARY_RECEIPT_PATH", receipt_path)
+    _stub_current_snapshot_dependencies(module, monkeypatch)
+
+    snapshot = module.current_snapshot()
+
+    assert snapshot["tool_chain_canary"] == {
+        "state": "passed",
+        "checked_at": "2026-08-09T12:00:00+00:00",
+        "elapsed_ms": 1523,
+        "bridge": {
+            "mode": "transparent",
+            "tool_transport": "local_text_adapter",
+            "state_retention": "ephemeral",
+            "effective_backend": {
+                "provider": "norllama",
+                "model": "qwen3-coder:30b-a3b-q4_K_M",
+            },
+            "output_token_budget": {
+                "requested": 16384,
+                "effective": 16384,
+                "maximum": 32768,
+            },
+            "fallback_reason": "unknown",
+        },
+    }
+
+
+def test_current_snapshot_discards_invalid_running_work_classification(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    envelope = module.build_turn_control_envelope(
+        prompt="Draft a plan for the next change.",
+        runtime="localllm",
+        model="qwen3-coder:30b-a3b-q4_K_M",
+        service_tier="default",
+        active_work=True,
+    )
+    envelope["work_classification"] = {
+        "schema": module.WORK_CLASSIFICATION_SCHEMA,
+        "work_class": "local_review",
+        "reason_codes": ["not-a-valid-reason"],
+    }
+    envelope["route_rationale"] = "untrusted route rationale"
+    module.update_status_meta(
+        pending=True,
+        state="running",
+        running_turn_envelope=envelope,
+    )
+    _stub_current_snapshot_dependencies(module, monkeypatch)
+
+    snapshot = module.current_snapshot()
+
+    assert snapshot["running_work_classification"] == {}
+    assert snapshot["running_route_rationale"] == ""
+
+
+def test_response_owner_meta_ignores_stale_response_hash(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.write_last_response(
+        "first answer",
+        console_runtime_job_id="turn-first",
+        prompt="first prompt",
+        source="test",
+    )
+
+    assert module.last_response_meta_for("first answer")["console_runtime_job_id"] == (
+        "turn-first"
+    )
+    assert module.last_response_meta_for("second answer") == {}
+
+
+def _checkpoint_required_admission(*reasons: str) -> dict:
+    return {
+        "allowed": False,
+        "action": "deny",
+        "reason_code": "checkpoint_required",
+        "reason": "Save a compact handoff before resuming this thread.",
+        "checkpoint_reasons": list(reasons),
+        "reasoning_effort": "high",
+    }
+
+
+def _checkpoint_handoff_admission() -> dict:
+    return {
+        "allowed": True,
+        "action": "checkpoint",
+        "reason_code": "checkpoint_allowed",
+        "reason": "Compact handoff admitted.",
+        "checkpoint_intent": True,
+        "reasoning_effort": "high",
+    }
+
+
+def _queue_rollover_candidate(module, prompt: str = "finish the KPI incident review"):
+    return module.queue_prompt(
+        prompt,
+        "careful",
+        3,
+        "normal",
+        [],
+        "codex",
+        "gpt-5.5",
+        service_tier="default",
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="gpt-5.5",
+            service_tier="default",
+        ),
+        session_admission={
+            "reasoning_effort": "high",
+            "escalation_reason": "",
+            "reauthorization_reason": "",
+            "checkpoint_intent": False,
+        },
+        fast_snapshot=True,
+    )
+
+
+def _stage_safe_queue_rollover(module, monkeypatch):
+    module.ensure_state_dir()
+    module.write_text(module.THREAD_ID_PATH, "limited-thread")
+    module.write_text(module.THREAD_SCOPE_PATH, "profile-v2:work")
+    _queue_rollover_candidate(module)
+    module.update_status_meta(pending=False, state="ok")
+
+    admissions = [
+        _checkpoint_required_admission("token_limit"),
+        _checkpoint_handoff_admission(),
+    ]
+    monkeypatch.setattr(
+        module,
+        "session_budget_admission",
+        lambda **_kwargs: admissions.pop(0),
+    )
+
+    worker_args = module.start_next_queued_prompt()
+
+    assert worker_args is not None
+    assert worker_args[0].startswith("/compact\n")
+    running_admission = module.load_status_meta()["running_session_admission"]
+    return worker_args, running_admission
+
+
+def test_queue_checkpoint_rollover_stages_compact_before_original_request(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    _worker_args, running_admission = _stage_safe_queue_rollover(module, monkeypatch)
+
+    assert running_admission["auto_rollover"]["role"] == "handoff"
+    assert running_admission["auto_rollover"]["state"] == "handoff-staged"
+    meta = module.load_status_meta()
+    queued = module.normalize_queue(meta["queued_prompts"])
+    assert len(queued) == 1
+    assert queued[0]["prompt"] == "finish the KPI incident review"
+    pending_rollover = queued[0]["session_admission"]["auto_rollover"]
+    assert pending_rollover["role"] == "pending"
+    assert pending_rollover["state"] == "handoff-staged"
+    assert set(pending_rollover["checkpoint_reasons"]) == {"token_limit"}
+
+
+def test_queue_reauthorization_denial_does_not_auto_rollover(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    _queue_rollover_candidate(module)
+    module.update_status_meta(pending=False, state="ok")
+    denied = {
+        "allowed": False,
+        "action": "deny",
+        "reason_code": "reauthorization_required",
+        "reason": "Fresh operator authorization is required.",
+        "checkpoint_reasons": ["token_limit"],
+        "reasoning_effort": "high",
+    }
+    monkeypatch.setattr(module, "session_budget_admission", lambda **_kwargs: denied)
+
+    assert module.start_next_queued_prompt() is None
+
+    meta = module.load_status_meta()
+    queued = module.normalize_queue(meta["queued_prompts"])
+    assert meta["state"] == "session-budget-blocked"
+    assert len(queued) == 1
+    assert "auto_rollover" not in queued[0]["session_admission"]
+    assert meta["last_session_admission"]["reason_code"] == "reauthorization_required"
+
+
+def test_stale_idle_provider_thread_rotates_without_erasing_web_history(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    module.SESSION_BUDGET_POLICY = module.SessionBudgetPolicy(
+        enabled=True,
+        checkpoint_tokens=100,
+        reauthorization_tokens=200,
+        max_age_seconds=60,
+        max_tool_calls=100,
+        require_named_escalation=False,
+    )
+    module.write_text(module.THREAD_ID_PATH, "stale-provider-thread")
+    module.write_text(module.THREAD_SCOPE_PATH, "profile-v2:work")
+    module.write_text(module.HISTORY_PATH, '{"prompt":"prior","response":"kept"}\n')
+    module.update_status_meta(pending=False, state="ok", queued_prompts=[])
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    decision = {
+        "allowed": False,
+        "reason_code": "reauthorization_required",
+        "usage": {"age_seconds": 120, "total_tokens": 243_631},
+    }
+
+    rotation = module.rotate_idle_provider_thread_for_operator_prompt(
+        decision,
+        prompt="answer this standalone budget question",
+        source="operator",
+        actor_ip="127.0.0.1",
+    )
+
+    assert rotation["reason"] == "stale_idle_provider_thread"
+    assert rotation["prior_thread_id"] == "stale-provider-thread"
+    assert module.read_text(module.THREAD_ID_PATH) == ""
+    assert module.read_text(module.THREAD_SCOPE_PATH) == ""
+    assert '"response":"kept"' in module.read_text(module.HISTORY_PATH)
+
+
+def test_recent_or_busy_provider_thread_does_not_rotate(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    module.SESSION_BUDGET_POLICY = module.SessionBudgetPolicy(
+        enabled=True,
+        checkpoint_tokens=100,
+        reauthorization_tokens=200,
+        max_age_seconds=60,
+        max_tool_calls=100,
+        require_named_escalation=False,
+    )
+    module.write_text(module.THREAD_ID_PATH, "active-provider-thread")
+    module.update_status_meta(pending=False, state="ok", queued_prompts=[])
+    decision = {
+        "allowed": False,
+        "reason_code": "checkpoint_required",
+        "usage": {"age_seconds": 120, "total_tokens": 150},
+    }
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: True)
+
+    assert not module.rotate_idle_provider_thread_for_operator_prompt(
+        decision,
+        prompt="continue the current investigation",
+        source="operator",
+    )
+    assert module.read_text(module.THREAD_ID_PATH) == "active-provider-thread"
+
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    decision["usage"]["age_seconds"] = 30
+    assert not module.rotate_idle_provider_thread_for_operator_prompt(
+        decision,
+        prompt="continue the current investigation",
+        source="operator",
+    )
+    assert module.read_text(module.THREAD_ID_PATH) == "active-provider-thread"
+
+
+def test_successful_compact_rollover_clears_thread_and_runs_original_once(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    _worker_args, running_admission = _stage_safe_queue_rollover(module, monkeypatch)
+    assert module.complete_session_handoff_if_needed(
+        running_admission,
+        success=True,
+        thread_id="limited-thread",
+        finished_at=123,
+    )
+    assert module.read_text(module.THREAD_ID_PATH) == ""
+    assert module.read_text(module.THREAD_SCOPE_PATH) == ""
+
+    monkeypatch.setattr(
+        module,
+        "session_budget_admission",
+        lambda **_kwargs: {
+            "allowed": True,
+            "action": "allow",
+            "reason_code": "within_budget",
+            "reasoning_effort": "high",
+        },
+    )
+    resumed_args = module.start_next_queued_prompt()
+
+    assert resumed_args is not None
+    assert resumed_args[0] == "finish the KPI incident review"
+    meta = module.load_status_meta()
+    assert module.normalize_queue(meta["queued_prompts"]) == []
+    assert meta["running_session_admission"]["auto_rollover"]["state"] == (
+        "handoff-completed"
+    )
+    assert module.start_next_queued_prompt() is None
+
+
+def test_failed_compact_rollover_preserves_request_without_retry(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    _worker_args, running_admission = _stage_safe_queue_rollover(module, monkeypatch)
+    assert not module.complete_session_handoff_if_needed(
+        running_admission,
+        success=False,
+        thread_id="limited-thread",
+        finished_at=123,
+    )
+
+    assert module.start_next_queued_prompt() is None
+    meta = module.load_status_meta()
+    queued = module.normalize_queue(meta["queued_prompts"])
+    assert meta["state"] == "session-rollover-failed"
+    assert len(queued) == 1
+    rollover = queued[0]["session_admission"]["auto_rollover"]
+    assert rollover["state"] == "handoff-failed"
+    assert "remains queued" in rollover["detail"]
+
+
+def test_start_web_prompt_safe_checkpoint_queues_and_launches_compact(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    module.write_text(module.THREAD_ID_PATH, "limited-thread")
+    proof = _route_proof(
+        module,
+        runtime="codex",
+        model="gpt-5.5",
+        service_tier="default",
+    )
+    launches = []
+    admissions = [
+        _checkpoint_required_admission("token_limit"),
+        _checkpoint_required_admission("token_limit"),
+        _checkpoint_handoff_admission(),
+    ]
+    monkeypatch.setattr(module, "configured_runtime", lambda: "codex")
+    monkeypatch.setattr(module, "configured_runtime_model", lambda _runtime: "gpt-5.5")
+    monkeypatch.setattr(module, "cost_route_decision_for_prompt", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        module, "codex_subscription_capacity_route_decision", lambda **_kwargs: {}
+    )
+    monkeypatch.setattr(module, "build_tui_waterfall", lambda **_kwargs: proof)
+    monkeypatch.setattr(module, "sanitize_tui_waterfall_decision", lambda value: value)
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "recover_stale_prompt_state", lambda: None)
+    monkeypatch.setattr(module, "_live_status_overlay", lambda: _fast_snapshot(module))
+    monkeypatch.setattr(
+        module,
+        "launch_queued_prompt_worker",
+        lambda worker_args: launches.append(worker_args),
+    )
+    monkeypatch.setattr(
+        module,
+        "session_budget_admission",
+        lambda **_kwargs: admissions.pop(0),
+    )
+
+    accepted, snapshot = module.start_web_prompt(
+        "finish the KPI incident review",
+        "careful",
+        3,
+        "normal",
+        [],
+        "codex",
+        "gpt-5.5",
+        route_lock=True,
+    )
+
+    assert accepted is True
+    assert snapshot["session_rollover_queued"] is True
+    assert snapshot["session_budget_blocked"] is False
+    assert len(launches) == 1
+    assert launches[0][0].startswith("/compact\n")
+    queued = module.normalize_queue(module.load_status_meta()["queued_prompts"])
+    assert [item["prompt"] for item in queued] == ["finish the KPI incident review"]
+
+
+def test_working_recap_redacts_sensitive_text_and_uses_bounded_history(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    recap = module.normalize_working_recap(
+        {
+            "turn_key": "turn-1",
+            "status": "running",
+            "headline": "Inspect api_key=super-secret",
+            "now": "Using Bearer top-secret-token to check progress.",
+            "milestones": [
+                "Found token=another-secret.",
+                "First safe milestone.",
+                "Second safe milestone.",
+                "This item is beyond the panel limit.",
+            ],
+            "next": "Do not expose password: no-thanks.",
+            "history": [
+                {
+                    "at": 10,
+                    "now": "First api_key=old-secret update.",
+                    "milestones": [],
+                    "next": "Continue.",
+                }
+                for _ in range(module.WORKING_RECAP_HISTORY_ITEMS + 2)
+            ],
+        }
+    )
+
+    visible_text = " ".join(
+        [
+            recap["headline"],
+            recap["now"],
+            *recap["milestones"],
+            recap["next"],
+            *[
+                " ".join(
+                    [
+                        item["now"],
+                        *item["milestones"],
+                        item["next"],
+                    ]
+                )
+                for item in recap["history"]
+            ],
+        ]
+    )
+
+    assert "super-secret" not in visible_text
+    assert "top-secret-token" not in visible_text
+    assert "another-secret" not in visible_text
+    assert "no-thanks" not in visible_text
+    assert "[redacted]" in visible_text
+    assert len(recap["milestones"]) == 3
+    assert len(recap["history"]) <= module.WORKING_RECAP_HISTORY_ITEMS
+
+
+def test_working_recap_local_llm_uses_sanitized_packet_and_normalizes_json(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.WORKING_RECAP_ENABLED = True
+    module.LOCAL_LLM_EXECUTION_ENABLED = True
+    captured: dict[str, object] = {}
+
+    def fake_generate(endpoint, model, prompt, **kwargs):
+        captured.update(
+            {
+                "endpoint": endpoint,
+                "model": model,
+                "prompt": prompt,
+                "kwargs": kwargs,
+            }
+        )
+        return (
+            {
+                "response": (
+                    '{"now":"A tool result is being reviewed.",'
+                    '"milestones":["One checkpoint completed.",'
+                    '"api_key=must-not-leak"],'
+                    '"next":"Choose the next safe action."}'
+                )
+            },
+            "http://norllama.invalid/api/chat",
+            "norllama-chat",
+        )
+
+    monkeypatch.setattr(
+        module, "local_llm_candidate_endpoints", lambda _model, foreground: ["local"]
+    )
+    monkeypatch.setattr(module, "local_llm_generate_once", fake_generate)
+    meta = {
+        "last_started_at": 1712878300,
+        "running_prompt": "Deploy with api_key=prompt-secret and Bearer prompt-token",
+        "running_runtime": "localllm",
+        "running_model": "norllama",
+        "turn_plan": {
+            "understood_task": "Deploy api_key=plan-secret",
+            "skill_labels": ["code edit", "verification"],
+            "plan_steps": ["Check the running worker.", "Report the result."],
+        },
+        "live_turn": {
+            "event_count": 3,
+            "tool_started_count": 2,
+            "tool_finished_count": 1,
+            "last_tool_status": "tool-finished",
+        },
+    }
+    deterministic = module.deterministic_working_recap(meta, observed_at=1712878350)
+
+    recap, model = module.working_recap_local_llm(meta, deterministic, queue_depth=1)
+
+    prompt = str(captured["prompt"])
+    assert "prompt-secret" not in prompt
+    assert "prompt-token" not in prompt
+    assert "plan-secret" not in prompt
+    assert captured["endpoint"] == "local"
+    assert (
+        captured["kwargs"]["timeout_seconds"]
+        == module.WORKING_RECAP_LLM_TIMEOUT_SECONDS
+    )
+    assert captured["kwargs"]["max_output_tokens"] == (
+        module.WORKING_RECAP_LLM_MAX_OUTPUT_TOKENS
+    )
+    assert model == module.normalize_runtime_model(
+        "localllm", module.LOCAL_LLM_ROUTE_DEFAULT_MODEL
+    )
+    assert recap["source"] == "local_llm"
+    assert recap["now"] == "A tool result is being reviewed."
+    assert recap["milestones"] == ["One checkpoint completed.", "api_key=[redacted]"]
+
+
+def test_status_snapshot_exposes_working_recap(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    expected = module.normalize_working_recap(
+        {
+            "turn_key": "turn-1",
+            "status": "running",
+            "headline": "Review the active change.",
+            "now": "A local recap is available.",
+            "milestones": ["One checkpoint is complete."],
+            "next": "Verify the result.",
+            "source": "local_llm",
+            "model": "norllama",
+        }
+    )
+    module.update_status_meta(
+        pending=False,
+        state="ok",
+        status_message="Ready.",
+        working_recap=expected,
+    )
+
     monkeypatch.setattr(module, "recover_stale_prompt_state", lambda: None)
     monkeypatch.setattr(module, "capture_pane", lambda: "")
     monkeypatch.setattr(module, "service_status", lambda names: [])
@@ -81,25 +819,238 @@ def test_status_snapshot_prefers_response_bound_runtime_job(monkeypatch, tmp_pat
 
     snapshot = module.current_snapshot()
 
-    assert snapshot["last_response"] == "fresh local answer"
-    assert snapshot["last_console_runtime_job_id"] == "turn-fresh-local"
-    assert snapshot["last_response_console_runtime_job_id"] == "turn-fresh-local"
-    assert snapshot["last_response_meta"]["source"] == "test"
+    assert snapshot["working_recap"]["headline"] == "Review the active change."
+    assert snapshot["working_recap"]["source"] == "local_llm"
+    assert snapshot["working_recap"]["next"] == "Verify the result."
 
 
-def test_response_owner_meta_ignores_stale_response_hash(monkeypatch, tmp_path):
+def test_live_status_snapshot_falls_back_without_waiting_for_full_collection(
+    monkeypatch, tmp_path
+):
     module = _load_agent_console_web(monkeypatch, tmp_path)
-    module.write_last_response(
-        "first answer",
-        console_runtime_job_id="turn-first",
-        prompt="first prompt",
-        source="test",
+    module.update_status_meta(
+        pending=True,
+        state="running",
+        status_message="Prompt accepted and running.",
+        running_prompt="Check the live submit receipt.",
+        running_runtime="localllm",
+        running_model="qwen3.6:27b",
+        running_service_tier="default",
+        running_cost_route={
+            "selected_runtime": "localllm",
+            "selected_model": "qwen3.6:27b",
+            "selected_service_tier": "default",
+            "requested_runtime": "codex",
+            "requested_model": "gpt-5.4",
+            "route_source": "local_first",
+            "reason": "safe local lane is available",
+        },
+    )
+    requested = []
+    monkeypatch.setattr(
+        module,
+        "request_status_snapshot_refresh",
+        lambda: requested.append(True),
     )
 
-    assert module.last_response_meta_for("first answer")["console_runtime_job_id"] == (
-        "turn-first"
+    snapshot = module.status_snapshot()
+
+    assert snapshot["pending"] is True
+    assert snapshot["status_message"] == "Prompt accepted and running."
+    assert snapshot["running_prompt"] == "Check the live submit receipt."
+    assert snapshot["snapshot_cached"] is False
+    assert snapshot["pane"] == "[collecting live console details]"
+    expected_requested_model = module.normalize_runtime_model("codex", "gpt-5.4")
+    assert snapshot["route_bootstrap"] == {
+        "phase": "running",
+        "details_ready": False,
+        "refreshing": True,
+        "selected_runtime": "localllm",
+        "selected_model": "qwen3.6:27b",
+        "selected_service_tier": "default",
+        "requested_runtime": "codex",
+        "requested_model": expected_requested_model,
+        "requested_service_tier": "default",
+        "route_source": "local_first",
+        "route_reason": "safe local lane is available",
+        "fallback_reason": "",
+        "route_locked": False,
+    }
+    assert requested == [True]
+
+
+def test_legacy_route_bootstrap_metadata_is_display_only(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    legacy_route = {
+        "selected_runtime": "localllm",
+        "selected_model": "qwen3.6:27b",
+        "selected_service_tier": "default",
+        "requested_runtime": "codex",
+        "requested_model": "gpt-5.4",
+        "route_source": "local_first",
+        "reason": "safe local lane is available",
+        "route_lock": "true",
+    }
+
+    saved = module.update_status_meta(
+        pending=True,
+        running_runtime="localllm",
+        running_model="qwen3.6:27b",
+        running_service_tier="default",
+        running_cost_route=legacy_route,
     )
-    assert module.last_response_meta_for("second answer") == {}
+
+    assert saved["running_cost_route"] == {}
+    assert saved["running_route_bootstrap_metadata"] == {
+        "selected_runtime": "localllm",
+        "selected_model": "qwen3.6:27b",
+        "selected_service_tier": "default",
+        "requested_runtime": "codex",
+        "requested_model": module.normalize_runtime_model("codex", "gpt-5.4"),
+        "requested_service_tier": "default",
+        "route_source": "local_first",
+        "reason": "safe local lane is available",
+        "fallback_reason": "",
+        "route_locked": False,
+    }
+    assert (
+        module.validate_cost_route_proof(
+            legacy_route,
+            "localllm",
+            "qwen3.6:27b",
+            "default",
+        )
+        == {}
+    )
+    assert module.cost_route_allows_bedrock_retry(legacy_route) is False
+    assert (
+        module.updated_bedrock_retry_cost_route(
+            legacy_route,
+            "localllm",
+            "qwen3.6:27b",
+            "default",
+        )
+        == {}
+    )
+
+
+def test_legacy_route_bootstrap_metadata_requires_selected_tuple_match(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    saved = module.update_status_meta(
+        pending=True,
+        running_runtime="localllm",
+        running_model="qwen3.6:27b",
+        running_service_tier="default",
+        running_cost_route={
+            "selected_runtime": "localllm",
+            "selected_model": "qwen3.6:35b-a3b-q4_K_M",
+            "selected_service_tier": "default",
+            "route_source": "local_first",
+            "reason": "stale receipt",
+        },
+    )
+
+    assert saved["running_cost_route"] == {}
+    assert saved["running_route_bootstrap_metadata"] == {}
+
+
+def test_live_status_snapshot_bounds_cached_diagnostics(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.update_status_meta(pending=False, state="ok", status_message="Ready.")
+    oversized = "x" * (module.STATUS_TRANSPORT_STRING_LIMIT + 100)
+    module.STATUS_SNAPSHOT_CACHE.update(
+        {
+            "at": module.time.time(),
+            "data": {
+                "history": [
+                    {"prompt": f"turn-{index}", "response": oversized}
+                    for index in range(module.STATUS_TRANSPORT_HISTORY_LIMIT + 4)
+                ],
+                "runtime_capabilities": {
+                    "source": "live",
+                    "norllama": {
+                        "raw": oversized,
+                        "supports_tools": True,
+                        "specialist_lanes": {
+                            "count": 10,
+                            "proof": {
+                                "lane_count": 10,
+                                "production_ready_count": 8,
+                                "lanes": [oversized] * 30,
+                            },
+                        },
+                    },
+                },
+                "usage": {
+                    "entries": [oversized] * 30,
+                    "recent": [oversized] * 30,
+                },
+                "pane": oversized,
+                "logs": oversized,
+            },
+            "refreshing": False,
+            "last_error": "",
+        }
+    )
+
+    snapshot = module.status_snapshot()
+
+    assert len(snapshot["history"]) == module.STATUS_TRANSPORT_HISTORY_LIMIT
+    assert snapshot["history"][0]["prompt"] == "turn-4"
+    capabilities = snapshot["runtime_capabilities"]
+    assert capabilities["source"] == "live"
+    assert capabilities["norllama"]["supports_tools"] is True
+    assert "raw" not in capabilities["norllama"]
+    proof = capabilities["norllama"]["specialist_lanes"]["proof"]
+    assert proof["production_ready_count"] == 8
+    assert "lanes" not in proof
+    assert len(snapshot["usage"]["entries"]) <= module.STATUS_TRANSPORT_LIST_LIMIT
+    assert "recent" not in snapshot["usage"]
+    assert snapshot["snapshot_cached"] is True
+    assert snapshot["route_bootstrap"]["details_ready"] is True
+
+
+def test_history_hides_legacy_diagnostics_and_internal_continuations(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    entries = module.finalize_history_entries(
+        [
+            {
+                "prompt": "quick status",
+                "response": "State: idle",
+                "model": "deterministic-status",
+                "usage": {},
+            },
+            {
+                "prompt": "[auto-continuation: next-action-plan]\nContinue.",
+                "response": "Planning the next action.",
+                "model": "openai.gpt-5.6-terra",
+                "usage": {},
+            },
+            {
+                "prompt": "show the image",
+                "response": (
+                    "Prior Bridge status\n"
+                    "This diagnostic reply has been superseded by the live route."
+                ),
+                "model": "openai.gpt-5.6-terra",
+                "usage": {},
+            },
+            {
+                "prompt": "show the image",
+                "response": "The image is attached below.",
+                "model": "openai.gpt-5.6-terra",
+                "usage": {},
+            },
+        ],
+        limit=10,
+    )
+
+    assert [entry["response"] for entry in entries] == ["The image is attached below."]
 
 
 def test_console_runtime_bridge_posts_audit_events(monkeypatch, tmp_path):
@@ -135,8 +1086,14 @@ def test_console_runtime_bridge_posts_audit_events(monkeypatch, tmp_path):
 
     module.mirror_audit_event_to_console_runtime(entry, background=False)
 
-    assert len(requests) == 1
-    request, timeout = requests[0]
+    assert len(requests) == 2
+    workstream_request, _workstream_timeout = requests[0]
+    assert workstream_request.full_url == (
+        "http://norman.local/api/v1/console-runtime/workstreams"
+    )
+    workstream_payload = json.loads(workstream_request.data.decode())
+    assert workstream_payload["coordinator_job_id"] == "job-tui"
+    request, timeout = requests[1]
     assert request.full_url == (
         "http://norman.local/api/v1/console-runtime/jobs/job-tui/events"
     )
@@ -147,6 +1104,38 @@ def test_console_runtime_bridge_posts_audit_events(monkeypatch, tmp_path):
     assert payload["summary"] == "Sent raw text"
     assert payload["payload"]["original_event_type"] == "tmux.send"
     assert payload["payload"]["audit_event"]["payload"]["message_preview"] == "ls -la"
+
+
+def test_console_runtime_workstream_404_sets_persistent_compatibility_backoff(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    requests = []
+
+    def missing_workstreams(method, path, payload=None, timeout_seconds=None):
+        requests.append((method, path, payload, timeout_seconds))
+        raise urllib_error.HTTPError(
+            "http://norman.local/api/v1/console-runtime/workstreams",
+            404,
+            "Not Found",
+            None,
+            io.BytesIO(b'{"detail":"Not Found"}'),
+        )
+
+    monkeypatch.setattr(module, "_console_runtime_json_request", missing_workstreams)
+
+    assert module._ensure_console_runtime_workstream_locked("job-tui") == ""
+    assert module._ensure_console_runtime_workstream_locked("job-tui") == ""
+    assert len(requests) == 1
+    assert module.CONSOLE_RUNTIME_WORKSTREAM_BREAKER_PATH.is_file()
+
+    reloaded = _load_agent_console_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(reloaded, "_console_runtime_json_request", missing_workstreams)
+
+    assert reloaded._ensure_console_runtime_workstream_locked("job-tui") == ""
+    assert len(requests) == 1
 
 
 def test_console_runtime_job_visibility_reports_exact_job(monkeypatch, tmp_path):
@@ -243,6 +1232,58 @@ def test_console_runtime_token_uses_default_norman_keys_secret_name(
     assert payload["name"] == "norman/console-runtime-token"
 
 
+def test_console_runtime_token_403_sets_persistent_keys_backoff(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    monkeypatch.delenv("NORMAN_CONSOLE_RUNTIME_TOKEN", raising=False)
+    monkeypatch.delenv("NORMAN_API_TOKEN", raising=False)
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://norman.local")
+    monkeypatch.setenv("NORMAN_KEYS_TOKEN", "keys-token")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET", "norman/runtime-token")
+    requests = []
+
+    def denied_keys(request, timeout):
+        requests.append((request, timeout))
+        raise urllib_error.HTTPError(
+            request.full_url,
+            403,
+            "Forbidden",
+            None,
+            io.BytesIO(b'{"detail":"Forbidden"}'),
+        )
+
+    monkeypatch.setattr(urllib_request, "urlopen", denied_keys)
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    assert module.CONSOLE_RUNTIME_TOKEN == ""
+    assert len(requests) == 1
+    assert module.CONSOLE_RUNTIME_TOKEN_BREAKER_PATH.is_file()
+
+    reloaded = _load_agent_console_web(monkeypatch, tmp_path)
+
+    assert reloaded.CONSOLE_RUNTIME_TOKEN == ""
+    assert len(requests) == 1
+
+
+def test_console_runtime_snapshot_cache_is_shorter_while_codex_is_active(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ACTIVE_CODEX_PROC = SimpleNamespace(poll=lambda: None)
+
+    assert (
+        module._console_runtime_snapshot_ttl_seconds()
+        == module.CONSOLE_RUNTIME_ACTIVE_SNAPSHOT_TTL_SECONDS
+    )
+
+    module.ACTIVE_CODEX_PROC = SimpleNamespace(poll=lambda: 0)
+
+    assert (
+        module._console_runtime_snapshot_ttl_seconds()
+        == module.CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS
+    )
+
+
 def test_console_runtime_token_retries_after_startup_resolution_failure(
     monkeypatch, tmp_path
 ):
@@ -301,6 +1342,39 @@ def test_console_runtime_token_retries_after_startup_resolution_failure(
     assert module.CONSOLE_RUNTIME_TOKEN == "brokered-runtime-token"
 
 
+def test_console_runtime_request_is_not_sent_without_broker_token(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    monkeypatch.delenv("NORMAN_CONSOLE_RUNTIME_TOKEN", raising=False)
+    monkeypatch.delenv("NORMAN_API_TOKEN", raising=False)
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://norman.local")
+    monkeypatch.setenv("NORMAN_KEYS_TOKEN", "keys-token")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET", "norman/runtime-token")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS", "0")
+    requests = []
+
+    def unavailable_keys(request, timeout):
+        requests.append((request, timeout))
+        raise TimeoutError("keys unavailable")
+
+    monkeypatch.setattr(urllib_request, "urlopen", unavailable_keys)
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    try:
+        module._console_runtime_json_request("GET", "/console-runtime/capabilities")
+    except urllib_error.URLError as exc:
+        assert "authorization token unavailable" in str(exc)
+    else:
+        raise AssertionError("runtime request was sent without an authorization token")
+
+    assert len(requests) == 2
+    assert all(
+        request.full_url == "http://norman.local/v1/secrets/get"
+        for request, _timeout in requests
+    )
+
+
 def test_console_runtime_job_advertises_kernel_shadow_backend(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")
@@ -334,11 +1408,16 @@ def test_console_runtime_job_advertises_kernel_shadow_backend(monkeypatch, tmp_p
         "kernel_execution": False,
         "kernel_primary": False,
         "kernel_owned_turn": False,
+        "hybrid_local_execution": False,
         "control_only": False,
         "execution_backend": "codex_direct",
     }
-    assert len(requests) == 1
-    request, _timeout = requests[0]
+    assert len(requests) == 2
+    request = next(
+        request
+        for request, _timeout in requests
+        if request.full_url.endswith("/console-runtime/jobs")
+    )
     payload = json.loads(request.data.decode())
     assert payload["route_policy"]["runtime"] == "shell"
     assert payload["route_policy"]["planner"] == "norllama"
@@ -363,11 +1442,14 @@ def test_console_runtime_snapshot_disabled_without_api_base(monkeypatch, tmp_pat
         "kernel_execution": False,
         "kernel_primary": False,
         "kernel_owned_turn": False,
+        "hybrid_local_execution": False,
         "control_only": False,
         "execution_backend": "codex_direct",
         "enabled": False,
         "connected": False,
         "job_id": "",
+        "workstream_id": "",
+        "workstream": {},
         "events": [],
         "next_after": 0,
         "latest_event": None,
@@ -438,8 +1520,9 @@ def test_console_runtime_proof_snapshots_fetch_runtime_contracts(monkeypatch, tm
                     }
                 }
             )
-        if request.full_url.endswith(
-            "/console-runtime/local-first-proof?limit=250&session_limit=20"
+        if (
+            urllib_parse.urlparse(request.full_url).path
+            == "/api/v1/console-runtime/local-first-proof"
         ):
             return Response(
                 {
@@ -542,6 +1625,8 @@ def test_console_runtime_turn_shadow_creates_per_turn_job(monkeypatch, tmp_path)
 
     def fake_urlopen(request, timeout):
         requests.append((request, timeout))
+        if request.full_url.endswith("/console-runtime/workstreams"):
+            return Response({"workstream_id": "workstream-session"})
         if request.full_url.endswith("/console-runtime/jobs"):
             payload = json.loads(request.data.decode())
             return Response({"job_id": payload["job_id"]})
@@ -594,12 +1679,15 @@ def test_console_runtime_turn_shadow_creates_per_turn_job(monkeypatch, tmp_path)
     assert shadow["job_id"].startswith("turn-")
     urls = [request.full_url for request, _timeout in requests]
     assert urls == [
+        "http://norman.local/api/v1/console-runtime/workstreams",
         "http://norman.local/api/v1/console-runtime/jobs",
         f"http://norman.local/api/v1/console-runtime/jobs/{shadow['job_id']}",
         f"http://norman.local/api/v1/console-runtime/jobs/{shadow['job_id']}/planner/receipts",
         f"http://norman.local/api/v1/console-runtime/jobs/{shadow['job_id']}/events",
     ]
-    create_payload = json.loads(requests[0][0].data.decode())
+    workstream_payload = json.loads(requests[0][0].data.decode())
+    assert workstream_payload["coordinator_job_id"] == "job-session"
+    create_payload = json.loads(requests[1][0].data.decode())
     assert create_payload["objective"] == prompt
     assert "nonce value r-auto-norman-auto_route_local" in create_payload["objective"]
     assert "…" not in create_payload["objective"]
@@ -614,30 +1702,97 @@ def test_console_runtime_turn_shadow_creates_per_turn_job(monkeypatch, tmp_path)
     assert create_payload["route_policy"]["turn_shadow"] is True
     assert create_payload["route_policy"]["kernel_execution_enabled"] is False
     assert create_payload["route_policy"]["kernel_execution_candidate"] is False
-    assert create_payload["route_policy"]["continuous_goal_candidate"] is True
-    assert create_payload["route_policy"]["goal_phase_sequence"] == [
-        "plan",
-        "work",
-        "verify",
-    ]
+    assert create_payload["durable_workstream"] is False
+    assert create_payload["route_policy"]["durable_workstream"] is False
+    assert create_payload["route_policy"]["continuous_goal_candidate"] is False
+    assert create_payload["route_policy"]["goal_phase_sequence"] == ["chat"]
+    assert create_payload["route_policy"]["planner_kind"] == "chat"
     assert create_payload["route_policy"]["cloud_token_budget"] == 0
     assert create_payload["route_policy"]["selected_runtime"] == "localllm"
     assert create_payload["metadata"]["kernel_execution_enabled"] is False
     assert create_payload["metadata"]["kernel_execution_candidate"] is False
-    assert create_payload["metadata"]["continuous_goal_candidate"] is True
-    assert create_payload["metadata"]["goal_phase_sequence"] == [
-        "plan",
-        "work",
-        "verify",
-    ]
-    receipt_payload = json.loads(requests[2][0].data.decode())
+    assert create_payload["metadata"]["durable_workstream"] is False
+    assert create_payload["metadata"]["continuous_goal_candidate"] is False
+    assert create_payload["metadata"]["goal_phase_sequence"] == ["chat"]
+    receipt_payload = json.loads(requests[3][0].data.decode())
     assert receipt_payload["include_capabilities"] is False
     assert receipt_payload["output"]["planner_role"] == "shadow_frontdoor"
-    started_event = json.loads(requests[3][0].data.decode())
+    started_event = json.loads(requests[4][0].data.decode())
     assert started_event["event_type"] == "turn.started"
     assert started_event["payload"]["session_job_id"] == "job-session"
     assert started_event["payload"]["objective"] == prompt
     assert started_event["payload"]["objective_summary"] != prompt
+
+
+def test_console_runtime_turn_shadow_finalizer_propagates_work_classification(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    requests = []
+
+    class Response:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(module.urllib_request, "urlopen", fake_urlopen)
+    prompt = "Draft a plan for the next change."
+    envelope = module.build_turn_control_envelope(
+        prompt=prompt,
+        runtime="localllm",
+        model="qwen3-coder:30b-a3b-q4_K_M",
+        service_tier="default",
+        active_work=True,
+    )
+
+    module.finalize_console_runtime_turn_shadow_job(
+        job_id="turn-classification",
+        prompt=prompt,
+        visible_response="DONE",
+        error_text="",
+        runtime="localllm",
+        model="qwen3-coder:30b-a3b-q4_K_M",
+        service_tier="default",
+        job_budget="5m",
+        optimization_mode="auto",
+        started_at=100,
+        finished_at=110,
+        success=True,
+        usage={"input_tokens": 4, "output_tokens": 2},
+        turn_envelope=envelope,
+    )
+
+    assert len(requests) == 2
+    events = [json.loads(request.data.decode("utf-8")) for request, _ in requests]
+    assert [event["event_type"] for event in events] == [
+        "model.completed",
+        "turn.completed",
+    ]
+    for event in events:
+        payload = event["payload"]
+        assert (
+            payload["turn_envelope"]["work_classification"]
+            == envelope["work_classification"]
+        )
+        assert payload["work_classification"] == envelope["work_classification"]
+        assert payload["route_rationale"] == envelope["route_rationale"]
+        assert (
+            payload["usage"]["work_classification"] == envelope["work_classification"]
+        )
+        assert payload["usage"]["route_rationale"] == envelope["route_rationale"]
 
 
 def test_console_runtime_turn_shadow_does_not_return_non_durable_job_id(
@@ -727,6 +1882,8 @@ def test_console_runtime_turn_shadow_can_mark_kernel_execution_candidate(
 
     def fake_urlopen(request, timeout):
         requests.append((request, timeout))
+        if request.full_url.endswith("/console-runtime/workstreams"):
+            return Response({"workstream_id": "workstream-session"})
         if request.full_url.endswith("/console-runtime/jobs"):
             payload = json.loads(request.data.decode())
             return Response({"job_id": payload["job_id"]})
@@ -759,7 +1916,17 @@ def test_console_runtime_turn_shadow_can_mark_kernel_execution_candidate(
     assert module.tui_backend_snapshot()["kernel_execution"] is True
     assert module.tui_backend_snapshot()["kernel_primary"] is True
     assert shadow["enabled"] is True
-    create_payload = json.loads(requests[0][0].data.decode())
+    workstream_request = requests[0][0]
+    assert workstream_request.full_url.endswith("/console-runtime/workstreams")
+    assert json.loads(workstream_request.data.decode())["coordinator_job_id"] == (
+        "job-session"
+    )
+    create_request = next(
+        request
+        for request, _timeout in requests
+        if request.full_url.endswith("/console-runtime/jobs")
+    )
+    create_payload = json.loads(create_request.data.decode())
     assert create_payload["authority_flags"]["kind"] == "tui_turn_shadow"
     assert create_payload["authority_flags"]["kernel_execution_enabled"] is True
     assert create_payload["authority_flags"]["kernel_execution_candidate"] is True
@@ -793,53 +1960,20 @@ def test_kernel_primary_runtime_can_return_visible_response(monkeypatch, tmp_pat
         requests.append((method, path, payload or {}, timeout_seconds))
         assert path.endswith("/console-runtime/jobs/turn-kernel-primary/runs")
         return {
-            "continuous": True,
-            "stop_reason": "done",
-            "steps_completed": 3,
-            "usage": {"local_tokens": 42, "cloud_tokens": 0},
-            "last_result": {
-                "model_result": {
-                    "provider": "norllama",
-                    "model": "qwen3.5:32b-q4_K_M",
-                    "text": "Verified local answer.",
-                    "usage": {"input_tokens": 30, "output_tokens": 12},
-                }
+            "model_result": {
+                "provider": "norllama",
+                "model": "qwen3.5:32b-q4_K_M",
+                "text": "Verified local answer.",
+                "usage": {"input_tokens": 30, "output_tokens": 12},
             },
-            "snapshot": {
-                "events": [
-                    {
-                        "event_type": "model.delta",
-                        "payload": {"text": "Plan locally."},
-                    },
-                    {
-                        "event_type": "goal.step_completed",
-                        "payload": {"phase": "plan"},
-                    },
-                    {
-                        "event_type": "model.delta",
-                        "payload": {"text": "Do the local work."},
-                    },
-                    {
-                        "event_type": "goal.step_completed",
-                        "payload": {"phase": "work"},
-                    },
-                    {
-                        "event_type": "model.delta",
-                        "payload": {"text": "Verified local answer."},
-                    },
-                    {
-                        "event_type": "goal.step_completed",
-                        "payload": {"phase": "verify"},
-                    },
-                ]
-            },
+            "snapshot": {"events": []},
         }
 
     monkeypatch.setattr(module, "_console_runtime_json_request", fake_json_request)
     monkeypatch.setattr(module, "append_audit_event", lambda **_kwargs: {})
 
     response, error, _thread_id, usage = module._execute_prompt_runtime(
-        "Summarize these notes locally.",
+        "Summarize the following notes locally: alpha beta gamma.",
         "balanced",
         2,
         [],
@@ -858,17 +1992,27 @@ def test_kernel_primary_runtime_can_return_visible_response(monkeypatch, tmp_pat
     assert usage["kernel_cloud_tokens"] == 0
     assert requests[0][0] == "POST"
     assert requests[0][2]["dry_run"] is False
-    assert requests[0][2]["continuous"] is True
-    assert requests[0][2]["max_steps"] == 5
+    assert requests[0][2]["continuous"] is False
+    assert requests[0][2]["durable_workstream"] is False
+    assert requests[0][2]["max_steps"] == 1
+    assert requests[0][2]["local_token_budget"] > 0
     assert requests[0][2]["cloud_token_budget"] == 0
+    assert (
+        requests[0][2]["route_policy"]["token_capacity_plan"]["provider_class"]
+        == "norllama"
+    )
+    assert requests[0][2]["metadata"]["token_capacity_plan"]["enforcement"] == (
+        "kernel_hard"
+    )
     assert requests[0][2]["model"] == "qwen3.5:32b-q4_K_M"
-    assert requests[0][2]["route_policy"]["verifier_can_stop"] is True
+    assert requests[0][2]["route_policy"]["verifier_can_stop"] is False
+    assert requests[0][2]["route_policy"]["route_proof_required"] is False
     assert requests[0][2]["route_policy"]["model_timeout_seconds"] == 595.0
     assert requests[0][2]["metadata"]["provider_timeout_seconds"] == 595.0
     assert requests[0][2]["confirm_live_execution"] == "ENABLE LIVE RUNTIME"
 
 
-def test_kernel_primary_model_uses_local_candidates_after_health_gate(
+def test_kernel_primary_model_uses_resident_coder_after_health_gate(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("NORMAN_TUI_BACKEND", "kernel")
@@ -889,14 +2033,12 @@ def test_kernel_primary_model_uses_local_candidates_after_health_gate(
 
     assert (
         module.console_runtime_kernel_primary_model("codex", "gpt-5.4")
-        == "qwen3.6:35b-a3b-q4_K_M"
+        == "qwen3-coder:30b-a3b-q4_K_M"
     )
-    assert module.local_llm_execution_candidate_models("llama3.2:3b")[0] == (
-        "llama3.2:3b"
-    )
-    assert "qwen3.6:35b-a3b-q4_K_M" in module.local_llm_execution_candidate_models(
-        "llama3.2:3b"
-    )
+    assert module.local_llm_execution_candidate_models("llama3.2:3b") == [
+        "llama3.2:3b",
+        "qwen3-coder:30b-a3b-q4_K_M",
+    ]
 
 
 def test_kernel_primary_model_prefers_explicit_local_model_over_stale_cost_route(
@@ -918,6 +2060,41 @@ def test_kernel_primary_model_prefers_explicit_local_model_over_stale_cost_route
         module.console_runtime_kernel_primary_model("localllm", "qwen3.6:27b")
         == "qwen3.6:27b"
     )
+
+
+def test_route_decision_fields_preserve_requested_and_fallback_context(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    fields = module.route_decision_usage_fields(
+        {
+            "route_source": "local_first_health_gate",
+            "reason": "Cloud authority is required for a workspace mutation.",
+            "requested_runtime": "localllm",
+            "requested_model": "qwen3.6:35b-a3b-q4_K_M",
+            "requested_service_tier": "default",
+            "fallback_reason": "Local model was advisory only.",
+        },
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+    )
+    usage = module.normalize_usage_entry(
+        {
+            "runtime": "codex",
+            "model": module.MODEL,
+            **fields,
+        }
+    )
+
+    assert usage["route_source"] == "local_first_health_gate"
+    assert usage["route_requested_runtime"] == "localllm"
+    assert usage["route_requested_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert usage["route_reason"] == (
+        "Cloud authority is required for a workspace mutation."
+    )
+    assert usage["route_fallback_reason"] == "Local model was advisory only."
 
 
 def test_console_runtime_turn_route_policy_preserves_route_lock_model(
@@ -1124,7 +2301,7 @@ def test_kernel_primary_runtime_falls_back_to_codex(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "append_audit_event", lambda **_kwargs: {})
 
     response, error, thread_id, usage = module._execute_prompt_runtime(
-        "Summarize these notes locally.",
+        "Summarize the following notes locally: alpha beta gamma.",
         "balanced",
         2,
         [],
@@ -1148,6 +2325,7 @@ def test_kernel_owned_turn_blocks_codex_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_TUI_KERNEL_EXECUTION", "1")
     monkeypatch.setenv("NORMAN_TUI_KERNEL_OWNED_TURN", "1")
     monkeypatch.setenv("NORMAN_TUI_KERNEL_PRIMARY_STRICT", "1")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_STRICT_SHADOW", "1")
     module = _load_agent_console_web(monkeypatch, tmp_path)
     module.update_status_meta(running_console_runtime_job_id="turn-kernel-primary")
 
@@ -1162,7 +2340,7 @@ def test_kernel_owned_turn_blocks_codex_fallback(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "append_audit_event", lambda **_kwargs: {})
 
     response, error, _thread_id, usage = module._execute_prompt_runtime(
-        "Summarize these notes locally.",
+        "Summarize the following notes locally: alpha beta gamma.",
         "balanced",
         2,
         [],
@@ -1192,6 +2370,7 @@ def test_kernel_owned_turn_can_fall_back_to_codex_when_not_strict(
     monkeypatch.setenv("NORMAN_TUI_BACKEND", "kernel")
     monkeypatch.setenv("NORMAN_TUI_KERNEL_EXECUTION", "1")
     monkeypatch.setenv("NORMAN_TUI_KERNEL_OWNED_TURN", "1")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_STRICT_SHADOW", "1")
     module = _load_agent_console_web(monkeypatch, tmp_path)
     module.update_status_meta(running_console_runtime_job_id="turn-kernel-primary")
 
@@ -1214,7 +2393,7 @@ def test_kernel_owned_turn_can_fall_back_to_codex_when_not_strict(
     )
 
     response, error, thread_id, usage = module._execute_prompt_runtime(
-        "Summarize these notes locally.",
+        "Summarize the following notes locally: alpha beta gamma.",
         "balanced",
         2,
         [],
@@ -1407,10 +2586,14 @@ def test_console_runtime_audit_mirrors_to_active_turn_shadow(monkeypatch, tmp_pa
     module.mirror_audit_event_to_console_runtime(entry, background=False)
 
     assert [request.full_url for request, _timeout in requests] == [
+        "http://norman.local/api/v1/console-runtime/workstreams",
         "http://norman.local/api/v1/console-runtime/jobs/job-session/events",
         "http://norman.local/api/v1/console-runtime/jobs/turn-shadow-1/events",
     ]
-    payload = json.loads(requests[1][0].data.decode())
+    assert json.loads(requests[0][0].data.decode())["coordinator_job_id"] == (
+        "job-session"
+    )
+    payload = json.loads(requests[2][0].data.decode())
     assert payload["payload"]["original_event_type"] == "planner.local-preflight"
     assert payload["summary"] == "Norllama planner preflight completed."
 
@@ -1489,7 +2672,7 @@ def test_agent_console_web_accepts_norman_codex_env_prefix(monkeypatch, tmp_path
     assert module.PORT == 9797
     assert module.TOKEN == "norman-token"
     assert module.AGENT_NAME == "Norman"
-    assert module.MODEL == "gpt-norman"
+    assert module.MODEL == "gpt-5.6-terra"
 
 
 def test_console_template_prefers_structured_runtime_activity():
@@ -1549,6 +2732,29 @@ def test_bedrock_profile_routes_omit_openai_service_tier_config(monkeypatch, tmp
     assert module.service_tier_config_args("bedrock-failover") == []
 
 
+def test_subscription_flex_can_use_supported_default_wire_tier(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "CODEX_STANDARD_PROFILE_V2", "")
+    monkeypatch.setattr(module, "CODEX_FLEX_PROFILE_V2", "")
+    monkeypatch.setattr(module, "CODEX_PRIORITY_PROFILE_V2", "")
+    monkeypatch.setenv("NORMAN_CODEX_FLEX_EXECUTION_TIER", "default")
+
+    assert module.service_tier_config_args("flex") == [
+        "-c",
+        'model_provider="openai"',
+        "-c",
+        'service_tier="default"',
+    ]
+    assert module.service_tier_config_args("priority")[-1] == 'service_tier="priority"'
+    monkeypatch.setenv("NORMAN_CODEX_FLEX_EXECUTION_TIER", "invalid")
+    assert module.service_tier_config_args("flex")[-1] == 'service_tier="flex"'
+    monkeypatch.delenv("NORMAN_CODEX_FLEX_EXECUTION_TIER")
+    assert module.service_tier_config_args("flex")[-1] == 'service_tier="flex"'
+    monkeypatch.setenv("NORMAN_CODEX_FLEX_EXECUTION_TIER", "default")
+    monkeypatch.setattr(module, "CODEX_FLEX_PROFILE_V2", "custom-profile")
+    assert module.service_tier_config_args("flex") == []
+
+
 def test_profile_flag_uses_profile_v2_for_pre_0134_codex_with_both_flags(
     monkeypatch, tmp_path
 ):
@@ -1595,8 +2801,8 @@ def test_launch_template_uses_profile_file_without_legacy_profile_config():
     assert 'profile=\\"$STANDARD_PROFILE_V2\\"' not in source
     assert (
         "else\n"
-        "        CODEX_SERVICE_TIER_ARGS=(-c 'service_tier=\"default\"')\n"
-        "    fi" in source
+        "            CODEX_SERVICE_TIER_ARGS=(-c 'service_tier=\"default\"')\n"
+        "        fi" in source
     )
 
 
@@ -1635,7 +2841,7 @@ def test_localllm_runtime_accepts_small_text_models(monkeypatch, tmp_path):
         "hf.co/mradermacher/openfugu-conductor-3b-GGUF:q4_K_M"
     )
     assert module.runtime_can_execute("localllm") is True
-    assert module.RUNTIME_REGISTRY["localllm"]["execution"] == "active"
+    assert module.RUNTIME_REGISTRY["localllm"]["execution"] == "pool"
 
 
 def test_localllm_runtime_rejects_legacy_qwen3_text_model(monkeypatch, tmp_path):
@@ -1652,35 +2858,7 @@ def test_localllm_runtime_rejects_legacy_qwen3_text_model(monkeypatch, tmp_path)
     assert module.runtime_can_execute("localllm") is True
 
 
-def test_localllm_runtime_accepts_qwen35_plus_model(monkeypatch, tmp_path):
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.5:27b-q4_K_M")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.5:27b-q4_K_M")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "1")
-
-    module = _load_agent_console_web(monkeypatch, tmp_path)
-
-    assert module._qwen_below_floor("qwen3.5:27b-q4_K_M") is False
-    assert module._local_llm_model_allowed("qwen3.5:27b-q4_K_M") is True
-    assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3.5:27b-q4_K_M"
-    assert module.runtime_can_execute("localllm") is True
-
-
-def test_localllm_runtime_accepts_qwen3_coder_benchmark_lane(monkeypatch, tmp_path):
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3-coder:30b-a3b-q4_K_M")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3-coder:30b-a3b-q4_K_M")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "1")
-
-    module = _load_agent_console_web(monkeypatch, tmp_path)
-
-    assert module._qwen_below_floor("qwen3-coder:30b-a3b-q4_K_M") is False
-    assert module._local_llm_model_allowed("qwen3-coder:30b-a3b-q4_K_M") is True
-    assert "qwen3-coder:30b-a3b-q4_K_M" in module.local_llm_preferred_models()
-    assert module.runtime_can_execute("localllm") is True
-
-
-def test_localllm_lane_models_keep_benchmark_guardrails(monkeypatch, tmp_path):
+def test_localllm_automatic_lanes_use_resident_coder(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv(
         "NORMAN_LOCAL_LLM_MODELS",
@@ -1694,15 +2872,13 @@ def test_localllm_lane_models_keep_benchmark_guardrails(monkeypatch, tmp_path):
         == "summarizer"
     )
     assert module.local_llm_prompt_lane("Patch this repo test failure.") == "coder"
-    assert module.local_llm_lane_models("summarizer")[:2] == [
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:27b",
-    ]
-    assert module.local_llm_lane_models("coder")[:2] == [
-        "qwen3.6:27b",
-        "qwen3.6:35b-a3b-q4_K_M",
-    ]
-    assert module.local_llm_lane_models("canary")[:1] == ["qwen3.6:27b"]
+    assert module.local_automatic_text_models() == ["qwen3-coder:30b-a3b-q4_K_M"]
+    assert module.local_planner_preferred_models() == ["qwen3-coder:30b-a3b-q4_K_M"]
+    assert module.local_llm_lane_models("summarizer")[0] == (
+        "qwen3-coder:30b-a3b-q4_K_M"
+    )
+    assert module.local_llm_lane_models("coder")[0] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert module.local_llm_lane_models("canary")[0] == "qwen3-coder:30b-a3b-q4_K_M"
     assert "llama3.2:3b" not in module.local_llm_lane_models("canary")
     assert module._local_llm_model_disabled("llama3.2:3b") is True
 
@@ -1729,10 +2905,10 @@ def test_localllm_health_defaults_to_benchmark_route_model(monkeypatch, tmp_path
     snapshot = module.local_llm_health_snapshot(force=True)
 
     assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3.6:27b"
-    assert module.LOCAL_LLM_ROUTE_DEFAULT_MODEL == "qwen3.6:27b"
-    assert snapshot["model"] == "qwen3.6:27b"
+    assert module.LOCAL_LLM_ROUTE_DEFAULT_MODEL == "qwen3-coder:30b-a3b-q4_K_M"
+    assert snapshot["model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert calls == [
-        ("http://local-llm:18151", "qwen3.6:27b"),
+        ("http://local-llm:18151", "qwen3-coder:30b-a3b-q4_K_M"),
     ]
 
 
@@ -1746,10 +2922,10 @@ def test_localllm_autosenses_norman_norllama_by_default(monkeypatch, tmp_path):
 
     module = _load_agent_console_web(monkeypatch, tmp_path)
 
-    assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3.6:27b"
+    assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3-coder:30b-a3b-q4_K_M"
     assert module.LOCAL_LLM_AUTOSENSE_ENABLED is True
     assert module.runtime_can_execute("localllm") is True
-    assert module.local_llm_candidate_endpoints("qwen3.6:27b") == [
+    assert module.local_llm_candidate_endpoints("qwen3-coder:30b-a3b-q4_K_M") == [
         "https://llm.home.arpa",
         "https://llm.knox.lollie.org",
     ]
@@ -1786,9 +2962,9 @@ def test_localllm_foreground_collapses_frontdoor_aliases(monkeypatch, tmp_path):
     )
 
     assert response == ""
-    assert "llm.home.arpa" in error
-    assert "llm.knox.lollie.org" not in error
-    assert calls == [("https://llm.home.arpa/api/chat", 120)]
+    assert error == "Norllama pool request timed out."
+    assert 1 < len(calls) <= 4
+    assert set(calls) == {("https://llm.home.arpa/api/chat", 120)}
     assert usage["provider_timeout_seconds"] == 120
 
 
@@ -1866,7 +3042,7 @@ def test_template_does_not_downshift_fork_strategy_prompt_to_status(
     assert "Answer now" not in recommendation["steering_chips"]
 
 
-def test_literal_canary_allows_tiny_canary_model_without_lowering_general_floor(
+def test_literal_canary_keeps_tiny_model_out_of_automatic_final_routing(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3-coder-next:q4_K_M")
@@ -1877,10 +3053,14 @@ def test_literal_canary_allows_tiny_canary_model_without_lowering_general_floor(
 
     def fake_health(model):
         return {
-            "ok": model == "gemma3:1b",
+            "ok": model == "qwen3-coder:30b-a3b-q4_K_M",
             "model": model,
             "endpoint": "http://local-llm:18151",
-            "reason": "model advertised" if model == "gemma3:1b" else "not resident",
+            "reason": (
+                "model advertised"
+                if model == "qwen3-coder:30b-a3b-q4_K_M"
+                else "not resident"
+            ),
         }
 
     monkeypatch.setattr(module, "local_llm_health_snapshot", fake_health)
@@ -1903,9 +3083,9 @@ def test_literal_canary_allows_tiny_canary_model_without_lowering_general_floor(
     assert module._local_llm_model_allowed("gemma3:1b") is False
     assert module._local_llm_model_allowed_for_lane("canary", "gemma3:1b") is True
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "gemma3:1b"
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert decision["local_lane"] == "canary"
-    assert "gemma3:1b" in decision["local_candidates"]
+    assert decision["local_candidates"] == ["qwen3-coder:30b-a3b-q4_K_M"]
 
 
 def test_cost_route_prefers_local_for_safe_self_contained_prompt(monkeypatch, tmp_path):
@@ -1945,11 +3125,12 @@ def test_cost_route_prefers_local_for_safe_self_contained_prompt(monkeypatch, tm
     )
 
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert decision["local_lane"] == "summarizer"
-    assert decision["local_candidate_policy"] == "benchmark_lane_guardrail"
+    assert decision["local_candidate_policy"] == "resident-coder-policy"
     assert decision["route_source"] == "local_first_policy"
     assert decision["charge_basis"] == "local_token_estimate"
+    assert decision["local_final_authority"] is True
     assert decision["local_mesh"]["healthy_worker_count"] == 1
 
 
@@ -1995,12 +3176,12 @@ def test_cost_route_keeps_service_status_matrix_local(monkeypatch, tmp_path):
     )
 
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert decision["route_source"] == "local_first_policy"
     assert decision["mutation_risk"] == "none"
 
 
-def test_cost_route_keeps_typo_status_update_prompt_local(monkeypatch, tmp_path):
+def test_cost_route_keeps_typo_status_update_on_cloud_authority(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
@@ -2039,21 +3220,20 @@ def test_cost_route_keeps_typo_status_update_prompt_local(monkeypatch, tmp_path)
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] in {
-        "qwen3.6:27b",
-        "qwen3.6:35b-a3b-q4_K_M",
-    }
+    assert decision["selected_runtime"] == "codex"
+    assert decision["selected_model"] == module.MODEL
     assert decision["requested_action"] == "status"
     assert decision["operator_intent_class"] == "status"
-    assert decision["route_source"] == "local_first_policy"
-    assert decision["charge_basis"] == "local_token_estimate"
+    assert decision["local_final_authority"] is False
+    assert decision["route_source"] == "local_preflight_cloud_authority"
+    assert "selected cloud runtime is final authority" in decision["reason"]
 
 
 def test_deterministic_status_prompt_completes_without_model_call(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED", "1")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "0")
     module = _load_agent_console_web(monkeypatch, tmp_path)
 
     def fail_execute(*_args, **_kwargs):
@@ -2076,12 +3256,11 @@ def test_deterministic_status_prompt_completes_without_model_call(
 
     assert snapshot["pending"] is False
     assert snapshot["state"] == "ok"
-    assert "deterministic TUI state" in snapshot["last_response"]
-    history = module.load_history(limit=1)
-    assert history[-1]["runtime"] == "localllm"
-    assert history[-1]["model"] == "deterministic-status"
-    assert history[-1]["usage"]["route_execution"] == "deterministic_tui_status"
-    assert history[-1]["usage"]["total_tokens"] == 0
+    assert "Bridge status" in snapshot["last_response"]
+    assert "instant local status check" in snapshot["last_response"]
+    assert "Selected route:" not in snapshot["last_response"]
+    # Ephemeral status checks must not pollute the next prompt's conversation context.
+    assert module.load_history(limit=1) == []
     receipts = [
         json.loads(line)
         for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
@@ -2089,6 +3268,468 @@ def test_deterministic_status_prompt_completes_without_model_call(
     ]
     assert receipts[-1]["requested_action"] == "status"
     assert receipts[-1]["validator_passed"] is True
+    assert receipts[-1]["input_tokens"] == 0
+    assert receipts[-1]["output_tokens"] == 0
+    assert receipts[-1]["work_classification"]["work_class"] == "deterministic"
+
+
+def test_deterministic_command_prompt_completes_without_model_call(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED", "1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    executed: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_execute_prompt_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("deterministic command should not call a model")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "execute_deterministic_command",
+        lambda argv: (
+            executed.append(argv) or "Command `pwd` completed with exit code 0.\n/test",
+            True,
+        ),
+    )
+
+    prompt = "run pwd"
+    assert module.deterministic_command_prompt_allowed(prompt, [], route_lock=False)
+
+    snapshot = module.complete_deterministic_command_prompt(
+        prompt,
+        speed="fast",
+        detail=2,
+        service_tier="default",
+        job_budget="quick",
+        optimization_mode="auto",
+        actor_ip="127.0.0.1",
+    )
+
+    assert executed == [["pwd"]]
+    assert snapshot["pending"] is False
+    assert snapshot["state"] == "ok"
+    history = module.load_history(limit=1)
+    assert history[-1]["runtime"] == "localllm"
+    assert history[-1]["model"] == "deterministic-command"
+    assert history[-1]["usage"]["route_execution"] == "deterministic_tui_command"
+    assert history[-1]["usage"]["total_tokens"] == 0
+    assert history[-1]["work_classification"]["work_class"] == "deterministic"
+    assert history[-1]["route_rationale"] == (
+        "deterministic: trusted read-only command handler."
+    )
+    assert history[-1]["usage"]["work_classification"]["work_class"] == "deterministic"
+    receipts = [
+        json.loads(line)
+        for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert receipts[-1]["requested_action"] == "command"
+    assert receipts[-1]["selected_model_tier"] == "deterministic_tool"
+    assert receipts[-1]["allowed_role"] == "deterministic_read"
+    assert receipts[-1]["decision_class"] == "deterministic"
+    assert receipts[-1]["frontier_review_required"] is False
+    assert receipts[-1]["frontier_calls_avoided"] == 1
+    assert receipts[-1]["local_calls_avoided"] == 1
+    assert receipts[-1]["work_classification"]["work_class"] == "deterministic"
+
+
+def test_prompt_worker_preserves_requested_cloud_identity_on_local_execution(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED", "1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = "Draft a plan for the next change."
+    requested_model = module.normalize_runtime_model("codex", module.MODEL)
+    cost_route = module.build_tui_waterfall(
+        requested_runtime="codex",
+        requested_model=requested_model,
+        requested_service_tier="default",
+        base_runtime="localllm",
+        base_model="qwen3-coder:30b-a3b-q4_K_M",
+        base_service_tier="default",
+        bedrock_runtime="codex",
+        bedrock_model=requested_model,
+        bedrock_service_tier="bedrock-emergency",
+        route_lock=False,
+        subscription={
+            "enabled": True,
+            "selected": False,
+            "state": "blocked",
+            "fresh": True,
+            "chatgpt_auth_verified": True,
+        },
+        norllama_available=True,
+        norllama_safe_final=True,
+        bedrock_available=False,
+    )
+    assert cost_route["selected_runtime"] == "localllm"
+    local_model = "qwen3-coder:30b-a3b-q4_K_M"
+    assert (
+        module.validate_cost_route_proof(
+            cost_route,
+            "localllm",
+            local_model,
+            "default",
+        )
+        == cost_route
+    )
+    envelope = module.build_turn_control_envelope(
+        prompt=prompt,
+        runtime="localllm",
+        model=local_model,
+        service_tier="default",
+        requested_runtime="codex",
+        requested_model=requested_model,
+        requested_service_tier="default",
+        active_work=True,
+    )
+    envelope["cost_route"] = cost_route
+    module.update_status_meta(
+        pending=True,
+        state="running",
+        running_prompt=prompt,
+        running_runtime="localllm",
+        running_model=local_model,
+        running_service_tier="default",
+        running_cost_route=cost_route,
+        running_turn_envelope=envelope,
+    )
+    monkeypatch.setattr(
+        module,
+        "_execute_prompt_runtime",
+        lambda *_args, **_kwargs: (
+            "Plan complete.\nDONE",
+            "",
+            "thread-local-plan",
+            {"input_tokens": 7, "output_tokens": 3},
+        ),
+    )
+    monkeypatch.setattr(
+        module, "maybe_notify_long_job_completion", lambda **_kwargs: None
+    )
+
+    module._prompt_worker(
+        prompt,
+        module.now_ts(),
+        "balanced",
+        2,
+        "5m",
+        300,
+        [],
+        "localllm",
+        local_model,
+        service_tier="default",
+    )
+
+    receipts = [
+        json.loads(line)
+        for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    receipt = receipts[-1]
+    assert (
+        receipt["requested_provider"]
+        == module.usage_provider_tags("default")["provider_surface"]
+    )
+    assert receipt["routing_bands"]["requested_runtime"] == "codex"
+    assert receipt["requested_model"] == requested_model
+    assert receipt["effective_provider"] == "norllama"
+    assert receipt["routing_bands"]["runtime"] == "localllm"
+    assert receipt["work_classification"]["work_class"] == "local_review"
+    assert receipt["route_rationale"] == "local review: local planning review."
+
+
+def test_deterministic_command_parser_has_exact_safe_boundaries(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    assert module.deterministic_command_request("run pwd") == ["pwd"]
+    assert module.deterministic_command_request("`date -Is`") == ["date", "-Is"]
+    assert module.deterministic_command_request("run git status --short") == [
+        "git",
+        "status",
+        "--short",
+    ]
+    for prompt in (
+        "git status",
+        "git status --short --ignored",
+        "run git status --short; pwd",
+        "run pwd && date",
+        "run pwd\nrun date",
+        "please run pwd",
+        "status? run pwd",
+    ):
+        assert module.deterministic_command_request(prompt) is None
+
+    attachment = [{"token": "attachment-1", "path": str(tmp_path / "note.txt")}]
+    assert (
+        module.deterministic_command_prompt_allowed(
+            "run pwd", attachment, route_lock=False
+        )
+        is False
+    )
+    assert (
+        module.deterministic_command_prompt_allowed("run pwd", [], route_lock=True)
+        is False
+    )
+    module.ACTIVE_PROMPT_THREAD = SimpleNamespace(is_alive=lambda: True)
+    assert module.deterministic_command_prompt_allowed("run pwd", []) is False
+    module.ACTIVE_PROMPT_THREAD = None
+
+
+def test_healthy_local_lane_allows_exact_deterministic_status(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_PLANNER_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    health_calls = []
+    monkeypatch.setattr(
+        module,
+        "local_llm_health_snapshot",
+        lambda model: (
+            health_calls.append(model)
+            or {
+                "ok": True,
+                "model": model,
+                "endpoint": "http://local-llm:11434",
+                "reason": "model advertised",
+            }
+        ),
+    )
+
+    assert module.local_status_preflight_available() is True
+    assert module.deterministic_status_prompt_allowed("Status update?", []) is True
+    assert health_calls == [
+        "local-llm",
+        module.LOCAL_LLM_ROUTE_DEFAULT_MODEL,
+    ]
+
+
+def test_generic_local_guardrail_does_not_block_deterministic_state_read(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_PLANNER_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    health_calls = []
+
+    def fake_health(model):
+        health_calls.append(model)
+        return {
+            "ok": model == "local-llm",
+            "model": model,
+            "endpoint": "http://local-llm:11434",
+            "reason": (
+                "generic guardrail healthy"
+                if model == "local-llm"
+                else "planner model is not advertised"
+            ),
+        }
+
+    monkeypatch.setattr(module, "local_llm_health_snapshot", fake_health)
+    monkeypatch.setattr(
+        module,
+        "local_planner_preflight_selection",
+        lambda: _planner_selection("qwen3.6:27b"),
+    )
+
+    readiness = module.local_planner_preflight_readiness()
+
+    assert readiness["configured"] is True
+    assert readiness["ready"] is False
+    assert readiness["status"] == "unavailable"
+    assert health_calls == ["qwen3.6:27b"]
+    assert module.deterministic_status_prompt_allowed("Status update?", []) is True
+
+
+def test_planner_cooldown_does_not_block_deterministic_state_read(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_PLANNER_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        module,
+        "local_llm_route_cooldown",
+        lambda model: (
+            {
+                "active": True,
+                "model": model,
+                "endpoint": "http://local-llm:11434",
+                "status": "timeout",
+                "remaining_seconds": 45,
+            }
+            if model == "qwen3.6:27b"
+            else {}
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_preflight_selection",
+        lambda: _planner_selection("qwen3.6:27b"),
+    )
+
+    readiness = module.local_planner_preflight_readiness()
+
+    assert readiness["configured"] is True
+    assert readiness["ready"] is True
+    assert readiness["status"] == "ready"
+    assert module.deterministic_status_prompt_allowed("Status update?", []) is True
+
+
+def test_unavailable_local_lane_allows_deterministic_state_read(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "0")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    assert module.local_status_preflight_available() is False
+    assert module.deterministic_status_prompt_allowed("Status update?", []) is True
+
+
+def test_active_prompt_never_uses_deterministic_state_read(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "0")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ACTIVE_PROMPT_THREAD = SimpleNamespace(is_alive=lambda: True)
+
+    assert module.deterministic_status_prompt_allowed("Status update?", []) is False
+
+    module.ACTIVE_PROMPT_THREAD = None
+
+
+def test_route_proof_nonce_keeps_status_on_deterministic_state_read(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "0")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = "Status update. No tools or changes. routeproof0123456789abcdef"
+
+    assert module.prompt_is_quick_status_request(prompt) is True
+    assert module.deterministic_status_prompt_allowed(prompt, []) is True
+
+
+def test_conversational_status_prompt_does_not_bypass_normal_routing(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "0")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    assert module.prompt_is_explicit_status_request("How are the TUIs doing?") is False
+    assert (
+        module.deterministic_status_prompt_allowed("How are the TUIs doing?", [])
+        is False
+    )
+    assert module.deterministic_status_prompt_allowed("Status update?", []) is True
+
+
+def test_media_request_never_uses_deterministic_state_read(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "0")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = "Can you show me the images in this session here?"
+
+    assert module.prompt_requests_media_work(prompt) is True
+    assert module.deterministic_status_prompt_allowed(prompt, []) is False
+
+
+def test_investigative_status_runs_local_route_preflight_instead_of_zero_token_reply(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv(
+        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODELS",
+        "qwen3-coder:30b-a3b-q4_K_M",
+    )
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = "all the cameras are looking stale. What's up, can you dig more?"
+
+    assert module.prompt_requests_investigation(prompt) is True
+    assert module.prompt_is_quick_status_request(prompt) is False
+    assert module.route_receipt_requested_action(prompt) == "dig_deeper"
+    assert module.deterministic_status_prompt_allowed(prompt, []) is False
+    assert module.local_route_intent_classifier_should_run(prompt) is True
+
+
+def test_followup_action_recovers_subject_when_previous_turn_was_deterministic(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prior_prompt = "all the cameras are looking stale. What's up, can you dig more?"
+    prior_response = "State-only status was returned without a cloud/model call."
+    module.HISTORY_PATH.write_text(
+        json.dumps(
+            {
+                "prompt": prior_prompt,
+                "response": prior_response,
+                "started_at": 1,
+                "finished_at": 2,
+                "usage": {
+                    "success": True,
+                    "total_tokens": 0,
+                    "route_execution": "deterministic_tui_status",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    followup = (
+        "Proceed from your last answer. Continue with the next concrete step and "
+        "do not repeat the setup."
+    )
+
+    assert module.prompt_is_generic_followup_action(followup) is True
+    assert module.turn_plan_subject_prompt(followup) == prior_prompt
+    assert "cameras are looking stale" in module.planner_understood_task(followup, [])
+    execution_prompt = module.build_followup_execution_prompt(followup)
+    assert prior_prompt in execution_prompt
+    assert prior_response in execution_prompt
+    assert execution_prompt.endswith(followup)
+
+
+def test_working_recap_lists_labels_instead_of_truncating_joined_text(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    recap = module.deterministic_working_recap(
+        {
+            "turn_plan": {
+                "skill_labels": [
+                    "context triage",
+                    "verification",
+                    "runbook routing",
+                    "answer synthesis",
+                ]
+            }
+        },
+        observed_at=1,
+    )
+
+    assert recap["milestones"][0] == (
+        "Plan ready: context triage, verification, runbook routing."
+    )
+
+
+def test_template_routes_svg_benchmark_regeneration_to_tool_capable_runtime(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = (
+        "why are there no Codex 5.6 benchmarks in the SVG? "
+        "can you regenerate the SVG after running the benchmark?"
+    )
+
+    assert module.prompt_is_route_status_diagnostic(prompt) is False
+    assert module.route_receipt_requested_action(prompt) == "benchmark_or_optimizer"
+    assert module.deterministic_status_prompt_allowed(prompt, []) is False
+    assert module.prompt_requires_cloud_or_tools(prompt) is True
 
 
 def test_cost_route_uses_local_intent_classifier_for_ambiguous_status(
@@ -2096,7 +3737,10 @@ def test_cost_route_uses_local_intent_classifier_for_ambiguous_status(
 ):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
-    monkeypatch.setenv("NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv(
+        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODELS",
+        "qwen3-coder:30b-a3b-q4_K_M",
+    )
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
     module = _load_agent_console_web(monkeypatch, tmp_path)
 
@@ -2171,23 +3815,37 @@ def test_cost_route_uses_local_intent_classifier_for_ambiguous_status(
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] in {
-        "qwen3.6:27b",
-        "qwen3.6:35b-a3b-q4_K_M",
-    }
+    assert decision["selected_runtime"] == "codex"
+    assert decision["selected_model"] == module.MODEL
     assert decision["requested_action"] == "status"
     assert decision["operator_intent_class"] == "status"
-    assert decision["local_lane"] == "scout"
-    assert decision["route_source"] == "local_first_intent_classifier"
-    assert decision["charge_basis"] == "local_token_estimate"
+    assert decision["local_final_authority"] is False
+    assert decision["route_source"] == "local_preflight_cloud_authority"
     assert decision["local_intent_classifier"]["used"] is True
     assert decision["local_intent_classifier"]["promoted_local"] is True
     assert decision["local_intent_classifier"]["confidence"] == 0.94
     assert decision["local_intent_classifier"]["worker_endpoint"] == "spark151"
 
 
-def test_cost_route_keeps_broad_planning_on_local_planner_lane(monkeypatch, tmp_path):
+def test_local_route_intent_classifier_prompt_enforces_bounded_status_values(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    prompt = module.local_route_intent_classifier_prompt(
+        "How are things looking?",
+        requested_action="operator_prompt",
+        intent_class="operator_prompt",
+    )
+
+    assert module.LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS == 192
+    assert "do not invent aliases such as status_check" in prompt.lower()
+    assert "requested_action=status" in prompt
+    assert "operator_intent_class=status" in prompt
+    assert "lane=scout" in prompt
+
+
+def test_cost_route_keeps_broad_planning_on_cloud_authority(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
@@ -2206,6 +3864,7 @@ def test_cost_route_keeps_broad_planning_on_local_planner_lane(monkeypatch, tmp_
     prompt = "what happened with the plan for forking TUIs into multiple sessions?"
     assert module.prompt_is_broad_planning_request(prompt) is True
     assert module.prompt_is_local_first_candidate(prompt) is True
+    assert module.prompt_is_local_final_response_candidate(prompt) is False
 
     decision = module.cost_route_decision_for_prompt(
         prompt=prompt,
@@ -2222,11 +3881,11 @@ def test_cost_route_keeps_broad_planning_on_local_planner_lane(monkeypatch, tmp_
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["local_lane"] == "planner"
+    assert decision["selected_runtime"] == "codex"
     assert decision["requested_action"] == "operator_prompt"
     assert decision["operator_intent_class"] == "operator_prompt"
-    assert decision["route_source"] == "local_first_policy"
+    assert decision["local_final_authority"] is False
+    assert decision["route_source"] == "local_preflight_cloud_authority"
 
 
 def test_local_intent_classifier_cannot_downgrade_broad_planning_to_status(
@@ -2254,6 +3913,40 @@ def test_local_intent_classifier_cannot_downgrade_broad_planning_to_status(
                 "risk": "none",
                 "confidence": 0.99,
             },
+            prompt=prompt,
+            requested_action="operator_prompt",
+            intent_class="operator_prompt",
+        )
+        is False
+    )
+
+
+def test_local_intent_classifier_cannot_downgrade_investigation_to_status(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = "all the cameras are looking stale. What is up? Can you dig more?"
+    classifier_result = {
+        "requested_action": "status",
+        "operator_intent_class": "status",
+        "lane": "scout",
+        "local_eligible": True,
+        "cloud_needed": False,
+        "risk": "none",
+        "confidence": 0.99,
+    }
+
+    assert (
+        module.local_route_intent_classifier_deterministic_block(
+            prompt,
+            requested_action="operator_prompt",
+            intent_class="operator_prompt",
+        )
+        == "investigation_request"
+    )
+    assert (
+        module.local_route_intent_classifier_promotes_local(
+            classifier_result,
             prompt=prompt,
             requested_action="operator_prompt",
             intent_class="operator_prompt",
@@ -2328,7 +4021,11 @@ def test_cost_route_keeps_route_diagnostic_local(monkeypatch, tmp_path):
     assert module.turn_control_mutation_risk(prompt) == "none"
     assert module.prompt_requires_cloud_or_tools(prompt) is False
     assert module.prompt_is_local_first_candidate(prompt) is True
-    assert module.console_runtime_kernel_primary_skip_reason(prompt, [], "codex") == ""
+    assert module.prompt_is_local_final_response_candidate(prompt) is False
+    assert (
+        module.console_runtime_kernel_primary_skip_reason(prompt, [], "codex")
+        == "Norllama is advisory preflight; selected cloud runtime is final authority"
+    )
 
     decision = module.cost_route_decision_for_prompt(
         prompt=prompt,
@@ -2345,10 +4042,10 @@ def test_cost_route_keeps_route_diagnostic_local(monkeypatch, tmp_path):
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert decision["local_lane"] == "planner"
-    assert decision["route_source"] == "local_first_policy"
+    assert decision["selected_runtime"] == "codex"
+    assert decision["selected_model"] == module.MODEL
+    assert decision["local_final_authority"] is False
+    assert decision["route_source"] == "local_preflight_cloud_authority"
     assert decision["requested_action"] == "status"
     assert decision["mutation_risk"] == "none"
 
@@ -2360,6 +4057,42 @@ def test_route_diagnostic_does_not_mask_mutating_order(monkeypatch, tmp_path):
     assert module.prompt_is_route_status_diagnostic(prompt) is False
     assert module.prompt_requires_cloud_or_tools(prompt) is True
     assert module.turn_control_mutation_risk(prompt) == "deploy_restart"
+
+
+def test_route_diagnostic_does_not_misclassify_declarative_route_prompt(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = (
+        "Draft a short three-step plan for documenting the differences between a "
+        "local reasoning pass and a final cloud review in a new internal "
+        "engineering guide. The response should be suitable for a release note."
+    )
+
+    assert module.prompt_is_route_status_diagnostic(prompt) is False
+    assert module.deterministic_status_prompt_allowed(prompt, []) is False
+    assert module.route_receipt_requested_action(prompt) == "approval_boundary"
+    assert module.prompt_is_local_first_candidate(prompt) is True
+    assert module.prompt_is_local_final_response_candidate(prompt) is False
+
+    decision = module.cost_route_decision_for_prompt(
+        prompt=prompt,
+        attachments=[],
+        relay_callback=None,
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        job_budget="quick",
+        optimization_mode="auto",
+        route_lock=False,
+        requested_runtime="codex",
+        requested_model=module.MODEL,
+        requested_service_tier="default",
+    )
+
+    assert decision["selected_runtime"] == "codex"
+    assert decision["local_final_authority"] is False
+    assert decision["route_source"] == "existing_selection"
 
 
 def test_cost_route_does_not_treat_negated_tools_as_tool_requirement(
@@ -2513,7 +4246,7 @@ def test_cost_route_uses_norllama_contract_guardrail_candidates(monkeypatch, tmp
                 "warm_policy": warm_policy,
             }
         return {
-            "ok": model in {"qwen3.6:35b-a3b-q4_K_M", "qwen3.6:27b"},
+            "ok": model == "qwen3-coder:30b-a3b-q4_K_M",
             "model": model,
             "endpoint": "http://local-llm:18151",
             "reason": "model advertised",
@@ -2537,11 +4270,9 @@ def test_cost_route_uses_norllama_contract_guardrail_candidates(monkeypatch, tmp
     )
 
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert decision["local_candidate_policy"] == (
-        "norllama_warm_policy_degraded_fallback"
-    )
-    assert decision["local_candidates"][:1] == ["qwen3.6:35b-a3b-q4_K_M"]
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert decision["local_candidate_policy"] == "resident-coder-policy"
+    assert decision["local_candidates"] == ["qwen3-coder:30b-a3b-q4_K_M"]
     assert decision["local_guardrail_candidates"] == ["qwen3.6:35b-a3b-q4_K_M"]
     assert decision["local_guardrail_lane"]["status"] == "prefetch_or_wait"
 
@@ -2582,7 +4313,7 @@ def test_cost_route_labels_first_class_norllama_warm_policy(monkeypatch, tmp_pat
                 "warm_policy": warm_policy,
             }
         return {
-            "ok": model in {"qwen3.6:35b-a3b-q4_K_M", "qwen3.6:27b"},
+            "ok": model == "qwen3-coder:30b-a3b-q4_K_M",
             "model": model,
             "endpoint": "http://local-llm:18151",
             "reason": "model advertised",
@@ -2606,14 +4337,12 @@ def test_cost_route_labels_first_class_norllama_warm_policy(monkeypatch, tmp_pat
     )
 
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert decision["local_candidate_policy"] == (
-        "norllama_warm_policy_degraded_fallback"
-    )
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert decision["local_candidate_policy"] == "resident-coder-policy"
     assert decision["local_guardrail_lane"]["status"] == "prefetch_or_wait"
 
 
-def test_cost_route_tries_next_local_model_when_default_unhealthy(
+def test_cost_route_fails_closed_when_resident_coder_is_unhealthy(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
@@ -2624,14 +4353,10 @@ def test_cost_route_tries_next_local_model_when_default_unhealthy(
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
     module = _load_agent_console_web(monkeypatch, tmp_path)
 
+    health_calls = []
+
     def fake_health(model):
-        if model == "qwen3.5:27b-q4_K_M":
-            return {
-                "ok": True,
-                "model": model,
-                "endpoint": "http://local-llm:18151",
-                "reason": "model advertised",
-            }
+        health_calls.append(model)
         return {
             "ok": False,
             "model": model,
@@ -2656,16 +4381,13 @@ def test_cost_route_tries_next_local_model_when_default_unhealthy(
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.5:27b-q4_K_M"
+    assert decision["selected_runtime"] == "codex"
+    assert decision["selected_model"] == module.MODEL
     assert decision["local_lane"] == "summarizer"
-    assert decision["local_candidates"][:3] == [
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:27b",
-        "qwen3.5:27b-q4_K_M",
-    ]
+    assert decision["local_candidates"] == ["qwen3-coder:30b-a3b-q4_K_M"]
     failed_models = {item["model"] for item in decision["local_candidate_failures"]}
-    assert {"qwen3.6:35b-a3b-q4_K_M", "qwen3.6:27b"} <= failed_models
+    assert failed_models == {"qwen3-coder:30b-a3b-q4_K_M"}
+    assert health_calls == ["local-llm", "qwen3-coder:30b-a3b-q4_K_M"]
 
 
 def test_cost_route_skips_recently_failed_local_model_cooldown(monkeypatch, tmp_path):
@@ -2678,7 +4400,7 @@ def test_cost_route_skips_recently_failed_local_model_cooldown(monkeypatch, tmp_
         source="test",
         status="empty-response",
         ok=False,
-        model="qwen3.6:35b-a3b-q4_K_M",
+        model="qwen3-coder:30b-a3b-q4_K_M",
         endpoint="",
         reason="empty smoke output",
     )
@@ -2709,12 +4431,11 @@ def test_cost_route_skips_recently_failed_local_model_cooldown(monkeypatch, tmp_
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:27b"
-    assert decision["local_lane"] == "summarizer"
-    assert decision["local_cooldowns"][0]["model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert decision["selected_runtime"] == "codex"
+    assert decision["selected_model"] == module.MODEL
+    assert decision["local_cooldowns"][0]["model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert decision["local_cooldowns"][0]["cooldown"]["status"] == "empty-response"
-    assert decision["local_cooldowns"][0]["cooldown"]["scope"] == "local_tui"
+    assert decision["local_cooldowns"][0]["cooldown"]["scope"] == "norllama_pool"
 
 
 def test_cost_route_ignores_old_adapter_empty_response_cooldown(monkeypatch, tmp_path):
@@ -2759,12 +4480,11 @@ def test_cost_route_ignores_old_adapter_empty_response_cooldown(monkeypatch, tmp
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert "local_cooldowns" not in decision
+    assert decision["selected_runtime"] == "codex"
+    assert decision["local_cooldowns"][0]["cooldown"]["scope"] == "norllama_pool"
 
 
-def test_cost_route_uses_fleet_route_outcome_cooldown(monkeypatch, tmp_path):
+def test_cost_route_records_opaque_fleet_route_outcome_evidence(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")
@@ -2852,14 +4572,11 @@ def test_cost_route_uses_fleet_route_outcome_cooldown(monkeypatch, tmp_path):
 
     assert len(requests) == 1
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:27b"
-    assert decision["local_lane"] == "summarizer"
-    assert decision["fleet_route_outcomes"]["by_worker"] == {"spark-150": 2}
-    cooldown = decision["local_cooldowns"][0]["cooldown"]
-    assert cooldown["source"] == "console_runtime"
-    assert cooldown["scope"] == "fleet"
-    assert cooldown["last_tui"] == "Uplink"
-    assert cooldown["last_worker_id"] == "spark-150"
+    # This helper is private route-selection state. The waterfall receipt
+    # persisted by start_web_prompt sanitizes the pool member to "norllama".
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert decision["fleet_route_outcomes"]["fail"] == 2
+    assert "local_cooldowns" not in decision
 
 
 def test_cost_route_ignores_unavailable_fleet_route_outcomes(monkeypatch, tmp_path):
@@ -2899,7 +4616,7 @@ def test_cost_route_ignores_unavailable_fleet_route_outcomes(monkeypatch, tmp_pa
     )
 
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert decision["local_lane"] == "summarizer"
     assert "local_cooldowns" not in decision
     assert "fleet_route_outcomes" not in decision
@@ -3001,6 +4718,7 @@ def test_context_preflight_uses_norllama_planner_for_cloud_turn(monkeypatch, tmp
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(
             {
@@ -3042,8 +4760,9 @@ def test_context_preflight_uses_norllama_planner_for_cloud_turn(monkeypatch, tmp
     assert "Norllama planner preflight" in context
     assert "cloud_needed=no" in context
     assert "safe_local_answer_possible=yes" in context
-    assert "qwen3.6:35b-a3b-q4_K_M" in context
-    assert calls[0]["model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert "qwen3-coder:30b-a3b-q4_K_M" in context
+    assert calls[0]["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+
     assert (
         calls[0]["max_output_tokens"]
         == module.LOCAL_PLANNER_PREFLIGHT_MAX_OUTPUT_TOKENS
@@ -3051,10 +4770,10 @@ def test_context_preflight_uses_norllama_planner_for_cloud_turn(monkeypatch, tmp
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
     assert accounting["local_preflight_used"] is True
     assert accounting["local_preflight_status"] == "ok"
-    assert accounting["local_preflight_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert accounting["local_preflight_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert accounting["local_preflight_tokens"] == 20
     assert accounting["local_preflight_candidate_lane"] == "planner"
-    assert accounting["local_preflight_candidate_policy"] == "benchmark_lane_guardrail"
+    assert accounting["local_preflight_candidate_policy"] == "resident-coder-policy"
     assert accounting["local_preflight_failure_class"] == "ok"
     assert accounting["local_preflight_receipt"]["schema"] == (
         "norman.tui.local-preflight-receipt.v1"
@@ -3066,6 +4785,292 @@ def test_context_preflight_uses_norllama_planner_for_cloud_turn(monkeypatch, tmp
     )
     assert planner_event["payload"]["planner"]["used"] is True
     assert planner_event["payload"]["planner"]["receipt"]["failure_class"] == "ok"
+
+
+def test_local_llm_requests_label_foreground_and_background_work(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_post(url, payload, *, timeout, headers=None):
+        calls.append(
+            {
+                "url": url,
+                "payload": payload,
+                "timeout": timeout,
+                "headers": dict(headers or {}),
+            }
+        )
+        return {"message": {"content": "ok"}}
+
+    monkeypatch.setattr(module, "local_llm_post_json", fake_post)
+
+    module.local_llm_generate_once(
+        "http://local-llm:18151",
+        "resident-model",
+        "background prompt",
+        timeout_seconds=5,
+        work_class="background",
+        work_source="planner-preflight",
+    )
+    module.local_llm_generate_once(
+        "http://local-llm:18151",
+        "resident-model",
+        "foreground prompt",
+        timeout_seconds=5,
+    )
+
+    assert calls[0]["headers"] == {
+        "X-Norllama-Priority": "background",
+        "X-Norllama-Work-Class": "background",
+        "X-Norllama-Interruptible": "true",
+        "X-Norllama-Max-Queue-Wait-Ms": "750",
+        "X-Norllama-Work-Source": "planner-preflight",
+    }
+    assert calls[1]["headers"]["X-Norllama-Priority"] == "high"
+    assert calls[1]["headers"]["X-Norllama-Work-Class"] == "foreground"
+    assert calls[1]["headers"]["X-Norllama-Interruptible"] == "false"
+
+
+def test_context_preflight_local_planner_selects_archive_memory_candidates(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
+    monkeypatch.delenv("NORMAN_CODEX_CONTEXT_PREFLIGHT_OFFLINE_COMMAND", raising=False)
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    candidates = [
+        {
+            "id": "turn-lexical-first",
+            "thread_id": "archive-thread",
+            "started_label": "2026-07-01 00:00 UTC",
+            "prompt_preview": "old routing note",
+            "response_preview": "not the requested prior decision",
+            "usage_total_tokens": 10,
+        },
+        {
+            "id": "turn-selected",
+            "thread_id": "archive-thread",
+            "started_label": "2026-07-02 00:00 UTC",
+            "prompt_preview": "prior routing decision",
+            "response_preview": "selected architecture rationale",
+            "usage_total_tokens": 20,
+        },
+        {
+            "id": "turn-other",
+            "thread_id": "archive-thread",
+            "started_label": "2026-07-03 00:00 UTC",
+            "prompt_preview": "other routing note",
+            "response_preview": "unrelated result",
+            "usage_total_tokens": 30,
+        },
+    ]
+    requested_limits = []
+
+    def fake_memory_refs(_prompt, *, limit):
+        requested_limits.append(limit)
+        return candidates
+
+    monkeypatch.setattr(module, "context_preflight_memory_refs", fake_memory_refs)
+    monkeypatch.setattr(
+        module,
+        "local_llm_health_snapshot",
+        lambda model: {
+            "ok": True,
+            "model": model,
+            "endpoint": "http://local-llm:18151",
+            "reason": "model advertised",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "run_local_specialist_pipeline",
+        lambda _payload, *, planner: {
+            "configured": False,
+            "used": False,
+            "status": "disabled",
+        },
+    )
+
+    def fake_generate(
+        endpoint,
+        model,
+        prompt,
+        *,
+        timeout_seconds,
+        max_output_tokens=None,
+        num_ctx=None,
+        **_request_metadata,
+    ):
+        assert endpoint == "http://local-llm:18151"
+        assert model == "qwen3-coder:30b-a3b-q4_K_M"
+        assert "turn-selected" in prompt
+        return (
+            {
+                "response": json.dumps(
+                    {
+                        "route": "cloud_with_recalled_context",
+                        "memory_ref_ids": ["turn-selected", "not-an-archive-turn"],
+                    }
+                )
+            },
+            "http://local-llm:18151/api/generate",
+            "ollama-generate",
+        )
+
+    monkeypatch.setattr(module, "local_llm_generate_once", fake_generate)
+
+    context = module.context_preflight_prompt_context(
+        "Revisit the prior routing decision.",
+        attachments=[],
+        runtime="codex",
+        model=module.MODEL,
+    )
+
+    assert requested_limits == [module.CONTEXT_PREFLIGHT_MEMORY_CANDIDATES]
+    assert "Local planner selected 1 of 3 archive memory candidates." in context
+    assert "selected architecture rationale" in context
+    assert "not the requested prior decision" not in context
+    accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
+    assert accounting["memory_ref_count"] == 1
+
+
+def test_context_preflight_escalates_partial_recall_to_bounded_local_verifier(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    candidates = [
+        {
+            "id": "turn-primary",
+            "thread_id": "archive-thread",
+            "started_label": "2026-07-01 00:00 UTC",
+            "prompt_preview": "primary routing decision",
+            "response_preview": "first selected evidence",
+            "usage_total_tokens": 10,
+        },
+        {
+            "id": "turn-secondary",
+            "thread_id": "archive-thread",
+            "started_label": "2026-07-02 00:00 UTC",
+            "prompt_preview": "secondary routing decision",
+            "response_preview": "missing corroborating evidence",
+            "usage_total_tokens": 20,
+        },
+    ]
+    calls = []
+    events = []
+
+    monkeypatch.setattr(
+        module,
+        "context_preflight_memory_refs",
+        lambda _prompt, *, limit: candidates[:limit],
+    )
+    monkeypatch.setattr(
+        module,
+        "local_llm_health_snapshot",
+        lambda model: {
+            "ok": True,
+            "model": model,
+            "endpoint": "http://local-llm:18151",
+            "reason": "model advertised",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "run_local_specialist_pipeline",
+        lambda _payload, *, planner: {
+            "configured": False,
+            "used": False,
+            "status": "disabled",
+        },
+    )
+    monkeypatch.setattr(
+        module, "append_audit_event", lambda **kwargs: events.append(kwargs) or {}
+    )
+
+    def fake_generate(
+        endpoint,
+        model,
+        prompt,
+        *,
+        timeout_seconds,
+        max_output_tokens=None,
+        num_ctx=None,
+        **_request_metadata,
+    ):
+        calls.append((model, prompt))
+        if "planner reported partial archive recall" not in prompt:
+            return (
+                {
+                    "response": json.dumps(
+                        {
+                            "route": "cloud_with_recalled_context",
+                            "confidence": 0.42,
+                            "recall_status": "partial",
+                            "memory_ref_ids": ["turn-primary"],
+                        }
+                    ),
+                    "prompt_eval_count": 12,
+                    "eval_count": 8,
+                },
+                "http://local-llm:18151/api/generate",
+                "ollama-generate",
+            )
+        assert "planner reported partial archive recall" in prompt
+        return (
+            {
+                "response": json.dumps(
+                    {
+                        "verdict": "review",
+                        "recall_status": "complete",
+                        "memory_ref_ids": ["turn-secondary"],
+                        "cloud_needed": True,
+                        "reason": "include corroborating archive evidence",
+                    }
+                ),
+                "prompt_eval_count": 9,
+                "eval_count": 7,
+            },
+            "http://local-llm:18151/api/generate",
+            "ollama-generate",
+        )
+
+    monkeypatch.setattr(module, "local_llm_generate_once", fake_generate)
+
+    context = module.context_preflight_prompt_context(
+        "Revisit the prior routing decision with all relevant archive evidence.",
+        attachments=[],
+        runtime="codex",
+        model=module.MODEL,
+    )
+
+    assert [model for model, _prompt in calls] == [
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
+    ]
+    assert (
+        "Local planner verifier expanded the archive recall to 2 of 2 candidates."
+        in (context)
+    )
+    assert "Norllama planner verifier: review (16 local tokens)." in context
+    assert "missing corroborating evidence" in context
+    accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
+    assert accounting["memory_ref_count"] == 2
+    assert accounting["local_planner_verifier_used"] is True
+    assert accounting["local_planner_verifier_model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert accounting["local_planner_verifier_tokens"] == 16
+    assert accounting["local_planner_verifier_receipt"]["trigger_reasons"] == [
+        "planner reported partial archive recall",
+        "planner confidence 0.42 is below 0.72",
+    ]
+    assert accounting["cloud_preflight_net_token_delta_estimate"] == -36
+    verifier_event = next(
+        event for event in events if event["event_type"] == "planner.local-verifier"
+    )
+    assert verifier_event["payload"]["verifier"]["verdict"] == "review"
 
 
 def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path):
@@ -3102,6 +5107,7 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(
             {
@@ -3111,16 +5117,7 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
                 "max_output_tokens": max_output_tokens,
             }
         )
-        if model == "planner-local":
-            response = {
-                "route": "local_plan",
-                "cloud_needed": False,
-                "safe_local_answer_possible": True,
-                "next_local_steps": ["summarize locally first"],
-                "risk": "low",
-            }
-            prompt_tokens, output_tokens = 12, 8
-        elif model == "filter-local":
+        if "Stage: intent-classifier" in prompt:
             response = {
                 "route": "local_filter",
                 "cloud_needed": False,
@@ -3129,7 +5126,7 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
                 "risk": "low",
             }
             prompt_tokens, output_tokens = 5, 5
-        else:
+        elif "Stage: summarizer-specialist" in prompt:
             response = {
                 "route": "local_summary",
                 "cloud_needed": False,
@@ -3138,6 +5135,15 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
                 "risk": "low",
             }
             prompt_tokens, output_tokens = 7, 8
+        else:
+            response = {
+                "route": "local_plan",
+                "cloud_needed": False,
+                "safe_local_answer_possible": True,
+                "next_local_steps": ["summarize locally first"],
+                "risk": "low",
+            }
+            prompt_tokens, output_tokens = 12, 8
         return (
             {
                 "response": json.dumps(response),
@@ -3158,16 +5164,16 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
     )
 
     assert [call["model"] for call in calls] == [
-        "planner-local",
-        "filter-local",
-        "summary-local",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
     ]
     assert "Norllama planner preflight" in context
     assert "Norllama specialist pipeline: 2/4 local specialist stages ran" in context
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
     assert accounting["local_preflight_used"] is True
     assert accounting["local_preflight_tokens"] == 20
-    assert accounting["local_preflight_candidate_policy"] == "norllama_warm_policy"
+    assert accounting["local_preflight_candidate_policy"] == "resident-coder-policy"
     assert accounting["local_preflight_warm_policy_source"] == "/v1/warm-policy"
     assert accounting["local_specialist_used"] is True
     assert accounting["local_specialist_status"] == "ok"
@@ -3193,7 +5199,9 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
     assert specialist_event["payload"]["specialist_pipeline"]["used"] is True
 
 
-def test_context_preflight_specialists_try_fallback_candidate(monkeypatch, tmp_path):
+def test_context_preflight_specialists_ignore_legacy_stage_candidates(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
@@ -3229,10 +5237,10 @@ def test_context_preflight_specialists_try_fallback_candidate(monkeypatch, tmp_p
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
-        if model == "qwen3-coder-next:q4_K_M":
-            raise TimeoutError("spark route timed out")
+        assert model == "qwen3-coder:30b-a3b-q4_K_M"
         response = {
             "route": "local_plan",
             "cloud_needed": False,
@@ -3264,30 +5272,21 @@ def test_context_preflight_specialists_try_fallback_candidate(monkeypatch, tmp_p
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
     receipt = accounting["local_specialist_receipt"]
     assert calls == [
-        "qwen3-coder-next:q4_K_M",
-        "qwen3.6:27b",
-        "qwen3-coder-next:q4_K_M",
-        "qwen3.6:27b",
-        "qwen3-coder-next:q4_K_M",
-        "qwen3.6:27b",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
     ]
     assert accounting["local_specialist_status"] == "ok"
     assert accounting["local_specialist_executed_count"] == 2
     assert [stage["model"] for stage in receipt["stages"] if stage.get("executed")] == [
-        "qwen3.6:27b",
-        "qwen3.6:27b",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
     ]
     outcomes = module.load_local_llm_route_outcomes(limit=10)
-    assert [
-        item["status"]
-        for item in outcomes
-        if item["model"] == "qwen3-coder-next:q4_K_M"
-    ] == ["timeout", "timeout", "timeout"]
+    assert [item["status"] for item in outcomes].count("timeout") == 0
 
 
-def test_context_preflight_uses_degraded_fallback_for_cold_norllama_lane(
-    monkeypatch, tmp_path
-):
+def test_context_preflight_keeps_cold_specialist_lanes_queued(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
@@ -3320,6 +5319,7 @@ def test_context_preflight_uses_degraded_fallback_for_cold_norllama_lane(
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         return (
@@ -3347,37 +5347,28 @@ def test_context_preflight_uses_degraded_fallback_for_cold_norllama_lane(
         model=module.MODEL,
     )
 
-    assert calls == [
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:35b-a3b-q4_K_M",
-    ]
-    assert "planned local stages but did not run a ready specialist" not in context
+    assert calls == ["qwen3-coder:30b-a3b-q4_K_M"]
+    assert "planned local stages but did not run a ready specialist" in context
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
     assert accounting["local_preflight_used"] is True
-    assert accounting["local_preflight_model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert accounting["local_preflight_candidate_policy"] == (
-        "norllama_warm_policy_degraded_fallback"
-    )
-    assert accounting["local_specialist_used"] is True
-    assert accounting["local_specialist_status"] == "ok"
+    assert accounting["local_preflight_model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert accounting["local_preflight_candidate_policy"] == "resident-coder-policy"
+    assert accounting["local_specialist_used"] is False
+    assert accounting["local_specialist_status"] == "planned"
     assert accounting["local_specialist_stage_count"] == 4
-    assert accounting["local_specialist_executed_count"] == 2
-    assert accounting["local_specialist_tokens"] == 40
-    assert accounting["local_specialist_failure_class"] == ""
+    assert accounting["local_specialist_executed_count"] == 0
+    assert accounting["local_specialist_tokens"] == 0
+    assert accounting["local_specialist_failure_class"] == "cold_load_timeout"
     receipt = accounting["local_specialist_receipt"]
     assert receipt["route_posture"] == "prefetch_or_wait"
-    assert [stage["model"] for stage in receipt["stages"] if stage.get("executed")] == [
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:35b-a3b-q4_K_M",
-    ]
-    assert receipt["stages"][0]["candidate_policy"] == (
-        "norllama_warm_policy_degraded_fallback"
-    )
+    assert [
+        stage["model"] for stage in receipt["stages"] if stage.get("executed")
+    ] == []
+    assert receipt["stages"][0]["candidate_policy"] == "resident-coder-policy"
     specialist_event = next(
         event for event in events if event["event_type"] == "planner.local-specialists"
     )
-    assert specialist_event["payload"]["specialist_pipeline"]["used"] is True
+    assert specialist_event["payload"]["specialist_pipeline"]["used"] is False
 
 
 def test_context_preflight_skips_norllama_planner_for_localllm_runtime(
@@ -3408,7 +5399,7 @@ def test_context_preflight_skips_norllama_planner_for_localllm_runtime(
     assert events == []
 
 
-def test_context_preflight_can_use_dedicated_norllama_planner_model(
+def test_context_preflight_ignores_dedicated_norllama_planner_override(
     monkeypatch, tmp_path
 ):
     planner_model = "hf.co/mradermacher/openfugu-conductor-3b-GGUF:q4_K_M"
@@ -3439,6 +5430,7 @@ def test_context_preflight_can_use_dedicated_norllama_planner_model(
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         return (
@@ -3464,10 +5456,11 @@ def test_context_preflight_can_use_dedicated_norllama_planner_model(
         model=module.MODEL,
     )
 
-    assert calls == [planner_model]
-    assert planner_model in context
+    assert calls == ["qwen3-coder:30b-a3b-q4_K_M"]
+    assert planner_model not in context
+    assert "qwen3-coder:30b-a3b-q4_K_M" in context
     assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3.6:27b"
-    assert module.LOCAL_LLM_ROUTE_DEFAULT_MODEL == "qwen3.6:27b"
+    assert module.LOCAL_LLM_ROUTE_DEFAULT_MODEL == "qwen3-coder:30b-a3b-q4_K_M"
 
 
 def test_context_preflight_handles_unhealthy_norllama_planner(monkeypatch, tmp_path):
@@ -3566,6 +5559,12 @@ def test_agent_template_bedrock_pack_forces_hard_cloud_context_cap(
             "cached_input_tokens": 954_558,
             "output_tokens": 6_365,
         },
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.6-terra",
+            service_tier="default",
+        ),
     )
 
     plan = module.bedrock_context_pack_plan(
@@ -3579,6 +5578,55 @@ def test_agent_template_bedrock_pack_forces_hard_cloud_context_cap(
     assert plan["hard_cap_exceeded"] is True
     assert plan["should_pack"] is True
     assert plan["reason"] == "hard-cloud-context-cap"
+
+
+def test_agent_template_direct_codex_pack_forces_hard_cloud_context_cap(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CODEX_SERVICE_TIER", "flex")
+    monkeypatch.setenv("NORMAN_CODEX_FLEX_PROFILE_V2", "")
+    monkeypatch.setenv("NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS", "80000")
+    monkeypatch.setenv("NORMAN_CODEX_BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS", "200000")
+    monkeypatch.setenv("NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_SAVED_TOKENS", "4000")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    old_thread_id = "template-direct-million-token-thread"
+    old_scope = "direct:default:model:gpt-5.4"
+    module.append_usage_entry(
+        started_at=100,
+        finished_at=212,
+        thread_id=old_thread_id,
+        speed="careful",
+        detail=5,
+        service_tier="flex",
+        success=True,
+        runtime="codex",
+        model="gpt-5.4",
+        usage={
+            "input_tokens": 1_161_817,
+            "cached_input_tokens": 954_558,
+            "output_tokens": 6_365,
+        },
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="gpt-5.4",
+            service_tier="flex",
+        ),
+    )
+
+    plan = module.bedrock_context_pack_plan(
+        service_tier="flex",
+        model="gpt-5.4",
+        session_id=old_thread_id,
+        thread_scope=old_scope,
+    )
+
+    assert plan["profile_v2"] == ""
+    assert plan["hard_cap_exceeded"] is True
+    assert plan["should_pack"] is True
+    assert plan["reason"] == "hard-cloud-context-cap"
+    assert "fresh Codex thread" in module.bedrock_context_pack_prompt_context(plan)
 
 
 def test_agent_template_personal_bedrock_usage_displays_usd_not_plan_credits(
@@ -3630,6 +5678,94 @@ def test_agent_template_stale_personal_bedrock_usage_reprices_as_usd(
     assert estimate["usd"] > 0
 
 
+def test_context_preflight_uses_inherited_thread_pressure_for_cloud_gate(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CODEX_CLOUD_CONTEXT_GATE_TOKENS", "80000")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    inherited_context = {
+        "thread_tokens": 1_216_915,
+        "thread_uncached_input_tokens": 120_626,
+        "hard_cap_exceeded": True,
+        "context_pack_applied": True,
+        "saved_tokens": 1_100_000,
+        "reason": "hard-cloud-context-cap",
+    }
+    payload = {
+        "runtime": "codex",
+        "prompt_estimated_tokens": 30,
+        "inherited_context": inherited_context,
+        "memory_refs": [],
+    }
+    gate = module.cloud_context_gate_accounting(
+        payload,
+        saved_tokens=0,
+        offline={"used": False},
+        planner={"used": True},
+    )
+    planner_prompt = module.local_planner_preflight_prompt(payload)
+
+    assert gate["active"] is True
+    assert gate["status"] == "preflighted"
+    assert gate["effective_context_tokens"] == 1_216_915
+    assert gate["inherited_context_tokens"] == 1_216_915
+    assert "inherited thread ceiling 1,216,915 tokens" in "\n".join(gate["reasons"])
+    assert "hard-cloud-context-cap" in planner_prompt
+    assert '"thread_tokens": 1216915' in planner_prompt
+
+
+def test_operator_prompt_context_offloads_large_request_to_authoritative_source(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "OPERATOR_PROMPTS_DIR", tmp_path / "operator-prompts")
+    monkeypatch.setattr(module, "OPERATOR_PROMPT_INLINE_CHARS", 40)
+    monkeypatch.setattr(module, "OPERATOR_PROMPT_HEAD_CHARS", 24)
+    monkeypatch.setattr(module, "OPERATOR_PROMPT_TAIL_CHARS", 12)
+
+    original = "begin-" + ("middle-" * 1_200) + "end"
+    rendered, metadata = module.operator_prompt_context(original)
+
+    assert metadata["mode"] == "path_backed_preview"
+    assert metadata["saved_tokens"] > 0
+    assert metadata["path"]
+    assert Path(metadata["path"]).read_text(encoding="utf-8") == original
+    assert "Operator request (authoritative source):" in rendered
+    assert "Read the source file before relying on omitted details." in rendered
+    assert "begin-" in rendered
+    assert "end" in rendered
+    assert original not in rendered
+
+
+def test_local_planner_task_brief_is_bounded_and_preserves_constraints(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    brief, constraints = module.local_planner_task_brief(
+        {
+            "task_brief": "Inspect the camera event and return the newest matching image.",
+            "task_constraints": [
+                "Do not change device settings.",
+                "Use local evidence.",
+            ],
+        }
+    )
+
+    assert brief == "Inspect the camera event and return the newest matching image."
+    assert constraints == ["Do not change device settings.", "Use local evidence."]
+    planner_prompt = module.local_planner_preflight_prompt(
+        {
+            "prompt_preview": "Show the newest door image.",
+            "runtime": "codex",
+            "model": "openai.gpt-5.6-terra",
+        }
+    )
+    assert "task_brief" in planner_prompt
+    assert "task_constraints" in planner_prompt
+
+
 def test_agent_template_mixed_unpriced_direct_and_bedrock_history_prefers_usd_display(
     monkeypatch, tmp_path
 ):
@@ -3671,6 +5807,116 @@ def test_agent_template_mixed_unpriced_direct_and_bedrock_history_prefers_usd_di
     assert estimate["usd"] > 0
 
 
+def test_agent_template_monthly_usage_meter_summarizes_current_cycle_only(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE", "100")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    bounds = module.usage_billing_cycle_bounds()
+    current_entry_at = bounds["started_at"] + 60
+    prior_entry_at = bounds["started_at"] - 60
+
+    summary = module.usage_billing_cycle_summary(
+        [
+            {
+                "finished_at": current_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "chatgpt",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                "charge_display_unit": "credits",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": current_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "api-key",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "api_rate_card_estimate",
+                "charge_display_unit": "usd_equivalent",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": current_entry_at,
+                "runtime": "localllm",
+                "provider_surface": "norllama",
+                "charge_ledger_kind": "local_token_estimate",
+                "charge_display_unit": "tokens",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": prior_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "chatgpt",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                "charge_display_unit": "credits",
+                "input_tokens": 10_000,
+                "output_tokens": 1_000,
+            },
+        ]
+    )
+
+    assert summary["kind"] == "calendar_month"
+    assert summary["entries"] == 3
+    assert summary["plan"] == {
+        "credits": 0.2,
+        "entries": 1,
+        "configured_entries": 1,
+        "allowance_credits": 100.0,
+    }
+    assert summary["metered"]["entries"] == 1
+    assert summary["metered"]["configured_entries"] == 1
+    assert summary["metered"]["usd"] > 0
+
+
+def test_agent_template_initial_monthly_usage_meter_only_shows_fill_for_configured_allowance(
+    monkeypatch, tmp_path
+):
+    snapshot = {
+        "usage": {
+            "billing": {
+                "cycle": {
+                    "label": "Aug 01 to Sep 01",
+                    "timezone": "CDT",
+                    "plan": {"credits": 75},
+                    "metered": {"usd": 1.25},
+                }
+            }
+        }
+    }
+    monkeypatch.delenv("NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE", raising=False)
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    unbounded = module._initial_usage_meter(snapshot)
+
+    assert unbounded["has_fill"] is False
+    assert unbounded["fill_pct"] == 0
+    assert unbounded["plan_label"] == "Plan ~75 cr"
+    assert unbounded["metered_label"] == "Metered ~$1.25"
+
+    monkeypatch.setenv("NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE", "100")
+    allowance_module = _load_agent_console_web(monkeypatch, tmp_path)
+    bounded = allowance_module._initial_usage_meter(snapshot)
+
+    assert bounded["has_fill"] is True
+    assert bounded["fill_pct"] == 75
+    assert bounded["tone"] == "warn"
+    assert bounded["plan_label"] == "Plan 75%"
+
+
 def test_context_preflight_limits_norllama_planner_candidate_timeouts(
     monkeypatch, tmp_path
 ):
@@ -3704,6 +5950,7 @@ def test_context_preflight_limits_norllama_planner_candidate_timeouts(
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         raise TimeoutError("cold model")
@@ -3717,26 +5964,52 @@ def test_context_preflight_limits_norllama_planner_candidate_timeouts(
         model=module.MODEL,
     )
 
-    assert calls == ["qwen3.6:35b-a3b-q4_K_M"]
+    assert calls == ["qwen3-coder:30b-a3b-q4_K_M"]
     assert "Norllama planner preflight did not add context" in context
-    assert "qwen3.6:35b-a3b-q4_K_M" in context
+    assert "qwen3-coder:30b-a3b-q4_K_M" in context
     assert "qwen3.5:27b-q4_K_M" not in context
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
     assert accounting["local_preflight_status"] == "unavailable"
     assert accounting["local_preflight_failure_class"] == "cold_load_timeout"
     assert accounting["local_preflight_receipt"]["last_failure_model"] == (
-        "qwen3.6:35b-a3b-q4_K_M"
+        "qwen3-coder:30b-a3b-q4_K_M"
+    )
+    planner_outcomes = [
+        outcome
+        for outcome in module.load_local_llm_route_outcomes(limit=0)
+        if outcome["source"] == "planner-preflight"
+    ]
+    assert planner_outcomes[-1]["cooldown_seconds"] == 60
+    cooldown = module.local_llm_route_cooldown(
+        "qwen3-coder:30b-a3b-q4_K_M", include_fleet=False
+    )
+    assert cooldown["cooldown_seconds"] == 60
+    assert cooldown["remaining_seconds"] <= 60
+
+
+def test_legacy_planner_timeout_uses_short_cold_load_cooldown(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_ROUTE_COOLDOWN_SECONDS", "900")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    assert (
+        module.local_llm_outcome_cooldown_seconds(
+            {"source": "planner-preflight", "status": "timeout"}
+        )
+        == 60
     )
 
 
-def test_context_preflight_tries_second_benchmark_planner_candidate(
-    monkeypatch, tmp_path
-):
+def test_context_preflight_stops_after_pool_cooldown(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
     module = _load_agent_console_web(monkeypatch, tmp_path)
     calls = []
+    monkeypatch.setattr(
+        module,
+        "local_planner_preflight_selection",
+        lambda: _planner_selection("qwen3.6:35b-a3b-q4_K_M", "qwen3.6:27b"),
+    )
 
     monkeypatch.setattr(
         module,
@@ -3758,6 +6031,7 @@ def test_context_preflight_tries_second_benchmark_planner_candidate(
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         if len(calls) == 1:
@@ -3788,15 +6062,15 @@ def test_context_preflight_tries_second_benchmark_planner_candidate(
         model=module.MODEL,
     )
 
-    assert calls == ["qwen3.6:35b-a3b-q4_K_M", "qwen3.6:27b"]
+    assert calls == ["qwen3.6:35b-a3b-q4_K_M"]
     assert "Norllama planner preflight" in context
-    assert "qwen3.6:27b" in context
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
-    assert accounting["local_preflight_used"] is True
-    assert accounting["local_preflight_model"] == "qwen3.6:27b"
-    assert accounting["local_preflight_failure_class"] == "ok"
-    assert accounting["local_preflight_receipt"]["failure_count"] == 1
-    assert accounting["local_preflight_receipt"]["last_failure_status"] == "timeout"
+    assert accounting["local_preflight_used"] is False
+    assert accounting["local_preflight_status"] == "unavailable"
+    assert accounting["local_preflight_model"] == ""
+    assert accounting["local_preflight_failure_class"] == "cooldown"
+    assert accounting["local_preflight_receipt"]["failure_count"] == 2
+    assert accounting["local_preflight_receipt"]["last_failure_status"] == "cooldown"
 
 
 def test_context_preflight_skips_cooled_down_planner_candidate(monkeypatch, tmp_path):
@@ -3806,6 +6080,11 @@ def test_context_preflight_skips_cooled_down_planner_candidate(monkeypatch, tmp_
     monkeypatch.setenv("NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES", "2")
     module = _load_agent_console_web(monkeypatch, tmp_path)
     calls = []
+    monkeypatch.setattr(
+        module,
+        "local_planner_preflight_selection",
+        lambda: _planner_selection("qwen3.6:35b-a3b-q4_K_M", "qwen3.6:27b"),
+    )
     module.append_local_llm_route_outcome(
         source="test",
         status="timeout",
@@ -3835,6 +6114,7 @@ def test_context_preflight_skips_cooled_down_planner_candidate(monkeypatch, tmp_
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         return (
@@ -3860,9 +6140,8 @@ def test_context_preflight_skips_cooled_down_planner_candidate(monkeypatch, tmp_
         model=module.MODEL,
     )
 
-    assert calls == ["qwen3.6:27b"]
-    assert "qwen3.6:27b" in context
-    assert "qwen3.6:35b-a3b-q4_K_M" not in calls
+    assert calls == []
+    assert "Norllama planner preflight did not add context" in context
 
 
 def test_localllm_execution_adapter_records_local_usage(monkeypatch, tmp_path):
@@ -3914,10 +6193,10 @@ def test_localllm_execution_adapter_records_local_usage(monkeypatch, tmp_path):
     assert payload["keep_alive"] == module.LOCAL_LLM_KEEP_ALIVE
     assert payload["think"] is False
     assert payload["options"]["num_ctx"] == 8192
-    assert payload["options"]["num_predict"] == module.LOCAL_LLM_SHORT_MAX_OUTPUT_TOKENS
+    assert payload["options"]["num_predict"] == 1200
     assert usage["provider_surface"] == "norllama"
     assert usage["route_class"] == "local"
-    assert usage["route_execution"] == "local_worker"
+    assert usage["route_execution"] == "norllama_pool"
     assert usage["provider_num_ctx"] == 8192
     assert usage["total_tokens"] == 14
 
@@ -3966,8 +6245,8 @@ def test_localllm_foreground_timeout_is_budget_capped(monkeypatch, tmp_path):
     assert module.local_llm_foreground_timeout_seconds(4800, "normal") == 240
     assert module.local_llm_num_ctx_for_budget("quick") == 4096
     assert module.local_llm_num_ctx_for_budget("short") == 8192
-    assert module.local_llm_max_output_tokens_for_budget("quick") == 384
-    assert module.local_llm_max_output_tokens_for_budget("short") == 800
+    assert module.local_llm_max_output_tokens_for_budget("quick") == 1200
+    assert module.local_llm_max_output_tokens_for_budget("short") == 1200
     assert module.console_runtime_kernel_primary_timeout(4800, "quick") == 120
     assert module.console_runtime_kernel_primary_timeout(4800, "short") == 600
     assert module.console_runtime_kernel_model_timeout(4800, "short") == 595
@@ -3987,11 +6266,142 @@ def test_localllm_foreground_timeout_is_budget_capped(monkeypatch, tmp_path):
     assert error == ""
     payload = json.loads(requests[0][0].data.decode())
     assert payload["options"]["num_ctx"] == 8192
-    assert payload["options"]["num_predict"] == 800
+    assert payload["options"]["num_predict"] == 96
     assert requests[0][1] == 180
     assert usage["provider_timeout_seconds"] == 180
     assert usage["provider_num_ctx"] == 8192
-    assert usage["provider_max_output_tokens"] == 800
+    assert usage["provider_max_output_tokens"] == 96
+    assert usage["token_capacity_plan"]["provider_class"] == "norllama"
+    assert usage["token_capacity_plan"]["execution_output_cap"] == 96
+
+
+def test_provider_token_budget_plan_scales_two_minute_norllama_execution(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    plan = module.provider_token_budget_plan(
+        prompt="Implement the focused routing fix and verify it.",
+        runtime="localllm",
+        model="qwen3.6:35b-a3b-q4_K_M",
+        job_budget="2m",
+        detail=2,
+        entries=[],
+        now=1_700_000_000,
+    )
+
+    assert plan["provider_class"] == "norllama"
+    assert plan["target_seconds"] == 120
+    assert plan["soft_output_tokens_per_hour"] == 48_000
+    assert plan["time_window_output_cap"] == 1600
+    assert plan["estimated_output_tokens"] > 1600
+    assert plan["execution_output_cap"] == 1600
+    assert plan["local_token_budget"] == 3200
+    assert plan["cloud_token_budget"] == 0
+    assert plan["enforcement"] == "request_hard"
+    assert plan["recent_window_seconds"] == 3600
+
+
+def test_provider_token_budget_uses_observed_rate_as_advisory_not_quota(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    now = 1_700_000_000
+    entries = [
+        {
+            **module.local_llm_provider_tags(),
+            "runtime": "localllm",
+            "model": "qwen3.6:35b-a3b-q4_K_M",
+            "finished_at": now - 1,
+            "success": True,
+            "output_tokens": 750,
+            "total_tokens": 800,
+        }
+    ]
+
+    plan = module.provider_token_budget_plan(
+        prompt="Implement the focused routing fix and verify it.",
+        runtime="localllm",
+        job_budget="2m",
+        detail=2,
+        entries=entries,
+        now=now,
+    )
+
+    assert plan["recent_observed_output_tokens_per_hour"] == 9000
+    assert plan["capacity_source"] == "configured_policy+observed_ledger"
+    assert plan["soft_output_tokens_per_hour"] == 48_000
+    assert plan["execution_output_cap"] == 1600
+
+
+def test_provider_token_budget_uses_rolling_hour_not_usage_report_window(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    now = 1_700_000_000
+    entries = [
+        {
+            **module.local_llm_provider_tags(),
+            "runtime": "localllm",
+            "finished_at": now - 3601,
+            "success": True,
+            "output_tokens": 48_000,
+            "total_tokens": 48_100,
+        },
+        {
+            **module.local_llm_provider_tags(),
+            "runtime": "localllm",
+            "finished_at": now - 60,
+            "success": True,
+            "output_tokens": 47_600,
+            "total_tokens": 47_700,
+        },
+    ]
+
+    plan = module.provider_token_budget_plan(
+        prompt="Implement the focused routing fix and verify it.",
+        runtime="localllm",
+        job_budget="2m",
+        detail=2,
+        entries=entries,
+        now=now,
+    )
+
+    assert plan["recent_window_seconds"] == 300
+    assert plan["recent_sample_count"] == 1
+    assert plan["recent_output_tokens"] == 47_600
+    assert plan["remaining_soft_output_tokens"] == 400
+    assert plan["time_window_output_cap"] == 400
+    assert plan["execution_output_cap"] == 400
+
+
+def test_provider_token_budget_bounds_cloud_only_when_cloud_is_authorized(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    authorized = module.provider_token_budget_plan(
+        prompt="Verify the Bedrock fallback route.",
+        runtime="claude",
+        job_budget="2m",
+        detail=2,
+        entries=[],
+        cloud_authorized=True,
+    )
+    blocked = module.provider_token_budget_plan(
+        prompt="Verify the Bedrock fallback route.",
+        runtime="claude",
+        job_budget="2m",
+        detail=2,
+        entries=[],
+        cloud_authorized=False,
+    )
+
+    assert authorized["provider_class"] == "bedrock"
+    assert authorized["cloud_token_budget"] > 0
+    assert authorized["local_token_budget"] == 0
+    assert blocked["execution_output_cap"] == authorized["execution_output_cap"]
+    assert blocked["cloud_token_budget"] == 0
 
 
 def test_localllm_execution_preserves_cancel_request(monkeypatch, tmp_path):
@@ -4071,10 +6481,9 @@ def test_localllm_execution_records_empty_response_outcome(monkeypatch, tmp_path
     cooldown = module.local_llm_route_cooldown("llama3.2:3b")
 
     assert response == ""
-    assert "did not return a response" in error
+    assert error == "Norllama pool did not return a visible response."
     assert usage["success"] is False
     assert outcomes[-1]["status"] == "empty-response"
-    assert outcomes[-1]["worker_endpoint"] == "http://spark:18151"
     assert cooldown["status"] == "empty-response"
 
 
@@ -4109,6 +6518,7 @@ def test_localllm_execution_tries_next_route_candidate_after_timeout(
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         if model == "gemma4:26b-a4b-it-q4_K_M":
@@ -4139,13 +6549,15 @@ def test_localllm_execution_tries_next_route_candidate_after_timeout(
 
     assert response == "- alpha\n- beta gamma"
     assert error == ""
-    assert calls == ["gemma4:26b-a4b-it-q4_K_M", "qwen3-coder-next:q4_K_M"]
-    assert usage["model"] == "qwen3-coder-next:q4_K_M"
-    assert usage["local_worker_candidate_count"] == 2
-    assert [item["status"] for item in outcomes[-2:]] == ["timeout", "ok"]
-    assert [item["model"] for item in outcomes[-2:]] == [
+    assert calls == [
         "gemma4:26b-a4b-it-q4_K_M",
-        "qwen3-coder-next:q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
+    ]
+    assert usage["model"] == "norllama"
+    assert [item["status"] for item in outcomes[-2:]] == ["timeout", "ok"]
+    assert [item["norllama_pool"] for item in outcomes[-2:]] == [
+        "default",
+        "default",
     ]
 
 
@@ -4215,11 +6627,11 @@ def test_localllm_execution_rejects_plan_only_visible_output(monkeypatch, tmp_pa
     cooldown = module.local_llm_route_cooldown("llama3.2:3b")
 
     assert response == ""
-    assert "did not return a response" in error
+    assert error == "Norllama pool did not return a visible response."
     assert usage["success"] is False
     assert usage["output_shape"] == "progress_only"
     assert outcomes[-1]["status"] == "bad-output"
-    assert "output_shape=progress_only" in outcomes[-1]["reason"]
+    assert outcomes[-1]["reason"] == "Norllama pool returned unusable output."
     assert cooldown["status"] == "bad-output"
 
 
@@ -4656,3 +7068,305 @@ def test_localllm_health_probe_rejects_concrete_model_when_capabilities_empty(
         "http://local-llm:18151/api/tags",
         "http://local-llm:18151/v1/models",
     ]
+
+
+def test_history_archive_keeps_prior_weeks_outside_ui_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_CODEX_WEB_HISTORY_ITEMS", "2")
+    monkeypatch.setenv("NORMAN_CODEX_TURN_ARCHIVE_DAYS", "90")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    now = module.now_ts()
+    entries = [
+        {
+            "prompt": f"Archived turn {index}",
+            "response": f"Archived response {index}",
+            "error": "",
+            "thread_id": "archive-thread",
+            "started_at": now - 60 + index,
+            "finished_at": now - 60 + index,
+            "runtime": "codex",
+            "model": "gpt-test",
+            "usage": {"success": True, "total_tokens": index + 1},
+        }
+        for index in range(4)
+    ]
+
+    module.write_history_entries(entries)
+    persisted_cache = [
+        json.loads(line)
+        for line in module.HISTORY_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert [item["prompt"] for item in persisted_cache] == [
+        "Archived turn 2",
+        "Archived turn 3",
+    ]
+    assert [item["prompt"] for item in module.load_history(limit=0)] == [
+        item["prompt"] for item in entries
+    ]
+
+    module.write_history_entries(entries[-2:])
+
+    assert [item["prompt"] for item in module.load_history(limit=0)] == [
+        item["prompt"] for item in entries
+    ]
+
+
+def test_history_archive_default_keeps_old_turns_indefinitely(monkeypatch, tmp_path):
+    monkeypatch.delenv("NORMAN_CODEX_TURN_ARCHIVE_DAYS", raising=False)
+    monkeypatch.delenv("HOUSEBOT_CODEX_TURN_ARCHIVE_DAYS", raising=False)
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    old_turn = {
+        "prompt": "Archived old turn",
+        "response": "Archived old response",
+        "error": "",
+        "thread_id": "archive-thread",
+        "started_at": module.now_ts() - (10 * 365 * 24 * 60 * 60),
+        "finished_at": module.now_ts() - (10 * 365 * 24 * 60 * 60),
+        "runtime": "codex",
+        "model": "gpt-test",
+        "usage": {"success": True, "total_tokens": 10},
+    }
+
+    module.write_history_entries([old_turn])
+    module.prune_history_archive_in_state_db()
+
+    assert module.TURN_ARCHIVE_DAYS == 0
+    assert [item["prompt"] for item in module.load_history(limit=0)] == [
+        "Archived old turn"
+    ]
+
+
+def test_history_cleanup_removes_the_corresponding_archive_turn(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    now = module.now_ts()
+    retained = {
+        "prompt": "Completed archive turn",
+        "response": "Completed response",
+        "error": "",
+        "thread_id": "archive-thread",
+        "started_at": now - 2,
+        "finished_at": now - 2,
+        "runtime": "codex",
+        "model": "gpt-test",
+        "usage": {"success": True, "total_tokens": 10},
+    }
+    ghost = {
+        "prompt": "Ghost archive turn",
+        "response": "[no response returned]",
+        "error": "",
+        "thread_id": "archive-thread",
+        "started_at": now - 1,
+        "finished_at": now - 1,
+        "runtime": "codex",
+        "model": "gpt-test",
+        "usage": {"success": False, "total_tokens": 0},
+    }
+    module.write_history_entries([retained, ghost])
+
+    sanitized, removed = module.clear_trailing_empty_ghost_history([retained, ghost])
+
+    assert removed == [ghost]
+    assert sanitized == [retained]
+    assert [item["prompt"] for item in module.load_history(limit=0)] == [
+        retained["prompt"]
+    ]
+
+
+def test_local_llm_route_failures_emit_warn_severity(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    events = []
+    monkeypatch.setattr(
+        module, "append_audit_event", lambda **kwargs: events.append(kwargs) or {}
+    )
+
+    module.append_local_llm_route_outcome(
+        source="test",
+        status="timeout",
+        ok=False,
+        model="qwen3.6:35b-a3b-q4_K_M",
+        reason="local classifier timed out",
+    )
+
+    assert module.normalize_audit_event({"severity": "warning"})["severity"] == "warn"
+    assert events[-1]["event_type"] == "route.local-llm-outcome"
+    assert events[-1]["severity"] == "warn"
+
+
+def test_interactive_kernel_job_create_failure_falls_back_despite_legacy_strict_env(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")
+    monkeypatch.setenv("NORMAN_TUI_BACKEND", "kernel")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_EXECUTION", "1")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_OWNED_TURN", "1")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_PRIMARY_STRICT", "1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    events = []
+    codex_calls = []
+    monkeypatch.setattr(
+        module,
+        "ensure_console_runtime_turn_shadow_job",
+        lambda **_kwargs: {
+            "enabled": True,
+            "job_id": "",
+            "status": "error",
+            "error": "bridge create timeout",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_execute_codex_prompt",
+        lambda *args, **kwargs: (
+            codex_calls.append((args, kwargs)) or "Cloud fallback answer.",
+            "",
+            "thread-fallback",
+            {"runtime": "codex", "model": "gpt-test", "total_tokens": 9},
+        ),
+    )
+    monkeypatch.setattr(
+        module, "append_audit_event", lambda **kwargs: events.append(kwargs) or {}
+    )
+
+    response, error, thread_id, usage = module._execute_prompt_runtime(
+        "Summarize the following notes locally: alpha beta gamma.",
+        "balanced",
+        2,
+        [],
+        "codex",
+        "gpt-test",
+        300,
+        service_tier="default",
+        job_budget="5m",
+    )
+
+    assert module.TUI_KERNEL_OWNED_TURN_ENABLED is False
+    assert response == "Cloud fallback answer."
+    assert error == ""
+    assert thread_id == "thread-fallback"
+    assert usage["runtime"] == "codex"
+    assert len(codex_calls) == 1
+    assert any(
+        event["event_type"] == "chat.kernel-primary-fallback" for event in events
+    )
+    assert not any(
+        event["event_type"] == "chat.kernel-owned-turn-blocked" for event in events
+    )
+
+
+def test_interactive_kernel_transport_failures_fall_back_to_codex(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")
+    monkeypatch.setenv("NORMAN_TUI_BACKEND", "kernel")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_EXECUTION", "1")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_OWNED_TURN", "1")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_PRIMARY_STRICT", "1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    events = []
+    monkeypatch.setattr(
+        module, "append_audit_event", lambda **kwargs: events.append(kwargs) or {}
+    )
+    monkeypatch.setattr(
+        module,
+        "_execute_codex_prompt",
+        lambda *_args, **_kwargs: (
+            "Cloud fallback answer.",
+            "",
+            "thread-fallback",
+            {"runtime": "codex", "model": "gpt-test", "total_tokens": 9},
+        ),
+    )
+
+    failures = [
+        module.urllib_error.HTTPError(
+            "http://norman.local/api/v1/console-runtime/jobs/turn-http/runs",
+            503,
+            "unavailable",
+            {},
+            None,
+        ),
+        TimeoutError("kernel run timed out"),
+    ]
+    for index, failure in enumerate(failures):
+        module.update_status_meta(
+            running_console_runtime_job_id=f"turn-transport-{index}"
+        )
+        monkeypatch.setattr(
+            module,
+            "_console_runtime_json_request",
+            lambda *_args, failure=failure, **_kwargs: (_ for _ in ()).throw(failure),
+        )
+
+        response, error, thread_id, usage = module._execute_prompt_runtime(
+            "Summarize the following notes locally: alpha beta gamma.",
+            "balanced",
+            2,
+            [],
+            "codex",
+            "gpt-test",
+            300,
+            service_tier="default",
+            job_budget="5m",
+        )
+
+        assert response == "Cloud fallback answer."
+        assert error == ""
+        assert thread_id == "thread-fallback"
+        assert usage["runtime"] == "codex"
+
+    assert module.TUI_KERNEL_OWNED_TURN_ENABLED is False
+    assert all(
+        event["event_type"] != "chat.kernel-owned-turn-blocked" for event in events
+    )
+
+
+def test_queued_owner_request_rotates_spent_thread_and_rechecks_policy(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    _queue_rollover_candidate(module, prompt="Check HAL driver without rebooting")
+    module.write_text(module.THREAD_ID_PATH, "spent-thread")
+    module.update_status_meta(pending=False, state="ok")
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    calls = []
+
+    def admission(**kwargs):
+        thread = module.read_text(module.THREAD_ID_PATH)
+        calls.append(thread)
+        if thread:
+            return {
+                "allowed": False,
+                "reason_code": "reauthorization_required",
+                "thread_id": thread,
+            }
+        return {"allowed": True, "action": "allow", "reason_code": "within_budget"}
+
+    monkeypatch.setattr(module, "session_budget_admission", admission)
+    result = module.start_next_queued_prompt()
+    assert result is not None
+    assert result[0] == "Check HAL driver without rebooting"
+    assert calls == ["spent-thread", ""]
+    assert module.normalize_queue(module.load_status_meta()["queued_prompts"]) == []
+
+
+def test_submission_receipt_does_not_wait_for_remote_read(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError(
+            "Submission acknowledgement must not contact the coordinator"
+        )
+
+    monkeypatch.setattr(module, "_console_runtime_json_request", unexpected_request)
+    receipt = module.console_runtime_job_visibility("turn/accepted", probe=False)
+    assert receipt["state"] == "pending"
+    assert receipt["receipt_url"].endswith("/turn%2Faccepted")
+    assert receipt["error"] == ""
+    assert (
+        module.console_runtime_job_visibility("", probe=False)["state"] == "unavailable"
+    )

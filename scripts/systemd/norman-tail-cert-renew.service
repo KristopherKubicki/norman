@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh Norman tailnet HTTPS certificate
+Requires=caddy.service
+After=network-online.target tailscaled.service caddy.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/refresh-norman-tail-cert

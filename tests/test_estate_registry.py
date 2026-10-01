@@ -1,172 +1,114 @@
 from __future__ import annotations
 
-import pathlib
+from pathlib import Path
 
-import pytest
-
-from app.services import estate_registry
-
-
-VALID_REGISTRY = """
-principals:
-  - slug: alpha
-    display_name: Alpha
-    kind: person
-policy_profiles:
-  - slug: manual
-    display_name: Manual
-    mode: manual
-control_classes:
-  - slug: root-controlled
-    display_name: Root Controlled
-    rank: 100
-domains:
-  - slug: alpha-ops
-    principal: alpha
-    display_name: Ops
-    kind: ops
-    default_policy_profile: manual
-places:
-  - slug: home
-    principal: alpha
-    display_name: Home
-    kind: home
-    site_root: alpha.lollie.org
-    local_zone: home.arpa
-    shortcut_frontdoor_address: 192.168.2.10
-site_shortcuts:
-  - slug: hubitat
-    display_name: Hubitat
-    local_host: hubitat.home.arpa
-    canonical_label: hubitat
-    places:
-      - home
-bots:
-  - slug: alpha-bot
-    principal: alpha
-    domain: alpha-ops
-    display_name: Alpha Bot
-    class: operator
-    policy_profile: manual
-workers:
-  - slug: host
-    principal: alpha
-    display_name: Host
-    kind: workstation
-    place: home
-    control_class: root-controlled
-    policy_profile: manual
-assets:
-  - slug: thing
-    principal: alpha
-    display_name: Thing
-    kind: device
-    worker: host
-    place: home
-    control_class: root-controlled
-services:
-  - slug: alpha-svc
-    principal: alpha
-    domain: alpha-ops
-    bot: alpha-bot
-    worker: host
-    place: home
-    display_name: Alpha Service
-    kind: daemon
-    policy_profile: manual
-channels: []
-people: []
-"""
+from app.core.estate_registry import (
+    available_cloud_models,
+    default_cloud_model,
+    host_realm_for_route,
+    load_fleet_topology,
+    load_model_registry,
+    mesh_worker_defaults,
+    model_capability,
+    pricing_for_model,
+    resident_client_endpoint,
+    resident_model,
+    worker_id_from_endpoint,
+)
+from app.services.norllama.route_policy_artifact import (
+    generate_route_policy_artifact,
+    validate_route_policy_artifact,
+)
 
 
-def test_load_registry_normalizes_and_summarizes(tmp_path: pathlib.Path) -> None:
-    path = tmp_path / "registry.yaml"
-    path.write_text(VALID_REGISTRY, encoding="utf-8")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
-    registry = estate_registry.load_registry(path)
 
-    assert estate_registry.registry_summary(registry) == {
-        "principals": 1,
-        "policy_profiles": 1,
-        "control_classes": 1,
-        "domains": 1,
-        "places": 1,
-        "site_shortcuts": 1,
-        "bots": 1,
-        "workers": 1,
-        "assets": 1,
-        "services": 1,
-        "channels": 0,
-        "people": 0,
+def test_model_registry_drives_current_roles_capabilities_and_prices() -> None:
+    registry = load_model_registry()
+
+    assert registry["schema"] == "norman.norllama.model-roles.v1"
+    assert resident_model() == registry["roles"]["resident"]["model"]
+    assert resident_client_endpoint() == "https://llm.home.arpa/resident"
+    assert default_cloud_model() == registry["roles"]["authority"]["model"]
+    assert available_cloud_models()[:3] == [
+        registry["roles"]["economy"]["model"],
+        registry["roles"]["authority"]["model"],
+        registry["roles"]["frontier"]["model"],
+    ]
+    assert "gpt-5-mini" in available_cloud_models()
+    assert model_capability(resident_model(), "native_non_thinking_bridge") is True
+    assert pricing_for_model(
+        registry["roles"]["economy"]["model"],
+        channel="openai_direct",
+    ) == {"input": 0.2, "cached_input": 0.02, "output": 1.2}
+
+
+def test_fleet_topology_drives_workers_realms_and_mesh_defaults() -> None:
+    topology = load_fleet_topology()
+    workers = mesh_worker_defaults()
+
+    assert topology["schema"] == "norman.fleet-topology.v1"
+    assert worker_id_from_endpoint("http://192.168.2.151:18161") == "spark-151"
+    assert worker_id_from_endpoint("http://spark-150:18151") == "spark-150"
+    assert host_realm_for_route("https://toy-box.home.arpa") == "Personal"
+    assert host_realm_for_route("http://192.168.2.147:8781") == "Work"
+    assert {row["id"] for row in workers} == set(topology["workers"])
+
+
+def test_generated_route_policy_uses_runtime_lifecycle_not_compiled_dates() -> None:
+    artifact = generate_route_policy_artifact()
+    validation = validate_route_policy_artifact(artifact)
+
+    assert artifact["issued_at"] == artifact["compiled_at"]
+    assert artifact["expires_at"] > artifact["issued_at"]
+    assert validation["integrity_valid"] is True
+    assert validation["default_route_allowed"] is True
+
+
+def test_serving_paths_do_not_reintroduce_upgrade_sensitive_literals() -> None:
+    forbidden_by_path = {
+        "app/core/config.py": ("gpt-5.5", "192.168.2.151"),
+        "app/models/bot.py": ("gpt-5.5",),
+        "app/schemas/bot.py": ("gpt-5.5",),
+        "app/app_routes.py": ("gpt-5.5",),
+        "app/services/norllama/gateway.py": (
+            "qwen3.5:",
+            "qwen3.6:",
+            "qwen3.8:",
+        ),
+        "app/services/norllama/capability_catalog.py": ("qwen3-coder:30b-a3b-q4_K_M",),
+        "app/services/norllama/route_policy.py": (
+            "2026-08-11",
+            "manual-only-qwen3.5",
+            "gemma4-or-qwen",
+        ),
+        "app/services/prompt_provider_facade.py": (
+            "192.168.2.150",
+            "192.168.2.151",
+        ),
+        "app/services/norllama/route_outcomes.py": (
+            "192.168.2.150",
+            "192.168.2.151",
+        ),
+        "app/static/js/home.js": ("192.168.2.146", "192.168.2.147"),
+        "app/static/js/systems.js": ("192.168.2.146", "192.168.2.147"),
+        "scripts/ticket_token_cost_ledger.py": (
+            '"gpt-5.5":',
+            '"openai.gpt-5.5":',
+        ),
+        "scripts/norllama/refresh_fleet_route_policy.py": (
+            "192.168.2.133",
+            "192.168.2.150",
+            "192.168.2.151",
+        ),
+        "scripts/norllama/fleet_health.py": (
+            "192.168.2.133",
+            "192.168.2.150",
+            "192.168.2.151",
+        ),
     }
-
-
-def test_default_registry_publishes_dohio_topology() -> None:
-    registry = estate_registry.load_registry(estate_registry.DEFAULT_TEMPLATE_PATH)
-    workers = {item["slug"]: item for item in registry["workers"]}
-    services = {item["slug"]: item for item in registry["services"]}
-
-    assert workers["cloud-gw-ohio"]["hostname"] == "cloud-gw-ohio.tail94915.ts.net"
-    assert services["dohio-topology"]["web_url"] == "https://dohio.home.arpa/"
-    assert (
-        services["dohio-topology"]["web_url_tailnet"]
-        == "https://cloud-gw-ohio.tail94915.ts.net/"
-    )
-    assert services["switchyard-network-board"]["web_url"] == (
-        "https://dohio.home.arpa/admin"
-    )
-
-
-def test_load_registry_rejects_duplicate_slugs(tmp_path: pathlib.Path) -> None:
-    path = tmp_path / "registry.yaml"
-    path.write_text(
-        "principals:\n  - slug: alpha\n  - slug: alpha\npolicy_profiles: []\n"
-        "control_classes: []\ndomains: []\nplaces: []\nsite_shortcuts: []\n"
-        "bots: []\nworkers: []\nassets: []\nservices: []\nchannels: []\npeople: []\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(estate_registry.EstateRegistryError, match="duplicate slug"):
-        estate_registry.load_registry(path)
-
-
-def test_load_registry_rejects_unknown_reference(tmp_path: pathlib.Path) -> None:
-    path = tmp_path / "registry.yaml"
-    path.write_text(
-        VALID_REGISTRY.replace("principal: alpha", "principal: beta", 1),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        estate_registry.EstateRegistryError, match="unknown principal `beta`"
-    ):
-        estate_registry.load_registry(path)
-
-
-def test_init_registry_copies_template(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    template = tmp_path / "registry.yaml.dist"
-    template.write_text(VALID_REGISTRY, encoding="utf-8")
-    monkeypatch.setattr(estate_registry, "DEFAULT_TEMPLATE_PATH", template)
-
-    out = estate_registry.init_registry(tmp_path / "registry.yaml")
-
-    assert out.exists()
-    assert out.read_text(encoding="utf-8") == VALID_REGISTRY
-
-
-def test_load_registry_rejects_unknown_site_shortcut_place(
-    tmp_path: pathlib.Path,
-) -> None:
-    path = tmp_path / "registry.yaml"
-    path.write_text(
-        VALID_REGISTRY.replace("- home", "- beach", 1),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        estate_registry.EstateRegistryError,
-        match="unknown site place `beach`",
-    ):
-        estate_registry.load_registry(path)
+    for relative, forbidden in forbidden_by_path.items():
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        for literal in forbidden:
+            assert literal not in source, f"{relative} contains {literal}"

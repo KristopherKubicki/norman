@@ -1,0 +1,103 @@
+{
+  "schema": "norman.fleet-topology.v1",
+  "version": "2026.08.16",
+  "frontdoors": {
+    "llm": "https://llm.home.arpa",
+    "resident": "https://llm.home.arpa/resident",
+    "norman": "https://norman.home.arpa"
+  },
+  "workers": {
+    "mac-mini-133": {
+      "address": "192.168.2.133",
+      "aliases": ["mac-mini-133", "llm-mac"],
+      "health_name": "mac-mini",
+      "role": "fallback",
+      "memory_gb": 16,
+      "gateway_port": 18151,
+      "management": {
+        "ssh_user": "k",
+        "identity_file": "/home/kristopher/.ssh/id_ed25519_macmini_codex",
+        "root": "/Users/k/norllama",
+        "platform": "macos",
+        "service_domain": "system",
+        "gateway_unit": "org.lollie.norllama",
+        "policy_path": "/Users/k/norllama/route_policy.json"
+      }
+    },
+    "spark-150": {
+      "address": "192.168.2.150",
+      "aliases": ["spark-150"],
+      "role": "production",
+      "memory_gb": 128,
+      "gateway_port": 18151,
+      "resident_scheduler_port": 18161,
+      "resident_runtime_port": 11435,
+      "management": {
+        "ssh_user": "kristopher",
+        "identity_file": "/home/kristopher/.ssh/id_ed25519_netops_codex",
+        "root": "/home/kristopher/norllama",
+        "platform": "linux",
+        "gateway_unit": "norllama-gateway.service",
+        "asr_unit": "spark-audio-transcribe.service",
+        "policy_path": "/home/kristopher/norllama/route_policy.json"
+      },
+      "retired_services": ["deepseek-v4-flash"]
+    },
+    "spark-151": {
+      "address": "192.168.2.151",
+      "aliases": ["spark-151"],
+      "role": "production",
+      "memory_gb": 128,
+      "gateway_port": 18151,
+      "resident_scheduler_port": 18161,
+      "resident_runtime_port": 11435,
+      "management": {
+        "ssh_user": "kristopher",
+        "identity_file": "/home/kristopher/.ssh/id_ed25519_netops_codex",
+        "root": "/home/kristopher/norllama",
+        "platform": "linux",
+        "gateway_unit": "norllama-gateway.service",
+        "asr_unit": "spark-audio-transcribe-core.service",
+        "policy_path": "/home/kristopher/norllama/route_policy.json"
+      }
+    }
+  },
+  "resident_pool": {
+    "client_endpoint": "https://llm.home.arpa/resident",
+    "scheduler_workers": ["spark-151", "spark-150"],
+    "runtime_workers": ["spark-151", "spark-150"],
+    "minimum_runtime_replicas": 2
+  },
+  "hosts": {
+    "hal": {
+      "address": "192.168.2.137",
+      "aliases": ["hal.home.arpa", "hal.tail94915.ts.net"],
+      "realm": "Personal"
+    },
+    "toy-box": {
+      "address": "192.168.2.146",
+      "aliases": ["toy-box.home.arpa", "toy-box.tail94915.ts.net"],
+      "realm": "Personal"
+    },
+    "work-special": {
+      "address": "192.168.2.147",
+      "aliases": ["work-special.home.arpa", "work-special.tail94915.ts.net"],
+      "realm": "Work"
+    },
+    "private-host": {
+      "address": "192.168.2.148",
+      "aliases": ["private.home.lollie.org"],
+      "realm": "Private"
+    },
+    "norman": {
+      "address": "192.168.2.241",
+      "aliases": ["norman.home.arpa", "norman.tail94915.ts.net"],
+      "realm": "Norman"
+    },
+    "networking-host": {
+      "address": "192.168.2.242",
+      "aliases": ["networking-host.home.arpa", "networking.tail94915.ts.net"],
+      "realm": "Shared"
+    }
+  }
+}

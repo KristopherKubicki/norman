@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
+from app.core.estate_registry import load_fleet_topology
 from sync_agent_console_template import (
     HOSTS,
     discover_all_instances,
@@ -14,6 +15,14 @@ from sync_agent_console_template import (
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 INTERNAL_TLS_IMPORT = "import norman_internal_tls"
+FLEET_TOPOLOGY = load_fleet_topology()
+FLEET_WORKERS = dict(FLEET_TOPOLOGY["workers"])
+
+
+def _worker_upstream(worker_id: str, port_key: str) -> str:
+    row = dict(FLEET_WORKERS[worker_id])
+    return f"{row['address']}:{int(row[port_key])}"
+
 
 BOT_PATH_ALIASES: dict[str, tuple[str, ...]] = {
     "autocamera": ("auto",),
@@ -176,16 +185,61 @@ SPECIAL_HOST_UPSTREAMS: dict[str, str] = {
 }
 
 LOCAL_LLM_UPSTREAMS = (
-    "192.168.2.133:18151",
-    "192.168.2.150:18151",
-    "192.168.2.151:18151",
+    _worker_upstream("mac-mini-133", "gateway_port"),
+    _worker_upstream("spark-151", "gateway_port"),
+    _worker_upstream("spark-150", "gateway_port"),
 )
+LOCAL_RESIDENT_LLM_UPSTREAMS = (
+    _worker_upstream("spark-151", "resident_scheduler_port"),
+    _worker_upstream("spark-150", "resident_scheduler_port"),
+)
+LOCAL_RESIDENT_LLM_PATH = "/resident"
+LOCAL_ASR_UPSTREAMS = (_worker_upstream("spark-151", "gateway_port"),)
+LOCAL_ASR_MAX_REQUEST_BODY = "512MB"
+LOCAL_ASR_HEALTH_URI = "/asr-readyz"
 LOCAL_LLM_CANONICAL_HOSTS = ("llm.knox.lollie.org",)
 LOCAL_LLM_ALIAS_HOSTS = ("llm.home.arpa",)
 DEFAULT_LB_TRY_DURATION = "5s"
 DEFAULT_HEALTH_INTERVAL = "10s"
 LOCAL_LLM_LB_TRY_DURATION = "15s"
 LOCAL_LLM_HEALTH_INTERVAL = "3s"
+GATEWAY_ROUTES = frozenset(
+    {
+        "autocamera",
+        "cloudagent",
+        "compere",
+        "control-plane",
+        "earlybird",
+        "glimpser",
+        "gold-book",
+        "housebot",
+        "infra",
+        "market-sizing",
+        "networking",
+        "parkergale",
+        "theseus",
+        "tmi-dashboards",
+    }
+)
+# Inventory remains authoritative when it is reachable. These verified
+# canonical upstreams keep every CLI gateway route present when an inventory
+# host is unavailable, so a render cannot silently remove a supported route.
+GATEWAY_FALLBACK_UPSTREAMS: dict[str, str] = {
+    "autocamera": "192.168.2.137:8794",
+    "cloudagent": "192.168.2.242:8793",
+    "compere": "192.168.2.147:8789",
+    "control-plane": "192.168.2.147:8783",
+    "earlybird": "192.168.2.147:8781",
+    "glimpser": "192.168.2.146:8788",
+    "gold-book": "192.168.2.147:8786",
+    "housebot": "192.168.2.146:8787",
+    "infra": "192.168.2.147:8782",
+    "market-sizing": "192.168.2.147:8784",
+    "networking": "192.168.2.242:8791",
+    "parkergale": "192.168.2.148:8796",
+    "theseus": "192.168.2.137:8795",
+    "tmi-dashboards": "192.168.2.147:8785",
+}
 
 
 def _route_block(slug: str, upstream: str) -> str:
@@ -299,6 +353,7 @@ def _reverse_proxy_lines(
     prefix: str = "    ",
     lb_try_duration: str = DEFAULT_LB_TRY_DURATION,
     health_interval: str = DEFAULT_HEALTH_INTERVAL,
+    health_uri: str = "/healthz",
 ) -> list[str]:
     if isinstance(upstreams, str):
         return [f"{prefix}reverse_proxy {upstreams}"]
@@ -313,9 +368,73 @@ def _reverse_proxy_lines(
         f"{prefix}    lb_try_interval 250ms",
         f"{prefix}    fail_duration 20s",
         f"{prefix}    max_fails 1",
-        f"{prefix}    health_uri /healthz",
+        f"{prefix}    health_uri {health_uri}",
         f"{prefix}    health_interval {health_interval}",
         f"{prefix}    health_timeout 2s",
+        f"{prefix}}}",
+    ]
+
+
+def _gateway_proxy_lines(gateway_route: str, *, prefix: str = "    ") -> list[str]:
+    return [
+        f"{prefix}handle /v1/responses {{",
+        f"{prefix}    reverse_proxy 127.0.0.1:8000 {{",
+        f"{prefix}        flush_interval -1",
+        f"{prefix}        header_up X-Norman-Gateway-Route {gateway_route}",
+        f"{prefix}        header_up X-Forwarded-For 127.0.0.2",
+        f"{prefix}    }}",
+        f"{prefix}}}",
+        f"{prefix}",
+        f"{prefix}handle /v1/* {{",
+        f"{prefix}    reverse_proxy 127.0.0.1:8000 {{",
+        f"{prefix}        header_up X-Norman-Gateway-Route {gateway_route}",
+        f"{prefix}        header_up X-Forwarded-For 127.0.0.2",
+        f"{prefix}    }}",
+        f"{prefix}}}",
+    ]
+
+
+def _asr_proxy_lines(
+    upstreams: str | tuple[str, ...],
+    *,
+    prefix: str = "    ",
+    max_request_body: str = LOCAL_ASR_MAX_REQUEST_BODY,
+    lb_try_duration: str = LOCAL_LLM_LB_TRY_DURATION,
+    health_interval: str = LOCAL_LLM_HEALTH_INTERVAL,
+    health_uri: str = LOCAL_ASR_HEALTH_URI,
+) -> list[str]:
+    return [
+        f"{prefix}@asr path /transcribe /v1/audio/transcriptions",
+        f"{prefix}handle @asr {{",
+        f"{prefix}    request_body {{",
+        f"{prefix}        max_size {max_request_body}",
+        f"{prefix}    }}",
+        *_reverse_proxy_lines(
+            upstreams,
+            prefix=f"{prefix}    ",
+            lb_try_duration=lb_try_duration,
+            health_interval=health_interval,
+            health_uri=health_uri,
+        ),
+        f"{prefix}}}",
+    ]
+
+
+def _resident_llm_proxy_lines(
+    upstreams: str | tuple[str, ...],
+    *,
+    prefix: str = "    ",
+    path: str = LOCAL_RESIDENT_LLM_PATH,
+) -> list[str]:
+    return [
+        f"{prefix}redir {path} {path}/ 308",
+        f"{prefix}handle_path {path}/* {{",
+        *_reverse_proxy_lines(
+            upstreams,
+            prefix=f"{prefix}    ",
+            lb_try_duration=LOCAL_LLM_LB_TRY_DURATION,
+            health_interval=LOCAL_LLM_HEALTH_INTERVAL,
+        ),
         f"{prefix}}}",
     ]
 
@@ -328,6 +447,11 @@ def _host_block(
     allowed_clients: tuple[str, ...] = (),
     lb_try_duration: str = DEFAULT_LB_TRY_DURATION,
     health_interval: str = DEFAULT_HEALTH_INTERVAL,
+    gateway_route: str = "",
+    asr_upstreams: str | tuple[str, ...] | None = None,
+    resident_llm_upstreams: str | tuple[str, ...] | None = None,
+    asr_max_request_body: str = LOCAL_ASR_MAX_REQUEST_BODY,
+    asr_health_uri: str = LOCAL_ASR_HEALTH_URI,
 ) -> str:
     https_hosts = ", ".join(hostnames)
     http_hosts = ", ".join(f"http://{host}" for host in hostnames)
@@ -340,6 +464,16 @@ def _host_block(
     ]
     if internal_tls or not _uses_public_tls(hostnames):
         lines.append(f"    {INTERNAL_TLS_IMPORT}")
+    lines.extend(
+        [
+            "    encode zstd gzip {",
+            "        match {",
+            "            header Content-Type application/json*",
+            "            header Content-Type text/html*",
+            "        }",
+            "    }",
+        ]
+    )
     if allowed_clients:
         client_ranges = " ".join(allowed_clients)
         lines.extend(
@@ -348,24 +482,65 @@ def _host_block(
                 "    handle @knox_allowed {",
             ]
         )
+        if gateway_route:
+            lines.extend(_gateway_proxy_lines(gateway_route, prefix="        "))
+        if asr_upstreams:
+            lines.extend(
+                _asr_proxy_lines(
+                    asr_upstreams,
+                    prefix="        ",
+                    max_request_body=asr_max_request_body,
+                    lb_try_duration=lb_try_duration,
+                    health_interval=health_interval,
+                    health_uri=asr_health_uri,
+                )
+            )
+        if gateway_route or asr_upstreams:
+            lines.append("        handle {")
         lines.extend(
             _reverse_proxy_lines(
                 upstream,
-                prefix="        ",
+                prefix=(
+                    "            " if gateway_route or asr_upstreams else "        "
+                ),
                 lb_try_duration=lb_try_duration,
                 health_interval=health_interval,
             )
         )
+        if gateway_route or asr_upstreams:
+            lines.append("        }")
         lines.extend(["    }", '    respond "forbidden" 403', "}"])
     else:
+        if gateway_route:
+            lines.extend(_gateway_proxy_lines(gateway_route))
+        if resident_llm_upstreams:
+            lines.extend(_resident_llm_proxy_lines(resident_llm_upstreams))
+        if asr_upstreams:
+            lines.extend(
+                _asr_proxy_lines(
+                    asr_upstreams,
+                    max_request_body=asr_max_request_body,
+                    lb_try_duration=lb_try_duration,
+                    health_interval=health_interval,
+                    health_uri=asr_health_uri,
+                )
+            )
+        if gateway_route or resident_llm_upstreams or asr_upstreams:
+            lines.append("    handle {")
         lines.extend(
             _reverse_proxy_lines(
                 upstream,
-                prefix="    ",
+                prefix=(
+                    "        "
+                    if gateway_route or resident_llm_upstreams or asr_upstreams
+                    else "    "
+                ),
                 lb_try_duration=lb_try_duration,
                 health_interval=health_interval,
             )
         )
+        if gateway_route or resident_llm_upstreams or asr_upstreams:
+            lines.append("    }")
         lines.append("}")
     return "\n".join(lines)
 
@@ -432,6 +607,7 @@ def render_paths() -> str:
 def render_hosts() -> str:
     _, by_name = discover_all_instances()
     blocks: list[str] = []
+    rendered_names: set[str] = set()
     for name in sorted(by_name):
         instance = by_name[name]
         host = HOSTS[instance.host_name]
@@ -455,6 +631,7 @@ def render_hosts() -> str:
                 upstream,
                 internal_tls=use_internal_tls,
                 allowed_clients=allowed_clients,
+                gateway_route=name if name in GATEWAY_ROUTES else "",
             )
         ]
         for hostnames in _alias_bot_host_groups(name):
@@ -473,6 +650,21 @@ def render_hosts() -> str:
                 )
             )
         blocks.append(f"# {name}\n" + "\n\n".join(rendered))
+        rendered_names.add(name)
+    for name, upstream in GATEWAY_FALLBACK_UPSTREAMS.items():
+        if name in rendered_names:
+            continue
+        canonical_hosts = _canonical_bot_hosts(name)
+        if not canonical_hosts:
+            continue
+        blocks.append(
+            f"# {name}\n"
+            + _host_block(
+                canonical_hosts,
+                upstream,
+                gateway_route=name,
+            )
+        )
     for name, host_groups in SPECIAL_HOST_GROUPS.items():
         upstream = SPECIAL_HOST_UPSTREAMS[name]
         rendered = [
@@ -488,6 +680,10 @@ def render_hosts() -> str:
             internal_tls=True,
             lb_try_duration=LOCAL_LLM_LB_TRY_DURATION,
             health_interval=LOCAL_LLM_HEALTH_INTERVAL,
+            resident_llm_upstreams=LOCAL_RESIDENT_LLM_UPSTREAMS,
+            asr_upstreams=LOCAL_ASR_UPSTREAMS,
+            asr_max_request_body=LOCAL_ASR_MAX_REQUEST_BODY,
+            asr_health_uri=LOCAL_ASR_HEALTH_URI,
         )
     )
     return "\n\n".join(blocks)

@@ -227,6 +227,35 @@ def with_local_first_catalog_defaults(
     return policy
 
 
+def with_norllama_pool_delegation_defaults(
+    route_policy: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the worker-neutral local policy used for delegated console work."""
+
+    incoming = dict(route_policy or {})
+    policy = with_local_first_catalog_defaults(incoming)
+    policy["local_first"] = True
+    policy["allow_cloud_proxy"] = False
+    policy["allow_cloud_tool_proxy"] = False
+    provider = _lower(
+        policy.get("provider") or policy.get("preferred_provider")
+    ).replace("_", "-")
+    if provider == "norllama":
+        policy["provider"] = "norllama"
+        policy["preferred_provider"] = "norllama"
+        policy["norllama_pool"] = _clean(incoming.get("norllama_pool")) or "default"
+    else:
+        policy.pop("norllama_pool", None)
+    for key in (
+        "preferred_worker_id",
+        "selected_worker_id",
+        "worker_id",
+        "target_worker",
+    ):
+        policy.pop(key, None)
+    return policy
+
+
 def _target_host(target: str) -> str:
     clean = _clean(target)
     if not clean:

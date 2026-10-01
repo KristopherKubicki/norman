@@ -1,14 +1,7 @@
 # tests/conftest.py
+import atexit
 import os
-import sys
-from pydantic import typing as _pydantic_typing
-
-if sys.version_info >= (3, 12):
-
-    def _evaluate_forwardref(type_, globalns, localns):
-        return type_._evaluate(globalns, localns, None, recursive_guard=set())
-
-    _pydantic_typing.evaluate_forwardref = _evaluate_forwardref
+import tempfile
 
 import asyncio
 import threading
@@ -72,9 +65,11 @@ def _ensure_event_loop():
         asyncio.set_event_loop(None)
 
 
-# Use a temporary SQLite file to avoid in-memory + multi-thread contention that can
-# deadlock in this environment.
-settings.database_url = f"sqlite:////tmp/norman_test_{os.getpid()}.db"
+# Use a unique temporary SQLite file to avoid in-memory + multi-thread contention
+# and stale PID-based database reuse between test runs.
+test_db_fd, test_db_path = tempfile.mkstemp(prefix="norman_test_", suffix=".db")
+os.close(test_db_fd)
+settings.database_url = f"sqlite:///{test_db_path}"
 if settings.database_url.startswith("sqlite"):
     engine = create_engine(
         settings.database_url,
@@ -104,6 +99,18 @@ import app.auth_middleware as auth_middleware
 auth_middleware.SessionLocal = TestingSessionLocal
 
 
+def _cleanup_test_database() -> None:
+    engine.dispose()
+    for path in (test_db_path, f"{test_db_path}-shm", f"{test_db_path}-wal"):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+atexit.register(_cleanup_test_database)
+
+
 class SyncASGIClient:
     """Sync wrapper around AsyncClient using asyncio.run per request.
 
@@ -116,7 +123,7 @@ class SyncASGIClient:
         self._cookies = httpx.Cookies()
 
     async def _request_async(self, method: str, url: str, **kwargs):
-        transport = httpx.ASGITransport(app=self.app)
+        transport = httpx.ASGITransport(app=self.app, client=("127.0.0.1", 18900))
         async with httpx.AsyncClient(
             transport=transport, base_url="http://testserver", cookies=self._cookies
         ) as client:

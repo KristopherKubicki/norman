@@ -110,10 +110,22 @@ def console_usage_state(payload: dict[str, Any]) -> dict[str, Any]:
             "usage_window_total_tokens": 0,
             "usage_last_turn_at": 0,
             "usage_last_turn_total_tokens": 0,
+            "codex_subscription_capacity_state": "unknown",
+            "codex_subscription_capacity_fresh": False,
+            "codex_subscription_capacity_observed_at": 0,
+            "codex_subscription_capacity_percent_left": -1,
+            "codex_subscription_capacity_reset_hint": "",
+            "codex_subscription_capacity_eligible": False,
+            "codex_subscription_capacity_tokens_per_hour": 0,
+            "codex_subscription_capacity_projected_tokens_to_reset": 0,
         }
     totals = usage.get("totals")
     window = usage.get("last_24h")
     last_turn = usage.get("last_turn")
+    capacity = usage.get("codex_account_capacity")
+    capacity = capacity if isinstance(capacity, dict) else {}
+    forecast = capacity.get("forecast")
+    forecast = forecast if isinstance(forecast, dict) else {}
     try:
         window_seconds = int(
             usage.get("window_seconds") or DEFAULT_USAGE_WINDOW_SECONDS
@@ -141,6 +153,30 @@ def console_usage_state(payload: dict[str, Any]) -> dict[str, Any]:
         "usage_window_total_tokens": _usage_summary_value(window, "total_tokens"),
         "usage_last_turn_at": _usage_summary_value(last_turn, "finished_at"),
         "usage_last_turn_total_tokens": _usage_summary_value(last_turn, "total_tokens"),
+        "codex_subscription_capacity_state": str(
+            capacity.get("state") or "unknown"
+        ).strip(),
+        "codex_subscription_capacity_fresh": bool(capacity.get("fresh")),
+        "codex_subscription_capacity_observed_at": _usage_summary_value(
+            capacity, "observed_at"
+        ),
+        "codex_subscription_capacity_percent_left": (
+            _usage_summary_value(capacity, "minimum_window_percent_left")
+            if capacity.get("minimum_window_percent_left") is not None
+            else -1
+        ),
+        "codex_subscription_capacity_reset_hint": str(
+            capacity.get("reset_hint") or ""
+        ).strip(),
+        "codex_subscription_capacity_eligible": bool(
+            capacity.get("eligible_for_subscription_route")
+        ),
+        "codex_subscription_capacity_tokens_per_hour": _usage_summary_value(
+            forecast, "tokens_per_hour"
+        ),
+        "codex_subscription_capacity_projected_tokens_to_reset": _usage_summary_value(
+            forecast, "projected_tokens_to_earliest_reset"
+        ),
     }
 
 
@@ -151,7 +187,12 @@ def _console_request_token(query_items: dict[str, str], access_token: str = "") 
     return str(query_items.get("token") or "").strip()
 
 
-def console_status_url(web_url: str, *, access_token: str = "") -> str:
+def console_status_url(
+    web_url: str,
+    *,
+    access_token: str = "",
+    history_limit: int = 0,
+) -> str:
     normalized = str(web_url or "").strip()
     if not normalized:
         return ""
@@ -166,11 +207,17 @@ def console_status_url(web_url: str, *, access_token: str = "") -> str:
     token = _console_request_token(query_items, access_token)
     if token:
         status_query["token"] = token
+    if history_limit:
+        status_query["history_limit"] = str(max(1, min(int(history_limit), 250)))
     return urlunsplit(
         (
             parts.scheme,
             parts.netloc,
-            "/api/status",
+            (
+                f"{parts.path.rstrip('/')}/api/status"
+                if parts.path and parts.path != "/"
+                else "/api/status"
+            ),
             urlencode(status_query),
             "",
         )
@@ -312,6 +359,143 @@ def fetch_console_status(
         }
     )
     return snapshot
+
+
+def fetch_console_history(
+    web_url: str,
+    *,
+    access_token: str = "",
+    limit: int = 100,
+    timeout: float = 4.0,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "reachable": False,
+        "agent_name": "",
+        "session_name": "",
+        "thread_id": "",
+        "items": [],
+    }
+    safe_limit = max(1, min(int(limit or 100), 250))
+    status_url = console_status_url(
+        web_url,
+        access_token=access_token,
+        history_limit=safe_limit,
+    )
+    if not status_url:
+        return result
+    request = Request(
+        status_url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "NormanBridge/1.0",
+        },
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (
+        HTTPError,
+        URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        return result
+    if not isinstance(payload, dict):
+        return result
+
+    raw_history = payload.get("history")
+    items: list[dict[str, Any]] = []
+    if isinstance(raw_history, list):
+        for raw in raw_history[-safe_limit:]:
+            if not isinstance(raw, dict):
+                continue
+            prompt = str(raw.get("prompt") or raw.get("objective") or "").strip()
+            response = str(raw.get("response") or raw.get("result") or "").strip()
+            error = str(raw.get("error") or "").strip()
+            if not prompt and not response and not error:
+                continue
+            usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+            attachments: list[dict[str, Any]] = []
+            raw_attachments = raw.get("attachments")
+            if isinstance(raw_attachments, list):
+                for attachment in raw_attachments:
+                    if not isinstance(attachment, dict):
+                        continue
+                    token = str(attachment.get("token") or "").strip()
+                    path = str(attachment.get("path") or "").strip()
+                    if not token or not path:
+                        continue
+                    content_type = str(
+                        attachment.get("content_type") or "application/octet-stream"
+                    ).strip()
+                    name = str(
+                        attachment.get("name") or path.rsplit("/", 1)[-1] or token
+                    ).strip()
+                    try:
+                        size = max(0, int(attachment.get("size") or 0))
+                    except (TypeError, ValueError):
+                        size = 0
+                    kind = str(attachment.get("kind") or "").strip().lower()
+                    if kind not in {"image", "text", "file"}:
+                        kind = (
+                            "image"
+                            if content_type.lower().startswith("image/")
+                            else "file"
+                        )
+                    attachments.append(
+                        {
+                            "token": token,
+                            "name": name,
+                            "path": path,
+                            "content_type": content_type,
+                            "kind": kind,
+                            "size": size,
+                            "summary": str(attachment.get("summary") or "").strip(),
+                        }
+                    )
+            items.append(
+                {
+                    "turn_id": str(
+                        raw.get("id") or raw.get("turn_id") or raw.get("job_id") or ""
+                    ).strip(),
+                    "submission_id": str(raw.get("submission_id") or "").strip(),
+                    "thread_id": str(raw.get("thread_id") or "").strip(),
+                    "prompt": prompt,
+                    "response": response,
+                    "error": error,
+                    "started_at": raw.get("started_at"),
+                    "finished_at": raw.get("finished_at"),
+                    "runtime": str(raw.get("runtime") or "").strip(),
+                    "model": str(raw.get("model") or "").strip(),
+                    "service_tier": str(raw.get("service_tier") or "").strip(),
+                    "usage_bucket": str(raw.get("usage_bucket") or "").strip(),
+                    "attachments": attachments,
+                    "usage": {
+                        key: usage.get(key)
+                        for key in (
+                            "input_tokens",
+                            "cached_input_tokens",
+                            "output_tokens",
+                            "total_tokens",
+                            "estimated_cost_usd",
+                        )
+                        if usage.get(key) is not None
+                    },
+                }
+            )
+
+    result.update(
+        {
+            "reachable": True,
+            "agent_name": str(payload.get("agent_name") or "").strip(),
+            "session_name": str(payload.get("session_name") or "").strip(),
+            "thread_id": str(payload.get("thread_id") or "").strip(),
+            "items": items,
+        }
+    )
+    return result
 
 
 async def fetch_console_status_map(web_urls: list[str]) -> dict[str, dict[str, Any]]:

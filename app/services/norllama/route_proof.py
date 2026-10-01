@@ -89,6 +89,7 @@ CLOUD_USAGE_BUCKETS = {
 GOOD_VERIFIER_RESULTS = {"pass", "passed", "complete", "verified", "ok"}
 BAD_VERIFIER_RESULTS = {"fail", "failed", "needs_more_work", "rejected", "error"}
 QWEN_PRODUCTION_PREFIXES = (
+    "qwen3-coder",
     "qwen3.6",
     "qwen3.5",
     "nvidia/qwen3.6",

@@ -177,9 +177,9 @@ def test_self_heal_executes_only_graceful_reboot_when_approved(monkeypatch) -> N
         execute=True,
         approved=True,
         settle_seconds=0,
-        observe_fn=lambda _target: _wedged_observation()
-        if not calls
-        else _healthy_observation(),
+        observe_fn=lambda _target: (
+            _wedged_observation() if not calls else _healthy_observation()
+        ),
         reboot_fn=fake_reboot,
     )
 
@@ -231,6 +231,7 @@ def test_self_heal_systemd_unit_is_graceful_only() -> None:
     assert "scripts/tui_host_self_heal.py" in service
     assert "--target work-special" in service
     assert "--execute --approved" in service
+    assert "User=kristopher" in service
     assert "pct stop" not in service
     assert (
         "PathChanged=/home/kristopher/.local/state/norman/tui-fleet-doctor.json" in path

@@ -1,0 +1,17 @@
+[Unit]
+Description=Bounded work-special LXC live memory scaler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+Environment=HOME=/home/kristopher
+UMask=0077
+WorkingDirectory=/home/kristopher/code/norman
+Nice=19
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+TimeoutStartSec=30s
+ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/tui_work_special_memory_scaler.py --apply --json-output /home/kristopher/.local/state/norman/work-special-memory-scaler.json

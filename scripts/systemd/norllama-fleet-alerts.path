@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Norllama alert policy when fleet health changes
+
+[Path]
+PathChanged=/home/kristopher/.local/state/norman/norllama-fleet-health.json
+Unit=norllama-fleet-alerts.service
+
+[Install]
+WantedBy=multi-user.target

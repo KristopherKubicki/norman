@@ -6820,7 +6820,7 @@ def render_markdown(report: dict[str, Any]) -> str:
                 selected_action=str(row["selected_action"]).replace("_", " "),
                 parity=parity,
                 confidence=(
-                    f"{row['route_confidence']} " f"(+{int(row['route_score_margin'])})"
+                    f"{row['route_confidence']} (+{int(row['route_score_margin'])})"
                 ),
                 verdict=str(row["verdict"]).replace("|", "/"),
                 cost=float(row["estimated_hybrid_usd"]),

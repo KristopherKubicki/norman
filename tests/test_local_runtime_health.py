@@ -52,3 +52,42 @@ def test_ollama_sense_fallback_marks_lan_endpoint_routeable(monkeypatch) -> None
     assert ollama["endpoint_scope"] == "lan"
     assert report["summary"]["healthy_runtime_count"] == 1
     assert report["summary"]["routeable_runtime_classes"] == ["ollama"]
+
+
+def test_vllm_sense_is_used_without_duplicate_direct_probe(monkeypatch) -> None:
+    module = load_module()
+    requested_urls: list[str] = []
+
+    def fake_read_json_url(url: str, *, timeout_seconds: float = 1.5):
+        requested_urls.append(url)
+        return False, {}, "connection refused"
+
+    monkeypatch.setattr(module, "_read_json_url", fake_read_json_url)
+    report = module.build_report(
+        vllm_endpoint="http://127.0.0.1:8000",
+        vllm_sense_report={
+            "schema": "norman.tui.vllm-sense.v1",
+            "summary": {"best_endpoint": "https://llm.home.arpa"},
+            "endpoints": [
+                {
+                    "endpoint": "https://llm.home.arpa",
+                    "scope": "lan",
+                    "usable": True,
+                    "models": ["qwen3.6:35b-a3b-q4_K_M"],
+                    "latency_ms": 68,
+                }
+            ],
+        },
+    )
+
+    vllm = report["runtimes"][1]
+    assert vllm["runtime_class"] == "spark_vllm"
+    assert vllm["status"] == "healthy"
+    assert vllm["routeable"] is True
+    assert vllm["endpoint"] == "https://llm.home.arpa"
+    assert vllm["model_count"] == 1
+    assert vllm["health_source"] == "vllm_sense"
+    assert vllm["endpoint_scope"] == "lan"
+    assert "http://127.0.0.1:8000/v1/models" not in requested_urls
+    assert report["summary"]["healthy_runtime_count"] == 1
+    assert report["summary"]["routeable_runtime_classes"] == ["spark_vllm"]

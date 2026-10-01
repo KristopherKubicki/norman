@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -410,7 +410,7 @@ async def enqueue_routing_job(
         status="pending",
         attempts=0,
         max_attempts=max_attempts,
-        next_attempt_at=defer_until or datetime.utcnow(),
+        next_attempt_at=defer_until or datetime.now(UTC),
         payload=_normalize_payload(payload),
         normalized=normalized_payload,
     )
@@ -443,7 +443,7 @@ async def process_routing_job(
         routing_crud.update_job(db, job)
         return ("dead", None)
 
-    connector.last_message_received = datetime.utcnow()
+    connector.last_message_received = datetime.now(UTC)
     event.status = "received"
     routing_crud.update_event(db, event)
 
@@ -776,7 +776,7 @@ async def process_routing_job(
 
     if delivery_ok:
         connector_circuit_breaker.record_success(delivery_connector.id)
-        delivery_connector.last_message_sent = datetime.utcnow()
+        delivery_connector.last_message_sent = datetime.now(UTC)
         # best-effort update
         try:
             db.commit()

@@ -317,8 +317,7 @@ class ModelAdapter(Protocol):
         *,
         timeout_seconds: int,
         budget: ModelBudget,
-    ) -> ModelResult:
-        ...
+    ) -> ModelResult: ...
 ```
 
 ModelRequest:

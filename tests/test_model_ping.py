@@ -1,4 +1,6 @@
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -155,3 +157,48 @@ def test_ping_model_targets_reports_missing_target(monkeypatch):
 
     with pytest.raises(KeyError):
         asyncio.run(model_ping.ping_model_targets(target_id="missing"))
+
+
+def test_ping_openai_compatible_home_arpa_uses_system_tls_bundle(monkeypatch):
+    target = model_ping.ModelPingTarget(
+        id="local-qwen",
+        name="Local Qwen",
+        provider="openai_compatible",
+        base_url="https://llm.home.arpa/v1",
+        model="qwen3:8b",
+        timeout_seconds=7.5,
+    )
+    system_context = object()
+    http_client = Mock()
+    client_factory = Mock(return_value=http_client)
+    openai_client = Mock(
+        return_value=SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=Mock(
+                        return_value=SimpleNamespace(
+                            choices=[
+                                SimpleNamespace(
+                                    message=SimpleNamespace(
+                                        content=model_ping.EXPECTED_PING_TEXT
+                                    )
+                                )
+                            ]
+                        )
+                    )
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(
+        model_ping.ssl, "create_default_context", lambda: system_context
+    )
+    monkeypatch.setattr(model_ping.httpx, "Client", client_factory)
+    monkeypatch.setattr(model_ping, "_openai_client", openai_client)
+
+    response = model_ping._ping_openai_chat(target)
+
+    assert response == model_ping.EXPECTED_PING_TEXT
+    client_factory.assert_called_once_with(verify=system_context, timeout=7.5)
+    openai_client.assert_called_once_with(target, http_client=http_client)
+    http_client.close.assert_called_once_with()

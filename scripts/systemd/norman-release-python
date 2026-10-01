@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  norman-release-python <release-sha> [--release-script <scripts-relative-path>] <python arguments...>
+  norman-release-python --current [--release-script <scripts-relative-path>] <python arguments...>
+EOF
+  exit 64
+}
+
+fail() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+release_root_for() {
+  local release_sha="$1"
+  local releases_dir="${NORMAN_RELEASES_DIR:-/home/kristopher/releases}"
+
+  [[ "$releases_dir" == /* ]] ||
+    fail "NORMAN_RELEASES_DIR must be an absolute path."
+  [[ "$release_sha" =~ ^[0-9a-f]{7,64}$ ]] ||
+    fail "Release SHA must be 7-64 lowercase hexadecimal characters."
+
+  printf '%s/norman-%s\n' "${releases_dir%/}" "$release_sha"
+}
+
+validate_release_script() {
+  local relative_path="$1"
+  local segment
+
+  [[ "$relative_path" == scripts/* ]] ||
+    fail "Release script must be beneath scripts/."
+  [[ "$relative_path" != /* ]] || fail "Release script must be relative."
+
+  IFS=/ read -r -a segments <<<"$relative_path"
+  for segment in "${segments[@]}"; do
+    [[ -n "$segment" && "$segment" != "." && "$segment" != ".." ]] ||
+      fail "Release script contains an invalid path segment."
+  done
+}
+
+[[ $# -ge 2 ]] || usage
+
+release_selector="$1"
+shift
+if [[ "$release_selector" == "--current" ]]; then
+  release_selector="${NORMAN_RELEASE_SHA:-}"
+fi
+
+release_root="$(release_root_for "$release_selector")"
+[[ -d "$release_root" ]] || fail "Release directory does not exist: $release_root"
+
+if [[ "${1:-}" == "--release-script" ]]; then
+  [[ $# -ge 3 ]] || usage
+  release_script="$2"
+  shift 2
+  validate_release_script "$release_script"
+  release_script="${release_root}/${release_script}"
+  [[ -f "$release_script" ]] || fail "Release script does not exist: $release_script"
+  set -- "$release_script" "$@"
+fi
+
+canonical_python="${release_root}/.venv/bin/python"
+if [[ -x "$canonical_python" ]]; then
+  exec "$canonical_python" "$@"
+fi
+
+shopt -s nullglob
+legacy_pythons=("${release_root}"/.venv-*/bin/python)
+shopt -u nullglob
+
+case "${#legacy_pythons[@]}" in
+  1)
+    [[ -x "${legacy_pythons[0]}" ]] ||
+      fail "Legacy release virtualenv is not executable: ${legacy_pythons[0]}"
+    exec "${legacy_pythons[0]}" "$@"
+    ;;
+  0)
+    fail "Release ${release_selector} has no .venv/bin/python."
+    ;;
+  *)
+    fail "Release ${release_selector} has multiple legacy virtualenvs; refusing to choose one."
+    ;;
+esac

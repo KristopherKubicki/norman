@@ -177,7 +177,7 @@ async def run_mouth_revocation_drill(
             connector=connector,
             normalized=restored_payload,
             payload=restored_payload,
-            defer_until=datetime.utcnow() + timedelta(days=365),
+            defer_until=datetime.now(timezone.utc) + timedelta(days=365),
         )
         restored_event_id = int(restored["event_id"])
         restored_event = _event(db, restored_event_id)

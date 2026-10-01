@@ -1,6 +1,7 @@
-from typing import List, Optional
-from pydantic import BaseModel, constr, conint, validator
 import re
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, conint, constr, field_validator
 
 
 class FilterBase(BaseModel):
@@ -8,7 +9,7 @@ class FilterBase(BaseModel):
     regex: constr(strip_whitespace=True, min_length=1)
     description: str
 
-    @validator("regex")
+    @field_validator("regex")
     def validate_regex(cls, v):
         try:
             re.compile(v)
@@ -32,5 +33,4 @@ class FilterUpdate(BaseModel):
 class Filter(FilterBase):
     id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)

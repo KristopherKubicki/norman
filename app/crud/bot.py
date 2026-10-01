@@ -53,7 +53,7 @@ def update_bot(
     if bot is None:
         logger.warning("Bot id %s not found for update", bot_id)
         return None
-    for key, value in bot_data.dict().items():
+    for key, value in bot_data.model_dump().items():
         if value is not None:
             setattr(bot, key, value)
     db.commit()

@@ -47,6 +47,24 @@ def test_send_message_no_boto3(monkeypatch):
         asyncio.get_event_loop().run_until_complete(connector.send_message({}))
 
 
+def test_placeholder_region_does_not_create_client(monkeypatch):
+    calls = []
+    stub = types.SimpleNamespace(
+        client=lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    monkeypatch.setattr(mod, "boto3", stub)
+
+    connector = mod.AWSEventBridgeConnector(
+        region="your_aws_eventbridge_region", event_bus_name="bus"
+    )
+
+    assert connector.client is None
+    assert not calls
+    assert not connector.is_connected()
+    with pytest.raises(RuntimeError, match="region is not configured"):
+        asyncio.get_event_loop().run_until_complete(connector.send_message({}))
+
+
 def test_is_connected_success(monkeypatch):
     client = DummyClient()
     stub = types.SimpleNamespace(client=lambda service, region_name=None: client)

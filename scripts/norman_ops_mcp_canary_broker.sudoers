@@ -1,0 +1,1 @@
+kristopher ALL=(root) NOPASSWD: /usr/local/sbin/norman-ops-mcp-canary-broker get

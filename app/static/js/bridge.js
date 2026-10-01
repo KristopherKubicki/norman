@@ -1,0 +1,5365 @@
+(() => {
+  const root = document.getElementById('norman-bridge');
+  if (!root) return;
+
+  const API = root.dataset.apiPrefix || '/api/v1';
+  const requestedAgent = new URLSearchParams(window.location.search).get('agent') || '';
+  const FALLBACK_GROUP = {
+    id: 'general',
+    slug: 'general',
+    label: 'General',
+    mark: 'G',
+    kind: 'workspace',
+    policy: 'Default workspace',
+    domains: [],
+  };
+  const FALLBACK_NORMAN = {
+    slug: 'norman',
+    display_name: 'Norman',
+    class_name: 'coordinator',
+    domain_name: '',
+    domain_slug: '',
+    principal_id: FALLBACK_GROUP.id,
+    principal_slug: FALLBACK_GROUP.slug,
+    console_url: '/bot/norman/',
+    directory_source: 'built-in',
+  };
+  const PROFILE_PALETTES = {
+    tide: {
+      bg: '#23343d', soft: '#2a3e48', surface: '#263a44', surface2: '#31505d',
+      surface3: '#3b6271', border: '#4c7282', borderStrong: '#6591a3',
+      text: '#e0edf3', muted: '#a6bcc7', bodyStart: '#22323a', bodyMid: '#29404a',
+      bodyEnd: '#304853',
+    },
+    dusk: {
+      bg: '#2a3240', soft: '#313a4a', surface: '#2d3645', surface2: '#384355',
+      surface3: '#445266', border: '#4d5a70', borderStrong: '#65748d',
+      text: '#e4ebf2', muted: '#a8b3c2', bodyStart: '#29313e', bodyMid: '#303846',
+      bodyEnd: '#353f4d',
+    },
+    blueprint: {
+      bg: '#151b4b', soft: '#182052', surface: '#151c4a', surface2: '#1b2458',
+      surface3: '#243067', border: '#2f467a', borderStrong: '#3674a4',
+      text: '#e8eeff', muted: '#95a7cf', bodyStart: '#12173f', bodyMid: '#151b4b',
+      bodyEnd: '#182052',
+    },
+    ember: {
+      bg: '#342b2b', soft: '#3d3232', surface: '#392e2e', surface2: '#473939',
+      surface3: '#584646', border: '#6a5350', borderStrong: '#876763',
+      text: '#f0e5de', muted: '#b9a69d', bodyStart: '#322928', bodyMid: '#3a302f',
+      bodyEnd: '#433735',
+    },
+    slate: {
+      bg: '#303642', soft: '#373e4b', surface: '#343b48', surface2: '#3f4755',
+      surface3: '#4a5566', border: '#556174', borderStrong: '#6e7e96',
+      text: '#e5ecf4', muted: '#adb8c7', bodyStart: '#2f3541', bodyMid: '#373e4a',
+      bodyEnd: '#3d4552',
+    },
+  };
+  const TEXTURE_MOTION_PROFILES = Object.freeze({
+    idle: Object.freeze({ speed: 0.10, drift: 7, amplitude: 1.8, frequency: 0.0086, square: 0.26, shear: 0.012, alpha: 0.18, glint: 0.025, transition: 1.35 }),
+    ready: Object.freeze({ speed: 0.15, drift: 10, amplitude: 2.3, frequency: 0.0092, square: 0.30, shear: 0.018, alpha: 0.22, glint: 0.035, transition: 1.15 }),
+    active: Object.freeze({ speed: 0.24, drift: 15, amplitude: 3.0, frequency: 0.0102, square: 0.36, shear: 0.024, alpha: 0.26, glint: 0.055, transition: 0.95 }),
+    working: Object.freeze({ speed: 0.46, drift: 26, amplitude: 4.9, frequency: 0.0124, square: 0.52, shear: 0.046, alpha: 0.33, glint: 0.12, transition: 0.82 }),
+    blocked: Object.freeze({ speed: 0.22, drift: 8, amplitude: 2.6, frequency: 0.0128, square: 0.64, shear: -0.042, alpha: 0.20, glint: 0.026, transition: 1.05 }),
+    degraded: Object.freeze({ speed: 0.24, drift: 10, amplitude: 3.0, frequency: 0.0112, square: 0.56, shear: -0.038, alpha: 0.19, glint: 0.020, transition: 1.1 }),
+    crashed: Object.freeze({ speed: 0.50, drift: 12, amplitude: 5.2, frequency: 0.0162, square: 0.74, shear: -0.09, alpha: 0.23, glint: 0.052, transition: 0.65 }),
+  });
+  const BRIDGE_SETTINGS_KEY = 'norman-bridge-settings-v2';
+  const LOCAL_CONVERSATIONS_KEY = 'norman-bridge-conversations-v1';
+  const ACTIVE_CONVERSATION_KEY = 'norman-bridge-active-conversation-v1';
+  const AUTH_RESUME_KEY = 'norman-bridge-auth-resume-v1';
+  const COMPOSER_DRAFTS_KEY = 'norman-bridge-composer-drafts-v1';
+  const STYLE_VARIANT_OVERRIDES = {
+    norman: 'anchor',
+    housebot: 'anchor',
+    infra: 'anchor',
+    autocamera: 'grove',
+    theseus: 'alloy',
+    'control-plane': 'alloy',
+    cloudagent: 'grove',
+    dohio: 'grove',
+    networking: 'signal',
+    uplink: 'signal',
+    earlybird: 'grove',
+    scout: 'quiet',
+    'leadership-kpis': 'editorial',
+    'gold-book': 'editorial',
+    'platinum-standard': 'alloy',
+    panelbot: 'signal',
+    'market-sizing': 'anchor',
+    parkergale: 'editorial',
+    pefb: 'editorial',
+  };
+  const IDENTITY_GLYPHS = Object.freeze({
+    norman: 'compass',
+    housebot: 'home',
+    eyebat: 'eye',
+    castle: 'castle',
+    'diamond-roc': 'gem',
+    'phone-ops': 'phone',
+    uscache: 'archive',
+    usbhome: 'usb',
+    autocamera: 'camera',
+    theseus: 'microscope',
+    maps: 'map',
+    earlybird: 'sunrise',
+    infra: 'server',
+    'control-plane': 'grid',
+    'market-sizing': 'chart',
+    'tmi-dashboards': 'chart',
+    'gold-book': 'book',
+    keystone: 'key',
+    'leadership-kpis': 'chart',
+    panelbot: 'panel',
+    mls: 'map-pin',
+    'platinum-standard': 'gem',
+    netops: 'network',
+    uplink: 'radio-tower',
+    cloudagent: 'cloud',
+    dohio: 'database',
+    'null-agent': 'circle-off',
+    scout: 'compass',
+    pefb: 'file-text',
+    artmonster: 'palette',
+  });
+  const INTERACTION_TONES = {
+    press: { frequency: 148, ratio: 1.16, duration: 0.082, peak: 0.0046, master: 0.52, wave: 'triangle', filter: 560 },
+    focus: { frequency: 196, ratio: 1.51, duration: 0.18, peak: 0.009, master: 0.62, wave: 'sine', filter: 820 },
+    type: { frequency: 154, ratio: 1.34, duration: 0.048, peak: 0.003, master: 0.46, wave: 'triangle', filter: 620 },
+    click: { frequency: 156, ratio: 1.62, duration: 0.12, peak: 0.008, master: 0.62, wave: 'sine', filter: 640 },
+    tick: { frequency: 138, ratio: 1.28, duration: 0.064, peak: 0.0048, master: 0.5, wave: 'triangle', filter: 520 },
+    send: { frequency: 202, ratio: 1.34, duration: 0.24, peak: 0.011, master: 0.72, wave: 'sine', filter: 860 },
+    accepted: { frequency: 226, ratio: 1.5, duration: 0.34, peak: 0.013, master: 0.78, wave: 'sine', filter: 960 },
+    queued: { frequency: 174, ratio: 1.32, duration: 0.28, peak: 0.010, master: 0.7, wave: 'triangle', filter: 760 },
+    blocked: { frequency: 166, ratio: 0.78, duration: 0.18, peak: 0.0078, master: 0.62, wave: 'triangle', filter: 560 },
+    error: { frequency: 184, ratio: 0.72, duration: 0.3, peak: 0.010, master: 0.72, wave: 'sine', filter: 620 },
+    approve: { frequency: 207, ratio: 2.03, duration: 0.34, peak: 0.013, master: 0.76, wave: 'sine', filter: 940 },
+    chime: { frequency: 176, ratio: 1.414, duration: 0.34, peak: 0.012, master: 0.72, wave: 'sine', filter: 860 },
+  };
+  const SIGNAL_TONES = new Set(['send', 'accepted', 'queued', 'blocked', 'error', 'approve', 'chime']);
+  const state = {
+    groups: [FALLBACK_GROUP],
+    group: FALLBACK_GROUP.id,
+    domain: '',
+    view: 'agent',
+    selectedJobId: '',
+    selectedAgent: requestedAgent || 'norman',
+    selectedConversationId: '',
+    selectedRecipients: requestedAgent ? [requestedAgent] : [],
+    conversations: [],
+    programs: null,
+    programsLoading: false,
+    programsError: '',
+    programsUpdated: 0,
+    stationHistory: {},
+    stationHistoryLoaded: {},
+    stationHistoryLoading: new Set(),
+    stationHistoryRequests: {},
+    stationHistoryUpdated: {},
+    stationHistoryErrors: {},
+    jobActivities: {},
+    jobs: [],
+    agents: [{ ...FALLBACK_NORMAN }],
+    approvals: [],
+    heartbeats: [],
+    worker: {},
+    routeSummary: {},
+    textureCatalog: [],
+    nonConversationalStationSlugs: new Set(['dohio', 'maps', 'switchboard', 'subprime']),
+    activity: null,
+    workstream: null,
+    eventSource: null,
+    eventSourceJobId: '',
+    lastEventSequence: 0,
+    decisionInFlight: '',
+    search: '',
+    connection: { connected: false, failed: false },
+    loading: false,
+    bootstrapped: false,
+    boot: {
+      completed: 0,
+      total: 0,
+      phase: 'Loading chats',
+      detail: 'Loading conversations and connection status',
+      dismissTimer: 0,
+      activityTimer: 0,
+      activityStep: 1,
+    },
+    authRequired: root.dataset.authenticated !== 'true',
+    pollTimer: 0,
+    composerFrame: 0,
+    composerDrafts: loadComposerDrafts(),
+    menuPanel: 'overview',
+    requestedAgentApplied: false,
+    preferences: {
+      feedbackSounds: 'signals',
+      completionBell: 'auto',
+    },
+    audioContext: null,
+    lastToneAt: 0,
+    lastTypingToneAt: 0,
+    lastCompletionAt: 0,
+    lastTerminalState: '',
+    faviconTone: '',
+    composeHintDefault: '',
+    promptByConversation: {},
+    promptConversationKey: '',
+    prompt: {
+      phase: 'idle',
+      jobId: '',
+      objective: '',
+      error: '',
+      resetTimer: 0,
+    },
+    texture: {
+      frame: 0,
+      phase: 0,
+      lastTime: 0,
+      impulse: 0,
+      pulseTimer: 0,
+      lines: [],
+      focusX: 0.58,
+      focusY: 0.46,
+      targetX: 0.58,
+      targetY: 0.46,
+      inputEnergy: 0,
+      flowX: 0,
+      flowY: 0,
+      renderProfile: null,
+      disturbances: [],
+      pointerX: 0,
+      pointerY: 0,
+      pointerAt: 0,
+      keySequence: 0,
+      reactiveTimer: 0,
+      composerTimer: 0,
+      visualLevel: 0,
+      lastVisualSync: 0,
+    },
+  };
+
+  let historyCache;
+  try {
+    historyCache = window.createBridgeCache?.(state.authRequired ? '' : root.dataset.cacheOwner);
+  } catch (_) { /* Session storage may be disabled. */ }
+
+  const el = (id) => document.getElementById(id);
+  const nodes = {
+    groupList: el('cockpit-group-list'),
+    groupTitle: el('cockpit-group-title'),
+    workspaceButton: el('cockpit-workspace-button'),
+    workspaceMark: el('cockpit-workspace-mark'),
+    domains: el('cockpit-domains'),
+    workstreams: el('cockpit-workstreams'),
+    agents: el('cockpit-agents'),
+    rooms: el('cockpit-rooms'),
+    agentCount: el('cockpit-agent-count'),
+    feed: el('cockpit-feed'),
+    roomTitle: el('cockpit-room-title'),
+    roomSubtitle: el('cockpit-room-subtitle'),
+    runtimeStatus: el('cockpit-runtime-status'),
+    composer: el('cockpit-composer'),
+    message: el('cockpit-message'),
+    send: el('cockpit-send'),
+    composeMeta: el('cockpit-compose-meta'),
+    composeHint: el('cockpit-compose-hint'),
+    recipientRow: el('cockpit-recipient-row'),
+    selectedRecipients: el('cockpit-selected-recipients'),
+    attentionCount: el('cockpit-attention-count'),
+    navAttentionCount: el('cockpit-nav-attention-count'),
+    inspector: el('cockpit-inspector'),
+    inspectorAvatar: el('cockpit-inspector-avatar'),
+    inspectorGroup: el('cockpit-inspector-group'),
+    inspectorPolicy: el('cockpit-inspector-policy'),
+    jobDetails: el('cockpit-job-details'),
+    participants: el('cockpit-participants'),
+    crewSection: el('cockpit-crew-section'),
+    crewList: el('cockpit-crew-list'),
+    openJob: el('cockpit-open-job'),
+    cancelJob: el('cockpit-cancel-job'),
+    nav: el('cockpit-nav'),
+    backdrop: el('cockpit-mobile-backdrop'),
+    search: el('cockpit-search'),
+    warningStrip: el('cockpit-warning-strip'),
+    warningTitle: el('cockpit-warning-title'),
+    warningDetail: el('cockpit-warning-detail'),
+    warningAction: el('cockpit-warning-action'),
+    routeMeter: el('cockpit-route-meter'),
+    queueMeter: el('cockpit-queue-meter'),
+    tokenMeter: el('cockpit-token-meter'),
+    agentMeter: el('cockpit-agent-meter'),
+    warningMeter: el('cockpit-warning-meter'),
+    menu: el('cockpit-menu'),
+    menuButton: el('cockpit-menu-button'),
+    menuCount: el('cockpit-menu-count'),
+    menuBackdrop: el('cockpit-menu-backdrop'),
+    menuPanel: el('cockpit-menu-panel'),
+    menuTransport: el('cockpit-menu-transport'),
+    textureCanvas: el('cockpit-thread-field'),
+    bootInterstitial: el('bridge-boot-interstitial'),
+    bootTitle: el('bridge-boot-title'),
+    bootDetail: el('bridge-boot-detail'),
+    bootActivity: el('bridge-boot-activity'),
+    bootProgress: el('bridge-boot-progress'),
+    soundToggle: el('cockpit-sound-toggle'),
+    soundTest: el('cockpit-sound-test'),
+    roomDialog: el('bridge-room-dialog'),
+    roomForm: el('bridge-room-form'),
+    roomName: el('bridge-room-name'),
+    roomSearch: el('bridge-room-search'),
+    roomSelection: el('bridge-room-selection'),
+    roomMembers: el('bridge-room-members'),
+    roomError: el('bridge-room-error'),
+    roomCreate: el('bridge-room-create'),
+  };
+  let activeCartouche = null;
+  let cartoucheReleaseTimer = 0;
+
+  function setBridgeFavicon(tone) {
+    if (state.faviconTone === tone) return;
+    state.faviconTone = tone;
+    const link = document.getElementById('norman-favicon');
+    if (!link) return;
+    const signal = tone === 'warn' ? '#e37d78' : tone === 'active' ? '#f1d47f' : '#72c7a8';
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="15" fill="#101720"/><rect x="5" y="5" width="54" height="54" rx="12" fill="#263547" stroke="#607690" stroke-width="2"/><path d="M13 20h38M13 32h38M13 44h38" stroke="#7baee1" stroke-opacity=".18"/><path d="M20 46V18h6l12 16V18h6v28h-6L26 30v16h-6Z" fill="#f1d47f"/><circle cx="49" cy="15" r="5" fill="${signal}" stroke="#e1fff4" stroke-opacity=".7"/></svg>`;
+    link.href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  function iconHtml(name, className = 'cockpit-icon') {
+    return `<svg class="${escapeHtml(className)}" aria-hidden="true"><use href="#bridge-icon-${escapeHtml(name)}"></use></svg>`;
+  }
+
+  function identityGlyphFor(slug, texture = textureForSlug(slug)) {
+    const normalized = slugify(slug || texture?.slug);
+    if (IDENTITY_GLYPHS[normalized]) return IDENTITY_GLYPHS[normalized];
+    const pattern = String(texture?.pattern || '').toLowerCase();
+    if (/camera|aperture/.test(pattern)) return 'camera';
+    if (/book|memo|ledger/.test(pattern)) return 'book';
+    if (/map|contour|parcel/.test(pattern)) return 'map';
+    if (/cloud/.test(pattern)) return 'cloud';
+    if (/network|packet|beam|radio/.test(pattern)) return 'network';
+    if (/grid|panel|dashboard|scorecard/.test(pattern)) return 'grid';
+    return 'activity';
+  }
+
+  function safeLinkHref(value) {
+    const href = String(value || '').trim();
+    if (!href) return '';
+    if (/^(https?:|mailto:)/i.test(href)) return href;
+    if (/^(\/|#)/.test(href)) return href;
+    return '';
+  }
+
+  function renderMessageContent(value) {
+    const text = String(value || '');
+    const parser = window.marked?.marked || window.marked?.parse || window.marked;
+    if (typeof parser !== 'function') return escapeHtml(text);
+    const mentions = [];
+    const mentionPattern = /(^|[\s([{])@([a-z0-9][a-z0-9_-]{1,48})\b/gi;
+    const prepared = text.replace(mentionPattern, (match, prefix, slug) => {
+      const agent = state.agents.find((item) => slugify(item.slug) === slugify(slug));
+      if (!agent && slugify(slug) !== 'norman') return match;
+      const token = `BRIDGEENTITYTOKEN${mentions.length}END`;
+      mentions.push(entityCartoucheHtml(agent?.display_name || 'Norman', {
+        slug: agent?.slug || 'norman',
+        kind: 'bot',
+        decorator: '@',
+        mention: true,
+      }));
+      return `${prefix}${token}`;
+    });
+    const Renderer = window.marked?.Renderer;
+    if (state.messageParser !== parser || state.messageRenderer !== Renderer) {
+      state.messageContentCache = new Map();
+      state.messageContentCacheChars = 0;
+      state.messageParser = parser;
+      state.messageRenderer = Renderer;
+    }
+    const cacheKey = JSON.stringify([prepared, mentions]);
+    const cached = state.messageContentCache.get(cacheKey);
+    if (cached !== undefined) {
+      state.messageContentCache.delete(cacheKey);
+      state.messageContentCache.set(cacheKey, cached);
+      return cached;
+    }
+    const renderer = Renderer ? new Renderer() : null;
+    if (renderer) {
+      renderer.html = (html) => escapeHtml(html);
+      renderer.link = (href, title, content) => {
+        const safeHref = safeLinkHref(href);
+        if (!safeHref) return content;
+        const titleAttribute = title ? ` title="${escapeHtml(title)}"` : '';
+        const external = /^https?:/i.test(safeHref);
+        return `<a href="${escapeHtml(safeHref)}"${titleAttribute}${external ? ' target="_blank" rel="noopener noreferrer"' : ''}>${content}</a>`;
+      };
+      renderer.image = (href, title, alt) => `<span class="cockpit-inline-media">[image: ${escapeHtml(alt || title || 'attachment')}]</span>`;
+    }
+    let rendered;
+    try {
+      rendered = parser(prepared, {
+        renderer,
+        gfm: true,
+        breaks: false,
+        headerIds: false,
+        mangle: false,
+      });
+    } catch {
+      return escapeHtml(text);
+    }
+    mentions.forEach((cartouche, index) => {
+      rendered = rendered.replaceAll(`BRIDGEENTITYTOKEN${index}END`, cartouche);
+    });
+    const cacheSize = cacheKey.length + rendered.length;
+    // Bound retained HTML and skip exceptionally large replies.
+    if (cacheSize <= 65536) {
+      state.messageContentCache.set(cacheKey, rendered);
+      state.messageContentCacheChars += cacheSize;
+      while (state.messageContentCache.size > 80 || state.messageContentCacheChars > 524288) {
+        const oldest = state.messageContentCache.keys().next().value;
+        state.messageContentCacheChars -= oldest.length + state.messageContentCache.get(oldest).length;
+        state.messageContentCache.delete(oldest);
+      }
+    }
+    return rendered;
+  }
+
+  function slugify(value) {
+    return String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  function truncate(value, limit = 58) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    return text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
+  }
+
+  function displaySlug(value) {
+    return String(value || '')
+      .split(/[-_]+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  }
+
+  function formatTime(value) {
+    if (!value) return '';
+    const numericEpoch = (
+      (typeof value === 'number' && value < 1000000000000)
+      || (typeof value === 'string' && /^\d{10}$/.test(value))
+    );
+    const normalized = numericEpoch ? Number(value) * 1000 : value;
+    const parsed = new Date(normalized);
+    if (Number.isNaN(parsed.getTime())) return '';
+    const now = new Date();
+    if (parsed.toDateString() === now.toDateString()) {
+      return parsed.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+    return parsed.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  function compactNumber(value) {
+    const number = Number(value || 0);
+    if (!Number.isFinite(number)) return '--';
+    if (number >= 1000000) return `${(number / 1000000).toFixed(number >= 10000000 ? 0 : 1)}m`;
+    if (number >= 1000) return `${(number / 1000).toFixed(number >= 10000 ? 0 : 1)}k`;
+    return String(Math.round(number));
+  }
+
+  class BridgeRequestError extends Error {
+    constructor(message, status, payload = null) {
+      super(message);
+      this.name = 'BridgeRequestError';
+      this.status = status;
+      this.payload = payload;
+    }
+  }
+
+  async function fetchJson(url, options = {}) {
+    const { timeoutMs = 15000, signal, headers, ...fetchOptions } = options;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (signal?.aborted) abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    const timer = window.setTimeout(abort, timeoutMs);
+    const api = String(url).startsWith('/api/');
+    try {
+      const response = await fetch(url, {
+        cache: 'no-store', credentials: 'same-origin', ...fetchOptions,
+        headers: { Accept: 'application/json', ...(headers || {}) },
+        signal: controller.signal,
+      });
+      if (response.status === 401 || (response.redirected && /\/login(?:\.html)?(?:[?#]|$)/.test(response.url))) {
+        state.authRequired = true;
+        throw new BridgeRequestError('Your session expired. Sign in again; your draft is saved.', 401);
+      }
+      if (!response.ok) {
+        const raw = await response.text();
+        let payload = null;
+        try { payload = raw ? JSON.parse(raw) : null; } catch (_) { /* An upstream may return HTML. */ }
+        const detail = payload?.detail || payload?.message;
+        const message = response.status === 403 ? 'This account cannot perform that action.'
+          : typeof detail === 'string' ? detail
+          : response.status >= 500 ? 'The service is temporarily unavailable. Your draft is saved; try again.'
+          : `Request failed (${response.status}).`;
+        throw new BridgeRequestError(message, response.status, payload);
+      }
+      const data = await response.json();
+      if (api) { state.connection.connected = true; state.connection.failed = false; renderConnection(); }
+      return data;
+    } catch (error) {
+      if (api) { state.connection.failed = true; renderConnection(); }
+      if (controller.signal.aborted && !signal?.aborted) {
+        throw new BridgeRequestError('The request took too long. Your draft is saved; check the connection and retry.', 0);
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    }
+  }
+
+  async function fetchEstateDirectory() {
+    try {
+      return await fetchJson(`${API}/estate/overview`, { timeoutMs: 12000 });
+    } catch (error) {
+      if ([401, 403].includes(Number(error.status))) throw error;
+      // Cold starts and a changing phone connection must not strand the
+      // directory on the provisional Norman-only view until the next poll.
+      return fetchJson(`${API}/estate/overview`, { timeoutMs: 30000 });
+    }
+  }
+
+  function postJson(url, payload, options = {}) {
+    return fetchJson(url, {
+      ...options,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      body: JSON.stringify(payload || {}),
+    });
+  }
+
+  function localConversationId(kind, principal, identity) {
+    const suffix = kind === 'direct'
+      ? `${slugify(principal)}-${slugify(identity)}`
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return `local-${kind}-${suffix}`;
+  }
+
+  function normalizeLocalConversation(item) {
+    if (!item || !['direct', 'room'].includes(item.kind) || !item.conversation_id) return null;
+    return {
+      ...item,
+      principal_slug: slugify(item.principal_slug) || FALLBACK_GROUP.slug,
+      domain_slug: slugify(item.domain_slug),
+      direct_agent_slug: slugify(item.direct_agent_slug),
+      member_slugs: [...new Set((item.member_slugs || []).map(slugify).filter(Boolean))],
+      _local_only: true,
+    };
+  }
+
+  function loadLocalConversations() {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(LOCAL_CONVERSATIONS_KEY) || '[]');
+      if (!Array.isArray(stored)) return [];
+      return stored.map(normalizeLocalConversation).filter(Boolean);
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function saveLocalConversations() {
+    try {
+      const local = state.conversations
+        .filter((item) => item._local_only)
+        .map((item) => ({
+          conversation_id: item.conversation_id,
+          kind: item.kind,
+          title: item.title,
+          principal_slug: item.principal_slug,
+          domain_slug: item.domain_slug || '',
+          direct_agent_slug: item.direct_agent_slug || '',
+          member_slugs: item.member_slugs || [],
+          created_at: item.created_at,
+          updated_at: item.updated_at,
+        }));
+      window.localStorage.setItem(LOCAL_CONVERSATIONS_KEY, JSON.stringify(local));
+    } catch (_error) {
+      // Private browsing and locked-down webviews can reject local storage.
+    }
+  }
+
+  function loadActiveConversation() {
+    try {
+      const stored = JSON.parse(window.sessionStorage.getItem(ACTIVE_CONVERSATION_KEY) || 'null');
+      if (!stored || typeof stored !== 'object') return null;
+      return {
+        conversationId: String(stored.conversationId || ''),
+        kind: String(stored.kind || ''),
+        principalSlug: slugify(stored.principalSlug),
+        domainSlug: slugify(stored.domainSlug),
+        directAgentSlug: slugify(stored.directAgentSlug),
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function saveActiveConversation(conversation) {
+    if (!conversation) return;
+    try {
+      window.sessionStorage.setItem(ACTIVE_CONVERSATION_KEY, JSON.stringify({
+        conversationId: conversation.conversation_id,
+        kind: conversation.kind,
+        principalSlug: conversation.principal_slug || '',
+        domainSlug: conversation.domain_slug || '',
+        directAgentSlug: conversation.direct_agent_slug || '',
+      }));
+    } catch (_error) {
+      // Session storage can be unavailable in locked-down webviews.
+    }
+  }
+
+  function clearActiveConversation() {
+    try {
+      window.sessionStorage.removeItem(ACTIVE_CONVERSATION_KEY);
+    } catch (_error) {
+      // Session storage can be unavailable in locked-down webviews.
+    }
+  }
+
+  function loadComposerDrafts() {
+    try {
+      const stored = JSON.parse(window.sessionStorage.getItem(COMPOSER_DRAFTS_KEY) || '{}');
+      if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {};
+      return Object.fromEntries(Object.entries(stored)
+        .filter(([key, value]) => key && typeof value === 'string' && value.trim())
+        .slice(-32)
+        .map(([key, value]) => [key, value.slice(0, 12000)]));
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  function saveComposerDrafts() {
+    try {
+      window.sessionStorage.setItem(COMPOSER_DRAFTS_KEY, JSON.stringify(state.composerDrafts));
+    } catch (_error) {
+      // Session storage can be unavailable in locked-down webviews.
+    }
+  }
+
+  function conversationIdentity(item) {
+    if (item.kind === 'direct') {
+      return `direct:${slugify(item.principal_slug)}:${slugify(item.direct_agent_slug)}`;
+    }
+    return `room:${item.conversation_id}`;
+  }
+
+  function mergeConversations(remote = [], local = []) {
+    const merged = new Map();
+    local.map(normalizeLocalConversation).filter(Boolean).forEach((item) => {
+      merged.set(conversationIdentity(item), item);
+    });
+    remote.forEach((item) => {
+      merged.set(conversationIdentity(item), { ...item, _local_only: false });
+    });
+    state.conversations = [...merged.values()].sort((left, right) => (
+      new Date(right.updated_at || right.created_at || 0)
+      - new Date(left.updated_at || left.created_at || 0)
+    ));
+    saveLocalConversations();
+    return state.conversations;
+  }
+
+  function discardNonConversationalDirectConversations() {
+    const unsupported = state.nonConversationalStationSlugs;
+    if (!(unsupported instanceof Set) || !unsupported.size) return;
+    const removed = state.conversations.filter((conversation) => (
+      conversation.kind === 'direct'
+      && unsupported.has(slugify(conversation.direct_agent_slug))
+    ));
+    if (!removed.length) return;
+    const removedIds = new Set(removed.map((conversation) => conversation.conversation_id));
+    state.conversations = state.conversations.filter(
+      (conversation) => !removedIds.has(conversation.conversation_id),
+    );
+    if (removedIds.has(state.selectedConversationId)) {
+      state.selectedConversationId = '';
+      state.selectedAgent = '';
+      state.selectedRecipients = [];
+      state.view = 'general';
+      clearActiveConversation();
+    }
+    removed.forEach((conversation) => {
+      delete state.composerDrafts[conversationIdentity(conversation)];
+    });
+    saveComposerDrafts();
+    saveLocalConversations();
+  }
+
+  function makeLocalConversation({
+    kind,
+    title,
+    principalSlug,
+    domainSlug = '',
+    directAgentSlug = '',
+    memberSlugs = [],
+  }) {
+    const now = new Date().toISOString();
+    return normalizeLocalConversation({
+      conversation_id: localConversationId(kind, principalSlug, directAgentSlug || title),
+      kind,
+      title,
+      principal_slug: principalSlug || FALLBACK_GROUP.slug,
+      domain_slug: domainSlug,
+      direct_agent_slug: directAgentSlug,
+      member_slugs: memberSlugs,
+      created_at: now,
+      updated_at: now,
+    });
+  }
+
+  function persistConversationLocally(conversation) {
+    const identity = conversationIdentity(conversation);
+    const index = state.conversations.findIndex((item) => conversationIdentity(item) === identity);
+    if (index >= 0) state.conversations.splice(index, 1, conversation);
+    else state.conversations.unshift(conversation);
+    saveLocalConversations();
+    return conversation;
+  }
+
+  function replaceConversation(previous, next) {
+    const index = state.conversations.findIndex(
+      (item) => item.conversation_id === previous.conversation_id,
+    );
+    if (index >= 0) state.conversations.splice(index, 1, { ...next, _local_only: false });
+    else state.conversations.unshift({ ...next, _local_only: false });
+    if (state.selectedConversationId === previous.conversation_id) {
+      state.selectedConversationId = next.conversation_id;
+      saveActiveConversation(next);
+    }
+    saveLocalConversations();
+    renderAll();
+  }
+
+  function persistenceUnavailable(error) {
+    return error instanceof BridgeRequestError
+      && [401, 403, 404, 409, 503].includes(error.status);
+  }
+
+  function currentGroup() {
+    return state.groups.find((group) => group.id === state.group) || state.groups[0] || FALLBACK_GROUP;
+  }
+
+  function currentDomain() {
+    return currentGroup().domains.find((domain) => domain.slug === state.domain) || null;
+  }
+
+  function jobMetadata(job) {
+    return job?.metadata || job?.metadata_json || {};
+  }
+
+  function jobContract(job) {
+    return job?.contract || job?.contract_json || {};
+  }
+
+  function jobObjective(job) {
+    return String(job?.objective || jobContract(job).objective || '').trim();
+  }
+
+  function eventPayload(event) {
+    const payload = event?.payload ?? event?.payload_json ?? {};
+    if (typeof payload !== 'string') return payload || {};
+    try {
+      return JSON.parse(payload);
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  function jobEvents(job) {
+    return state.jobActivities[job?.job_id]?.events || [];
+  }
+
+  function selectedConversation() {
+    return state.conversations.find(
+      (item) => item.conversation_id === state.selectedConversationId,
+    ) || null;
+  }
+
+  function composerDraftKey(conversation = selectedConversation()) {
+    if (!conversation) return '';
+    return conversationIdentity(conversation);
+  }
+
+  function saveComposerDraft(conversation = selectedConversation(), value = nodes.message.value) {
+    const key = composerDraftKey(conversation);
+    if (!key) return;
+    const draft = String(value || '').slice(0, 12000);
+    if (draft.trim()) state.composerDrafts[key] = draft;
+    else delete state.composerDrafts[key];
+    saveComposerDrafts();
+  }
+
+  function conversationPrompt(conversation = selectedConversation()) {
+    const key = composerDraftKey(conversation) || 'workspace';
+    state.promptByConversation ||= {};
+    return state.promptByConversation[key] ||= { phase: 'idle', jobId: '', objective: '', error: '', resetTimer: 0 };
+  }
+
+  function activateConversationPrompt(conversation) {
+    const key = composerDraftKey(conversation) || 'workspace';
+    if (key === state.promptConversationKey) return;
+    state.promptByConversation ||= {};
+    if (state.promptConversationKey) state.promptByConversation[state.promptConversationKey] = state.prompt;
+    state.prompt = conversationPrompt(conversation);
+    state.promptConversationKey = key;
+    root.dataset.promptState = state.prompt.phase;
+  }
+
+  function setConversationPromptPhase(conversation, phase, patch = {}) {
+    const prompt = conversationPrompt(conversation);
+    if (prompt === state.prompt) setPromptPhase(phase, patch);
+    else Object.assign(prompt, patch, { phase });
+  }
+
+  function restoreComposerDraft(conversation = selectedConversation()) {
+    activateConversationPrompt(conversation);
+    resumeStationRequest(conversation);
+    const key = composerDraftKey(conversation);
+    const value = key ? String(state.composerDrafts[key] || '') : '';
+    if (nodes.message.value !== value) nodes.message.value = value;
+    resizeComposer({ immediate: true });
+    updateComposerState();
+  }
+
+  function restoreActiveConversation() {
+    if (state.view === 'activity') return null;
+    const current = selectedConversation();
+    const saved = loadActiveConversation();
+    if (current && (!saved?.directAgentSlug || (
+      slugify(current.direct_agent_slug) === saved.directAgentSlug
+      && slugify(current.principal_slug) === saved.principalSlug
+    ))) {
+      saveActiveConversation(current);
+      return current;
+    }
+    const directAgentSlug = slugify(
+      saved?.directAgentSlug || (state.view === 'agent' ? state.selectedAgent : ''),
+    );
+    if (!directAgentSlug) return null;
+    const principalSlug = slugify(saved?.principalSlug);
+    let conversation = state.conversations.find((item) => (
+      item.kind === 'direct'
+      && slugify(item.direct_agent_slug) === directAgentSlug
+      && (!principalSlug || slugify(item.principal_slug) === principalSlug)
+    ));
+    if (!conversation) {
+      const agent = state.agents.find((item) => slugify(item.slug) === directAgentSlug);
+      if (!agent) return null;
+      conversation = persistConversationLocally(makeLocalConversation({
+        kind: 'direct',
+        title: agent.display_name,
+        principalSlug: principalSlug || agent.principal_slug || currentGroup().slug,
+        domainSlug: saved?.domainSlug || agent.domain_slug || '',
+        directAgentSlug: agent.slug,
+        memberSlugs: [agent.slug],
+      }));
+    }
+    const group = state.groups.find((item) => (
+      slugify(item.slug) === slugify(conversation.principal_slug)
+    ));
+    if (group) state.group = group.id;
+    state.domain = slugify(conversation.domain_slug);
+    state.view = 'agent';
+    state.selectedConversationId = conversation.conversation_id;
+    state.selectedAgent = conversation.direct_agent_slug;
+    state.selectedRecipients = [...(conversation.member_slugs || [])];
+    saveActiveConversation(conversation);
+    return conversation;
+  }
+
+  function beginSignIn() {
+    try {
+      window.sessionStorage.setItem(AUTH_RESUME_KEY, JSON.stringify({
+        draft: nodes.message.value,
+        group: state.group,
+        domain: state.domain,
+        conversationId: state.selectedConversationId,
+        selectedAgent: state.selectedAgent,
+        recipients: state.selectedRecipients,
+      }));
+    } catch (_error) {
+      // Session storage can be unavailable in locked-down webviews.
+    }
+    const returnTo = `${window.location.pathname}${window.location.search}`;
+    window.location.assign(`/login.html?next=${encodeURIComponent(returnTo)}`);
+  }
+
+  function restoreAfterSignIn() {
+    if (state.authRequired) return;
+    let resume = null;
+    try {
+      resume = JSON.parse(window.sessionStorage.getItem(AUTH_RESUME_KEY) || 'null');
+      window.sessionStorage.removeItem(AUTH_RESUME_KEY);
+    } catch (_error) {
+      resume = null;
+    }
+    if (!resume) return;
+    if (state.groups.some((item) => item.id === resume.group)) state.group = resume.group;
+    state.domain = slugify(resume.domain);
+    const conversation = state.conversations.find(
+      (item) => item.conversation_id === resume.conversationId,
+    );
+    if (conversation) {
+      state.selectedConversationId = conversation.conversation_id;
+      state.selectedAgent = conversation.direct_agent_slug || '';
+      state.selectedRecipients = [...(conversation.member_slugs || [])];
+      state.view = conversation.kind === 'direct' ? 'agent' : 'room';
+    } else if (resume.selectedAgent) {
+      state.selectedAgent = slugify(resume.selectedAgent);
+      state.selectedRecipients = (resume.recipients || []).map(slugify).filter(Boolean);
+      state.view = 'agent';
+    }
+    const resumedConversation = selectedConversation();
+    if (resumedConversation) {
+      saveComposerDraft(resumedConversation, String(resume.draft || ''));
+      restoreComposerDraft(resumedConversation);
+    }
+  }
+
+  function conversationJob(job, conversation) {
+    const metadata = jobMetadata(job);
+    if (metadata.bridge_conversation_id) {
+      return metadata.bridge_conversation_id === conversation?.conversation_id;
+    }
+    if (conversation?.kind !== 'direct') return false;
+    const recipients = metadata.recipients || [];
+    return [metadata.agent, metadata.target_agent, ...recipients]
+      .map(slugify)
+      .includes(slugify(conversation.direct_agent_slug));
+  }
+
+  function latestConversationJob(conversation) {
+    return state.jobs.find((job) => conversationJob(job, conversation)) || null;
+  }
+
+  function isBridgeJob(job) {
+    const metadata = jobMetadata(job);
+    return metadata.source === 'norman_bridge' || Boolean(metadata.bridge_conversation_id);
+  }
+
+  function isPendingJob(job) {
+    return ['queued', 'pending', 'accepted', 'created', 'waiting'].includes(
+      String(job?.status || '').toLowerCase(),
+    );
+  }
+
+  function isStalePendingJob(job, staleAfterMs = 30 * 60 * 1000) {
+    if (!isPendingJob(job)) return false;
+    const observedAt = Date.parse(job?.updated_at || job?.created_at || '');
+    return Number.isFinite(observedAt) && Date.now() - observedAt > staleAfterMs;
+  }
+
+  function recentBridgeRuntimeJobs() {
+    return state.jobs.filter((job) => (
+      isBridgeJob(job)
+      && (!isPendingJob(job) || !isStalePendingJob(job) || job.job_id === state.prompt.jobId)
+    ));
+  }
+
+  function normalizeGroups(estate) {
+    const principals = (estate?.principals || []).filter((item) => item.is_active !== false);
+    if (!principals.length) return [FALLBACK_GROUP];
+    return principals.map((principal) => ({
+      id: slugify(principal.slug || principal.display_name),
+      slug: principal.slug || slugify(principal.display_name),
+      label: principal.display_name || principal.slug || 'Workspace',
+      mark: String(principal.display_name || principal.slug || 'W').slice(0, 1).toUpperCase(),
+      kind: principal.kind || 'principal',
+      policy: `${principal.kind || 'Principal'} boundary`,
+      domains: (principal.domains || []).map((domain) => ({
+        ...domain,
+        slug: slugify(domain.slug || domain.display_name),
+        display_name: domain.display_name || domain.slug || 'Lane',
+      })),
+    }));
+  }
+
+  function normalizeAgents(estate) {
+    const merged = new Map();
+    for (const principal of estate?.principals || []) {
+      const principalId = slugify(principal.slug || principal.display_name);
+      const services = (principal.services || []).filter((item) => item.is_active !== false);
+      for (const bot of principal.bots || []) {
+        const service = services.filter((item) => item.console_url || item.console_url_tailnet).find((item) => (
+          slugify(item.slug) === slugify(bot.slug)
+          || (slugify(bot.slug) === 'norman' && slugify(item.bot_name) === slugify(bot.display_name))
+        ));
+        // Estate roles are not separate chat stations merely because they own services.
+        if (bot.is_active === false || (!service && slugify(bot.slug) !== 'norman')) continue;
+        const agent = {
+          ...bot,
+          principal_id: principalId,
+          principal_slug: principal.slug,
+          domain_slug: slugify(bot.domain_name),
+          console_url: service?.console_url_tailnet || service?.console_url || '',
+        };
+        merged.set(slugify(agent.slug || agent.display_name), agent);
+      }
+      for (const service of services.filter((item) => item.console_url || item.console_url_tailnet)) {
+        const key = slugify(service.slug || service.display_name);
+        if (key === 'norman-service' && merged.has('norman')) continue;
+        if (merged.has(key)) continue;
+        merged.set(key, {
+          slug: service.slug,
+          display_name: service.display_name || displaySlug(service.slug),
+          class_name: service.kind || 'service',
+          domain_name: service.domain_name || '',
+          domain_slug: slugify(service.domain_name),
+          principal_id: principalId,
+          principal_slug: principal.slug,
+          console_url: service.console_url_tailnet || service.console_url || '',
+        });
+      }
+    }
+    for (const heartbeat of state.heartbeats) {
+      const key = slugify(heartbeat.agent);
+      if (merged.has(key)) continue;
+      merged.set(key, {
+        slug: key,
+        display_name: heartbeat.agent,
+        class_name: heartbeat.profile || 'console',
+        domain_name: heartbeat.host || '',
+        domain_slug: '',
+        principal_id: state.groups[0]?.id || FALLBACK_GROUP.id,
+        principal_slug: state.groups[0]?.slug || FALLBACK_GROUP.slug,
+        console_url: heartbeat.href || '',
+      });
+    }
+    if (!merged.has('norman')) {
+      const group = state.groups[0] || FALLBACK_GROUP;
+      merged.set('norman', {
+        ...FALLBACK_NORMAN,
+        principal_id: group.id,
+        principal_slug: group.slug,
+      });
+    }
+    return [...merged.values()].sort((a, b) => (
+      String(a.display_name).localeCompare(String(b.display_name))
+    ));
+  }
+
+  function mergeCatalogAgents(agents) {
+    const merged = new Map(
+      (agents || []).map((agent) => [slugify(agent.slug || agent.display_name), agent]),
+    );
+    const group = state.groups[0] || FALLBACK_GROUP;
+    // Artwork identities are not evidence of a running conversation service.
+    if (!merged.has('norman')) {
+      merged.set('norman', {
+        ...FALLBACK_NORMAN,
+        principal_id: group.id,
+        principal_slug: group.slug,
+      });
+    }
+    return [...merged.values()].sort((a, b) => {
+      if (slugify(a.slug) === 'norman') return -1;
+      if (slugify(b.slug) === 'norman') return 1;
+      return String(a.display_name).localeCompare(String(b.display_name));
+    });
+  }
+
+  function provisionalAgents() {
+    const group = state.groups[0] || FALLBACK_GROUP;
+    return [{
+      ...FALLBACK_NORMAN,
+      principal_id: group.id,
+      principal_slug: group.slug,
+    }];
+  }
+
+  function jobGroup(job) {
+    const metadata = jobMetadata(job);
+    const explicit = slugify(metadata.principal || metadata.realm || metadata.group);
+    if (state.groups.some((group) => group.id === explicit || slugify(group.slug) === explicit)) {
+      return state.groups.find((group) => group.id === explicit || slugify(group.slug) === explicit).id;
+    }
+    const recipients = metadata.recipients || [];
+    const target = slugify(metadata.agent || metadata.target_agent || recipients[0]);
+    const agent = state.agents.find((item) => slugify(item.slug) === target);
+    return agent?.principal_id || state.groups[0]?.id || FALLBACK_GROUP.id;
+  }
+
+  function jobDomain(job) {
+    const metadata = jobMetadata(job);
+    return slugify(metadata.domain || metadata.lane || metadata.room);
+  }
+
+  function heartbeatFor(agent) {
+    const keys = new Set([slugify(agent.slug), slugify(agent.display_name)]);
+    return state.heartbeats.find((item) => keys.has(slugify(item.agent)));
+  }
+
+  function filteredJobs() {
+    return state.jobs.filter((job) => {
+      const conversation = selectedConversation();
+      if (conversation && !conversationJob(job, conversation)) return false;
+      if (jobGroup(job) !== state.group) return false;
+      if (state.domain && jobDomain(job) && jobDomain(job) !== state.domain) return false;
+      if (state.selectedAgent) {
+        const metadata = jobMetadata(job);
+        const recipients = metadata.recipients || [];
+        const values = [metadata.agent, metadata.target_agent, ...recipients].map(slugify);
+        if (!values.includes(slugify(state.selectedAgent))) return false;
+      }
+      if (!state.search) return true;
+      return `${jobObjective(job)} ${job.status} ${job.job_id}`.toLowerCase().includes(state.search);
+    });
+  }
+
+  function filteredAgents() {
+    return state.agents.filter((agent) => {
+      if (state.nonConversationalStationSlugs.has(slugify(agent.slug))) return false;
+      if (agent.principal_id !== state.group) return false;
+      if (slugify(agent.slug) !== 'norman' && state.domain && agent.domain_slug && agent.domain_slug !== state.domain) return false;
+      if (!state.search) return true;
+      return `${agent.display_name} ${agent.class_name} ${agent.domain_name}`
+        .toLowerCase()
+        .includes(state.search);
+    });
+  }
+
+  function attentionItems() {
+    const blocked = state.jobs.filter((job) => (
+      ['blocked', 'failed', 'waiting_approval', 'error'].includes(String(job.status).toLowerCase())
+    ));
+    return [
+      ...state.approvals.map((item) => ({
+        id: `approval-${item.id}`,
+        type: 'command_approval',
+        approval: item,
+        title: item.command_text || 'Approval requested',
+        detail: item.reason || item.command_class || 'Command approval',
+        group: slugify(item.principal || item.realm) || state.groups[0]?.id,
+      })),
+      ...blocked.map((job) => ({
+        id: job.job_id,
+        type: job.status === 'waiting_approval' ? 'runtime_approval' : 'job',
+        title: truncate(jobObjective(job), 82),
+        detail: `${job.status}: ${job.last_error || job.job_id}`,
+        group: jobGroup(job),
+        job,
+        job_id: job.job_id,
+      })),
+    ];
+  }
+
+  function profileForTexture(texture) {
+    const group = slugify(texture?.group || currentGroup().slug);
+    if (group === 'norman' || slugify(texture?.slug) === 'norman') return 'tide';
+    if (group === 'work') return 'blueprint';
+    if (group === 'personal') return 'dusk';
+    if (['shared', 'infrastructure', 'infra'].includes(group)) return 'ember';
+    if (group === 'private') return 'slate';
+    return 'tide';
+  }
+
+  function fontRoles(fontDescription = '') {
+    const name = String(fontDescription).toLowerCase();
+    const sans = '"IBM Plex Sans", "Segoe UI Variable Text", "Segoe UI", sans-serif';
+    const condensed = '"IBM Plex Sans Condensed", "Arial Narrow", "Segoe UI", sans-serif';
+    const mono = '"IBM Plex Mono", "JetBrains Mono", "SFMono-Regular", Consolas, monospace';
+    const serif = '"IBM Plex Serif", "Iowan Old Style", Georgia, serif';
+    if (name.includes('poppins') && (name.includes('mono') || name.includes('jetbrains'))) {
+      return {
+        ui: '"Poppins", "IBM Plex Sans", sans-serif',
+        brand: '"Poppins", "IBM Plex Sans Condensed", sans-serif',
+        reading: '"Poppins", "IBM Plex Sans", sans-serif',
+        label: mono,
+        mono,
+      };
+    }
+    if ((name.includes('serif') || name.includes('georgia')) && name.includes('mono')) {
+      return { ui: sans, brand: serif, reading: serif, label: mono, mono };
+    }
+    if (name.includes('mono') || name.includes('jetbrains')) {
+      return { ui: mono, brand: mono, reading: mono, label: mono, mono };
+    }
+    if (name.includes('serif') || name.includes('georgia') || name.includes('editorial')) {
+      return {
+        ui: name.includes('poppins') ? '"Poppins", "IBM Plex Sans", sans-serif' : sans,
+        brand: serif,
+        reading: serif,
+        label: condensed,
+        mono,
+      };
+    }
+    if (name.includes('condensed') || name.includes('bahnschrift')) {
+      return { ui: sans, brand: condensed, reading: sans, label: condensed, mono };
+    }
+    if (name.includes('poppins')) {
+      return {
+        ui: '"Poppins", "IBM Plex Sans", sans-serif',
+        brand: name.includes('display') ? '"Poppins", "IBM Plex Sans Condensed", sans-serif' : '"Poppins", "IBM Plex Sans", sans-serif',
+        reading: name.includes('georgia') ? serif : '"Poppins", "IBM Plex Sans", sans-serif',
+        label: condensed,
+        mono,
+      };
+    }
+    return { ui: sans, brand: condensed, reading: sans, label: condensed, mono };
+  }
+
+  function identityFontRoles(slug, texture = textureForSlug(slug)) {
+    const normalized = slugify(slug || texture?.slug);
+    const group = slugify(texture?.group);
+    const sans = '"IBM Plex Sans", "Segoe UI Variable Text", "Segoe UI", Helvetica, Arial, sans-serif';
+    const condensed = '"IBM Plex Sans Condensed", "Bahnschrift", "Segoe UI Variable Text", "Segoe UI", Helvetica, Arial, sans-serif';
+    const mono = '"IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace';
+    const serif = '"Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif';
+    const poppins = '"Poppins", "IBM Plex Sans", "Segoe UI Variable Text", "Segoe UI", Helvetica, Arial, sans-serif';
+    if (normalized === 'null-agent') {
+      return { ui: sans, body: sans, brand: mono, reading: sans, label: mono, wide: condensed, mono };
+    }
+    if (normalized === 'gold-book') {
+      return { ui: sans, body: sans, brand: serif, reading: serif, label: condensed, wide: condensed, mono };
+    }
+    if (group === 'work' || ['parkergale', 'pefb'].includes(normalized)) {
+      return { ui: poppins, body: poppins, brand: poppins, reading: poppins, label: poppins, wide: poppins, mono };
+    }
+    const inferred = fontRoles(texture?.font);
+    return {
+      ...inferred,
+      body: inferred.ui,
+      wide: inferred.label,
+    };
+  }
+
+  function styleVariantFor(slug, texture = textureForSlug(slug)) {
+    const normalized = slugify(slug || texture?.slug);
+    if (STYLE_VARIANT_OVERRIDES[normalized]) return STYLE_VARIANT_OVERRIDES[normalized];
+    const pattern = String(texture?.pattern || '').toLowerCase();
+    if (/book|memo|editor|ledger/.test(pattern)) return 'editorial';
+    if (/scan|signal|pixel|pin|grid/.test(pattern)) return 'signal';
+    if (/stone|metal|alloy|platinum|facet/.test(pattern)) return 'alloy';
+    if (/canopy|grove|field|aperture/.test(pattern)) return 'grove';
+    return 'anchor';
+  }
+
+  function identityContract(slug = '') {
+    const texture = textureForSlug(slug) || textureForSelection();
+    const resolvedSlug = slugify(slug || texture?.slug || 'norman');
+    const agent = state.agents.find((item) => slugify(item.slug) === resolvedSlug);
+    const label = agent?.display_name || displaySlug(resolvedSlug || 'norman');
+    const group = slugify(texture?.group || agent?.principal_slug || currentGroup().slug || 'agents');
+    const mark = String(texture?.mark || label.slice(0, 2) || 'N').slice(0, 3).toUpperCase();
+    return {
+      slug: resolvedSlug,
+      label,
+      group,
+      mark,
+      decorator: 'TUI',
+      kind: 'tui',
+      styleVariant: styleVariantFor(resolvedSlug, texture),
+      fonts: identityFontRoles(resolvedSlug, texture),
+      texture,
+    };
+  }
+
+  function entityCartoucheHtml(label, options = {}) {
+    const identity = identityContract(options.slug || label);
+    const kind = options.kind || identity.kind || 'name';
+    const group = options.group || identity.group || 'agents';
+    const mark = String(options.mark || identity.mark || label.slice(0, 2) || 'N').slice(0, 3).toUpperCase();
+    const decorator = options.decorator || ({
+      host: 'NET',
+      service: 'SVC',
+      tui: 'TUI',
+      bot: '◈',
+      person: '◦',
+      location: '⌂',
+    }[kind] || '·');
+    const glyph = options.glyph === false || identity.slug === 'artmonster'
+      ? ''
+      : `<span class="entity-cartouche__glyph">${iconHtml(identityGlyphFor(identity.slug, identity.texture))}</span>`;
+    return `<span class="entity-cartouche" data-kind="${escapeHtml(kind)}" data-tone="${escapeHtml(options.tone || kind)}"
+      data-group="${escapeHtml(group)}" data-entity-key="${escapeHtml(slugify(options.slug || label))}"
+      data-mark="${escapeHtml(mark)}" data-decorator="${escapeHtml(decorator)}"
+      ${options.mention ? 'data-mention="true"' : ''} ${options.compact === false ? '' : 'data-compact="true"'}
+      style="${escapeHtml(identityStyle(identity.slug))}">${glyph}<span class="entity-cartouche__label">${escapeHtml(label)}</span></span>`;
+  }
+
+  function patternDetail(texture) {
+    const pattern = String(texture?.pattern || '').toLowerCase();
+    let factors = [0.48, 0.24, 0.11, 0.38, 0.08];
+    if (/scan|pixel|pin|grid/.test(pattern)) factors = [0.56, 0.28, 0.18, 0.40, 0.14];
+    else if (/weave|mesh|lattice|plaid/.test(pattern)) factors = [0.54, 0.34, 0.13, 0.36, 0.10];
+    else if (/stone|book|platinum|memo/.test(pattern)) factors = [0.44, 0.30, 0.08, 0.52, 0.14];
+    else if (/aperture|contour|field|sweep/.test(pattern)) factors = [0.50, 0.22, 0.14, 0.34, 0.10];
+    const alpha = Number(texture?.texture_alpha || 0.4);
+    return factors.map((factor) => Math.max(0, Math.min(0.4, alpha * factor)));
+  }
+
+  function textureForSelection() {
+    if (state.selectedAgent) {
+      const direct = state.textureCatalog.find((item) => slugify(item.slug) === slugify(state.selectedAgent));
+      if (direct) return direct;
+    }
+    const selected = state.agents.find((agent) => slugify(agent.slug) === slugify(state.selectedAgent));
+    if (selected) {
+      const match = state.textureCatalog.find((item) => slugify(item.slug) === slugify(selected.slug));
+      if (match) return match;
+    }
+    const selectedJob = state.activity?.job
+      || state.jobs.find((job) => job.job_id === state.selectedJobId);
+    const recipient = (jobMetadata(selectedJob).recipients || [])[0]
+      || jobMetadata(selectedJob).agent
+      || jobMetadata(selectedJob).target_agent;
+    if (recipient) {
+      const match = state.textureCatalog.find((item) => slugify(item.slug) === slugify(recipient));
+      if (match) return match;
+    }
+    const group = currentGroup();
+    return state.textureCatalog.find((item) => slugify(item.group) === slugify(group.slug))
+      || state.textureCatalog.find((item) => slugify(item.slug) === 'norman')
+      || null;
+  }
+
+  function textureForSlug(slug) {
+    const normalized = slugify(slug);
+    return state.textureCatalog.find((item) => slugify(item.slug) === normalized) || null;
+  }
+
+  function identityStyle(slug) {
+    const texture = textureForSlug(slug) || textureForSelection();
+    const colors = texture?.colors || ['#5fd2c4', '#76a8ff', '#d8b25b'];
+    const fonts = identityFontRoles(slug, texture);
+    const glow = texture?.glow || [50, 12];
+    const motionSeed = [...String(slug || texture?.slug || 'norman')]
+      .reduce((total, character) => total + character.charCodeAt(0), 0);
+    return [
+      `--message-accent:${colors[0]}`,
+      `--message-accent-2:${colors[1] || colors[0]}`,
+      `--message-accent-3:${colors[2] || colors[1] || colors[0]}`,
+      `--message-font:${fonts.reading}`,
+      `--message-label-font:${fonts.brand}`,
+      `--message-ui-font:${fonts.ui}`,
+      `--message-wide-font:${fonts.wide}`,
+      `--message-mono-font:${fonts.mono}`,
+      `--identity-angle:${Number(texture?.angle ?? 96)}deg`,
+      `--identity-cross-angle:${Number(texture?.cross ?? 6)}deg`,
+      `--identity-grain:${Math.max(10, Number(texture?.grain || 24))}px`,
+      `--identity-cross-grain:${Math.max(14, Number(texture?.cross_grain || 44))}px`,
+      `--identity-glow-x:${Number(glow[0] ?? 50)}%`,
+      `--identity-glow-y:${Number(glow[1] ?? 12)}%`,
+      `--identity-alpha:${Number(texture?.texture_alpha || 0.4)}`,
+      `--identity-drift:${12 + (motionSeed % 11)}s`,
+      `--identity-delay:-${motionSeed % 13}s`,
+    ].join(';');
+  }
+
+  function directoryGroup(agent) {
+    if (slugify(agent.slug) === 'norman') return { key: 'norman', label: 'Coordinator', rank: 0 };
+    const identity = identityContract(agent.slug);
+    const configuredBoundary = state.groups.length > 1 || currentGroup().id !== FALLBACK_GROUP.id;
+    const raw = configuredBoundary
+      ? agent.domain_name || agent.domain_slug || identity.group
+      : identity.group || agent.domain_name || 'other';
+    let key = slugify(raw) || 'other';
+    const labels = {
+      norman: 'Coordinator',
+      personal: 'Personal',
+      work: 'Work',
+      shared: 'Infrastructure',
+      infrastructure: 'Infrastructure',
+      infra: 'Infrastructure',
+      private: 'Private',
+      other: 'Other',
+    };
+    if (!configuredBoundary && !labels[key]) key = 'other';
+    return {
+      key,
+      label: labels[key] || displaySlug(raw),
+      rank: {
+        norman: 0,
+        personal: 10,
+        work: 20,
+        shared: 30,
+        infrastructure: 30,
+        infra: 30,
+        private: 40,
+        other: 90,
+      }[key] ?? 50,
+    };
+  }
+
+  function groupedAgents(agents) {
+    const groups = new Map();
+    for (const agent of agents) {
+      const group = directoryGroup(agent);
+      if (!groups.has(group.key)) groups.set(group.key, { ...group, agents: [] });
+      groups.get(group.key).agents.push(agent);
+    }
+    return [...groups.values()]
+      .map((group) => ({
+        ...group,
+        agents: group.agents.sort((a, b) => {
+          const aOnline = heartbeatFor(a) ? 0 : 1;
+          const bOnline = heartbeatFor(b) ? 0 : 1;
+          return aOnline - bOnline || String(a.display_name).localeCompare(String(b.display_name));
+        }),
+      }))
+      .sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label));
+  }
+
+  function botIdentityTileHtml(agent, { mini = false, hero = false } = {}) {
+    const identity = identityContract(agent.slug);
+    const motion = textureMotionSignature(identity.texture);
+    const presence = heartbeatFor(agent) ? 'online' : 'known';
+    return `<span class="bridge-simple-cartouche${mini ? ' bridge-simple-cartouche--mini' : ''}${hero ? ' bridge-simple-cartouche--hero' : ''}"
+      data-group="${escapeHtml(identity.group)}"
+      data-entity-key="${escapeHtml(identity.slug)}"
+      data-variant="${escapeHtml(identity.styleVariant)}"
+      data-pattern="${escapeHtml(slugify(identity.texture?.pattern || 'identity-weave'))}"
+      data-motion="${escapeHtml(motion.family)}"
+      data-presence="${presence}"
+      aria-hidden="true" style="${escapeHtml(identityStyle(agent.slug))}">
+      <span class="bridge-simple-cartouche__mark">${escapeHtml(identity.mark || String(agent.display_name).slice(0, 2).toUpperCase())}</span>
+      <span class="bridge-simple-cartouche__glyph">${iconHtml(identityGlyphFor(identity.slug, identity.texture))}</span>
+    </span>`;
+  }
+
+  function exciteCartouche(tile, energy = 0.45, x = 50, y = 50, hold = 620) {
+    if (!tile || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (activeCartouche && activeCartouche !== tile) {
+      delete activeCartouche.dataset.reactive;
+      activeCartouche.style.removeProperty('--cartouche-energy');
+    }
+    activeCartouche = tile;
+    tile.style.setProperty('--cartouche-x', `${textureClamp(x, 4, 96).toFixed(1)}%`);
+    tile.style.setProperty('--cartouche-y', `${textureClamp(y, 4, 96).toFixed(1)}%`);
+    tile.style.setProperty('--cartouche-energy', textureClamp(energy, 0, 1).toFixed(3));
+    tile.dataset.reactive = 'true';
+    window.clearTimeout(cartoucheReleaseTimer);
+    cartoucheReleaseTimer = window.setTimeout(() => {
+      if (activeCartouche === tile) activeCartouche = null;
+      delete tile.dataset.reactive;
+      tile.style.setProperty('--cartouche-energy', '0');
+    }, hold);
+  }
+
+  function activeIdentityTile() {
+    if (nodes.roomDialog?.open) {
+      return nodes.roomMembers.querySelector('input:checked')?.closest('.bridge-room-member')
+        ?.querySelector('.bridge-simple-cartouche')
+        || nodes.roomMembers.querySelector('.bridge-room-member:not([hidden]) .bridge-simple-cartouche');
+    }
+    const slug = state.selectedAgent || 'norman';
+    return nodes.agents.querySelector(`[data-agent="${CSS.escape(slug)}"] .bridge-simple-cartouche`);
+  }
+
+  function roomIdentityStackHtml(memberSlugs) {
+    const members = (memberSlugs || []).map((slug) => (
+      state.agents.find((agent) => slugify(agent.slug) === slugify(slug))
+    )).filter(Boolean).slice(0, 3);
+    if (!members.length) {
+      return `<span class="bridge-simple-cartouche bridge-simple-cartouche--room" aria-hidden="true">${iconHtml('users')}</span>`;
+    }
+    return `<span class="bridge-room-stack" aria-hidden="true">
+      ${members.map((agent) => botIdentityTileHtml(agent, { mini: true })).join('')}
+    </span>`;
+  }
+
+  function responseIdentity(job) {
+    const metadata = jobMetadata(job);
+    const recipient = (metadata.recipients || [])[0] || metadata.agent || metadata.target_agent;
+    const agent = state.agents.find((item) => slugify(item.slug) === slugify(recipient));
+    return {
+      author: agent?.display_name || (recipient ? recipient.replaceAll('-', ' ') : 'Norman'),
+      slug: agent?.slug || recipient || 'norman',
+    };
+  }
+
+  function applyTextureIdentity() {
+    const texture = textureForSelection();
+    const colors = texture?.colors || ['#5fd2c4', '#76a8ff', '#d8b25b'];
+    const profileName = profileForTexture(texture);
+    const profile = PROFILE_PALETTES[profileName];
+    const identity = identityContract(texture?.slug || state.selectedAgent || 'norman');
+    const motion = textureMotionSignature(texture);
+    const fonts = identity.fonts;
+    const [lineOpacity, crossOpacity, dotOpacity, railOpacity, bandOpacity] = patternDetail(texture);
+    const glow = texture?.glow || [24, 9];
+    root.style.setProperty('--agent-accent', colors[0] || '#5fd2c4');
+    root.style.setProperty('--agent-accent-2', colors[1] || colors[0] || '#76a8ff');
+    root.style.setProperty('--agent-accent-3', colors[2] || colors[1] || '#d8b25b');
+    root.style.setProperty('--texture-angle', `${Number(texture?.angle || 96)}deg`);
+    root.style.setProperty('--texture-cross-angle', `${Number(texture?.cross || 6)}deg`);
+    root.style.setProperty('--texture-spacing', `${Number(texture?.grain || 24)}px`);
+    root.style.setProperty('--texture-cross-spacing', `${Number(texture?.cross_grain || 48)}px`);
+    root.style.setProperty('--texture-glow-x', `${Number(glow[0] || 50)}%`);
+    root.style.setProperty('--texture-glow-y', `${Number(glow[1] || 12)}%`);
+    root.style.setProperty('--texture-alpha', String(Number(texture?.texture_alpha || 0.4)));
+    root.style.setProperty('--identity-line-opacity', String(lineOpacity));
+    root.style.setProperty('--identity-cross-opacity', String(crossOpacity));
+    root.style.setProperty('--identity-dot-opacity', String(dotOpacity));
+    root.style.setProperty('--identity-rail-opacity', String(railOpacity));
+    root.style.setProperty('--identity-band-opacity', String(bandOpacity));
+    root.style.setProperty('--font-ui', fonts.ui);
+    root.style.setProperty('--font-body', fonts.body);
+    root.style.setProperty('--font-ui-wide', fonts.wide);
+    root.style.setProperty('--font-brand', fonts.brand);
+    root.style.setProperty('--font-reading', fonts.reading);
+    root.style.setProperty('--font-label', fonts.label);
+    root.style.setProperty('--font-mono', fonts.mono);
+    root.style.setProperty('--profile-bg', profile.bg);
+    root.style.setProperty('--profile-soft', profile.soft);
+    root.style.setProperty('--profile-surface', profile.surface);
+    root.style.setProperty('--profile-surface-2', profile.surface2);
+    root.style.setProperty('--profile-surface-3', profile.surface3);
+    root.style.setProperty('--profile-border', profile.border);
+    root.style.setProperty('--profile-border-strong', profile.borderStrong);
+    root.style.setProperty('--profile-text', profile.text);
+    root.style.setProperty('--profile-muted', profile.muted);
+    root.style.setProperty('--profile-body-start', profile.bodyStart);
+    root.style.setProperty('--profile-body-mid', profile.bodyMid);
+    root.style.setProperty('--profile-body-end', profile.bodyEnd);
+    root.dataset.identitySlug = slugify(texture?.slug || 'norman');
+    root.dataset.identityPattern = slugify(texture?.pattern || 'prime-orbit-weave');
+    root.dataset.identityMotion = motion.family;
+    root.dataset.identityProfile = profileName;
+    root.dataset.identityFont = slugify(texture?.font || 'ibm-plex-sans');
+    root.dataset.agentVariant = identity.styleVariant;
+    state.texture.lines = [];
+  }
+
+  function aggregateState() {
+    const phase = state.prompt.phase;
+    if (phase === 'failed') return 'degraded';
+    if (phase === 'blocked') return 'blocked';
+    if (phase === 'running') return 'working';
+    if (['submitting', 'queued'].includes(phase)) return 'active';
+    if (state.view.includes('attention') && attentionItems().length) return 'blocked';
+    if (state.jobs.length || state.agents.length) return 'ready';
+    return 'idle';
+  }
+
+  function promptPhaseForStatus(status) {
+    const value = String(status || '').toLowerCase();
+    if (['done', 'completed', 'complete', 'succeeded', 'verified'].includes(value)) return 'complete';
+    if (['failed', 'error', 'crashed', 'canceled', 'cancelled'].includes(value)) return 'failed';
+    if (['blocked', 'waiting_approval', 'approval_required'].includes(value)) return 'blocked';
+    if (['running', 'executing', 'planning', 'started'].includes(value)) return 'running';
+    if (['queued', 'pending', 'accepted', 'created', 'waiting'].includes(value)) return 'queued';
+    return '';
+  }
+
+  function promptBusy() {
+    return ['submitting', 'queued', 'running'].includes(state.prompt.phase);
+  }
+
+  function composerGuidance({ phase, hasText, busy, runtimeUnavailable }) {
+    const conversation = selectedConversation();
+    const labels = {
+      submitting: 'Sending request',
+      queued: 'Request queued',
+      running: 'Response in progress',
+      blocked: 'Request needs attention',
+      failed: state.prompt.error ? `Request failed: ${state.prompt.error}` : 'Request failed',
+    };
+    if (state.authRequired) return { text: 'Keep drafting. Sign in again to send and sync this thread.', tone: 'warning' };
+    if (navigator.onLine === false) return { text: 'You are offline. Keep drafting; reconnect to send.', tone: 'warning' };
+    if (busy && state.prompt.stationSlug && state.prompt.acceptedAt) return { text: stationRequestFeedback(state.prompt), tone: state.prompt.checkError ? 'warning' : 'active' };
+    if (runtimeUnavailable) return { text: 'Runtime unavailable. Draft retained locally.', tone: 'warning' };
+    if (labels[phase]) return {
+      text: labels[phase],
+      tone: ['blocked', 'failed'].includes(phase) ? 'warning' : 'active',
+    };
+    if (conversation?.kind === 'direct') {
+      const slug = slugify(conversation.direct_agent_slug);
+      const name = conversation.title || displaySlug(slug);
+      if (state.stationHistoryLoading.has(slug)) {
+        return { text: `Restoring ${name}'s thread`, tone: 'active' };
+      }
+      if (hasText) return { text: `Ready for ${name}`, tone: 'ready' };
+      return { text: `${name} station ready`, tone: 'ready' };
+    }
+    if (conversation?.kind === 'room') {
+      const members = conversation.member_slugs || [];
+      if (hasText) return { text: `Ready for ${conversation.title}`, tone: 'ready' };
+      return {
+        text: `${members.length} station${members.length === 1 ? '' : 's'} in this room`,
+        tone: 'neutral',
+      };
+    }
+    if (hasText) return { text: 'Ready to send', tone: 'ready' };
+    return { text: 'Choose a station or room', tone: 'neutral' };
+  }
+
+  function updateComposerState() {
+    const phase = state.prompt.phase;
+    const delivery = pendingDelivery();
+    const hasText = Boolean(nodes.message.value.trim()) || Boolean(delivery);
+    const busy = promptBusy();
+    const stationDirect = selectedConversation()?.kind === 'direct';
+    const runtimeUnavailable = !delivery && !stationDirect && state.bootstrapped && state.worker._available === false;
+    nodes.message.disabled = false;
+    nodes.send.disabled = state.authRequired || navigator.onLine === false || runtimeUnavailable || !hasText || busy;
+    nodes.composer.dataset.promptState = phase;
+    nodes.composer.setAttribute('aria-busy', String(busy));
+    nodes.send.dataset.promptState = phase;
+    const guidance = delivery && !busy && !state.authRequired && navigator.onLine !== false
+      ? { tone: 'warning', text: 'Delivery unconfirmed. Check delivery before sending another message. Your draft is saved.' }
+      : composerGuidance({ phase, hasText, busy, runtimeUnavailable });
+    nodes.composeMeta.hidden = !guidance.text;
+    nodes.composeMeta.dataset.tone = guidance.tone;
+    nodes.composeHint.dataset.tone = guidance.tone;
+    if (nodes.composeHint.textContent !== guidance.text) nodes.composeHint.textContent = guidance.text;
+    nodes.send.setAttribute(
+      'aria-label', state.authRequired ? 'Log in before sending' : navigator.onLine === false ? 'Reconnect before sending' : busy ? guidance.text : delivery ? 'Check delivery' : 'Send message',
+    );
+    nodes.send.title = state.authRequired ? 'Log in before sending' : navigator.onLine === false ? 'Reconnect before sending' : busy ? guidance.text : delivery ? 'Check delivery' : 'Send';
+    const glyph = nodes.send.querySelector('span');
+    const icon = busy ? 'loader' : delivery ? 'refresh' : 'arrow-up';
+    if (glyph && glyph.dataset.icon !== icon) {
+      glyph.innerHTML = iconHtml(icon);
+      glyph.dataset.icon = icon;
+    }
+  }
+
+  function setPromptPhase(phase, patch = {}) {
+    const previous = state.prompt.phase;
+    window.clearTimeout(state.prompt.resetTimer);
+    Object.assign(state.prompt, patch, { phase, resetTimer: 0 });
+    root.dataset.promptState = phase;
+    const job = state.jobs.find((item) => item.job_id === state.prompt.jobId);
+    const localStatus = {
+      queued: 'queued',
+      running: 'running',
+      blocked: 'blocked',
+      failed: 'failed',
+      complete: 'completed',
+    }[phase];
+    if (job && localStatus) job.status = localStatus;
+    updateComposerState();
+    syncMicrotexture();
+    if (phase !== previous) {
+      const tone = {
+        queued: 'queued',
+        blocked: 'blocked',
+        failed: 'error',
+        complete: 'accepted',
+      }[phase];
+      if (tone) playInteractionTone(tone, { signal: true });
+    }
+    if (phase === 'complete') {
+      const prompt = state.prompt;
+      const terminalJobId = state.prompt.jobId;
+      if (state.eventSourceJobId === terminalJobId && state.selectedJobId !== terminalJobId) {
+        closeEventStream();
+      }
+      prompt.resetTimer = window.setTimeout(() => {
+        if (prompt.jobId !== terminalJobId || prompt.phase !== phase) return;
+        Object.assign(prompt, {
+          phase: 'idle',
+          jobId: '',
+          objective: '',
+          error: '',
+          resetTimer: 0,
+        });
+        if (state.prompt !== prompt) return;
+        root.dataset.promptState = 'idle';
+        updateComposerState();
+        syncMicrotexture();
+      }, phase === 'complete' ? 900 : 2400);
+    }
+  }
+
+  function reconcilePromptState() {
+    if (!state.prompt.jobId) return;
+    const job = state.activity?.job?.job_id === state.prompt.jobId
+      ? state.activity.job
+      : state.jobs.find((item) => item.job_id === state.prompt.jobId);
+    if (!job) return;
+    const next = promptPhaseForStatus(job.status);
+    if (!next) return;
+    if (state.prompt.phase === 'running' && next === 'queued') return;
+    if (next !== state.prompt.phase) setPromptPhase(next);
+  }
+
+  function syncMicrotexture() {
+    const next = aggregateState();
+    root.dataset.microtextureState = next;
+    applyTextureIdentity();
+    startTextureField();
+  }
+
+  function pulseTexture(kind = 'tick') {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) return;
+    root.dataset.microtexturePulse = kind;
+    const weight = { send: 1, error: 1.4, accepted: 0.8, queued: 0.64, blocked: 0.9 }[kind] || 0.45;
+    state.texture.impulse = Math.min(2.5, state.texture.impulse + weight);
+    const sequence = state.texture.keySequence += 1;
+    addTextureInput(
+      0.16 + ((sequence * 0.618033988749895) % 0.68),
+      kind === 'send' ? 0.88 : 0.22 + ((sequence * 0.381966011250105) % 0.56),
+      weight * 0.16,
+      kind,
+    );
+    window.clearTimeout(state.texture.pulseTimer);
+    state.texture.pulseTimer = window.setTimeout(() => delete root.dataset.microtexturePulse, 700);
+  }
+
+  function loadPreferences() {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(BRIDGE_SETTINGS_KEY) || '{}');
+      const feedbackSounds = ['signals', 'full', 'off'].includes(stored.feedbackSounds)
+        ? stored.feedbackSounds
+        : 'signals';
+      state.preferences = {
+        ...state.preferences,
+        ...stored,
+        feedbackSounds,
+      };
+    } catch {
+      state.preferences.feedbackSounds = 'signals';
+    }
+    root.dataset.feedbackSounds = state.preferences.feedbackSounds;
+  }
+
+  function savePreferences() {
+    try {
+      window.localStorage.setItem(BRIDGE_SETTINGS_KEY, JSON.stringify(state.preferences));
+    } catch {
+      // Private browsing and hardened clients may reject local storage.
+    }
+  }
+
+  function updateSoundControls() {
+    if (!nodes.soundToggle) return;
+    const mode = state.preferences.feedbackSounds;
+    nodes.soundToggle.textContent = `Sounds: ${mode === 'off' ? 'Off' : mode === 'full' ? 'Full' : 'Signals'}`;
+    nodes.soundToggle.setAttribute('aria-pressed', String(mode !== 'off'));
+    root.dataset.feedbackSounds = mode;
+  }
+
+  function primeAudio() {
+    const AudioCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtor) return null;
+    if (!state.audioContext || state.audioContext.state === 'closed') {
+      state.audioContext = new AudioCtor();
+    }
+    if (state.audioContext.state === 'suspended') {
+      state.audioContext.resume().catch(() => null);
+    }
+    return state.audioContext;
+  }
+
+  function audioAllowed(kind, options = {}) {
+    if (state.preferences.feedbackSounds === 'off') return false;
+    if (document.hidden || document.visibilityState === 'hidden') return false;
+    if (!options.allowUnfocused && typeof document.hasFocus === 'function' && !document.hasFocus()) return false;
+    return state.preferences.feedbackSounds === 'full' || SIGNAL_TONES.has(kind) || options.signal;
+  }
+
+  function scheduleToneVoice(context, destination, profile, start, ratio = 1, gainScale = 1) {
+    const duration = Math.max(0.035, Number(profile.duration || 0.1));
+    const frequency = Math.max(90, Number(profile.frequency || 180) * ratio);
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const filter = context.createBiquadFilter();
+    oscillator.type = profile.wave || 'sine';
+    oscillator.frequency.setValueAtTime(frequency, start);
+    oscillator.frequency.exponentialRampToValueAtTime(Math.max(90, frequency * 0.985), start + duration);
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(Number(profile.filter || 760), start);
+    filter.Q.value = 0.82;
+    const peak = Math.max(0.001, Number(profile.peak || 0.008) * gainScale);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.linearRampToValueAtTime(peak, start + Math.min(0.02, duration * 0.18));
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+    oscillator.connect(filter);
+    filter.connect(gain);
+    gain.connect(destination);
+    oscillator.start(start);
+    oscillator.stop(start + duration + 0.02);
+  }
+
+  function playInteractionTone(kind = 'click', options = {}) {
+    pulseTexture(kind);
+    if (!audioAllowed(kind, options)) return false;
+    const now = Date.now();
+    const throttle = kind === 'type' ? 110 : 42;
+    const previous = kind === 'type' ? state.lastTypingToneAt : state.lastToneAt;
+    if (!options.force && now - previous < throttle) return false;
+    if (kind === 'type') state.lastTypingToneAt = now;
+    else state.lastToneAt = now;
+    const context = primeAudio();
+    if (!context || context.state !== 'running') return false;
+    const profile = INTERACTION_TONES[kind] || INTERACTION_TONES.click;
+    const start = context.currentTime + 0.006;
+    const master = context.createGain();
+    const limiter = context.createDynamicsCompressor();
+    master.gain.setValueAtTime(Number(profile.master || 0.6), start);
+    limiter.threshold.setValueAtTime(-28, start);
+    limiter.ratio.setValueAtTime(8, start);
+    master.connect(limiter);
+    limiter.connect(context.destination);
+    scheduleToneVoice(context, master, profile, start, 1, 1);
+    if (profile.ratio) {
+      scheduleToneVoice(context, master, profile, start + Math.min(0.035, profile.duration * 0.28), profile.ratio, 0.45);
+    }
+    return true;
+  }
+
+  function completionProfile(slug = '') {
+    const identity = identityContract(slug);
+    const bases = {
+      norman: { frequency: 136, wave: 'sine', filter: 740, ratio: 1.41 },
+      personal: { frequency: 164, wave: 'triangle', filter: 860, ratio: 1.62 },
+      shared: { frequency: 118, wave: 'triangle', filter: 680, ratio: 1.37 },
+      infrastructure: { frequency: 118, wave: 'triangle', filter: 680, ratio: 1.37 },
+      work: { frequency: 146, wave: 'sine', filter: 780, ratio: 1.52 },
+      agents: { frequency: 154, wave: 'triangle', filter: 760, ratio: 1.46 },
+    };
+    const base = bases[identity.group] || bases.agents;
+    const seed = identity.slug.split('').reduce((total, character) => total + character.charCodeAt(0), 0) || 1;
+    const profile = {
+      ...base,
+      duration: identity.styleVariant === 'quiet' ? 0.54 : 0.72,
+      peak: identity.styleVariant === 'quiet' ? 0.005 : 0.008,
+      master: identity.styleVariant === 'quiet' ? 0.42 : 0.58,
+      frequency: base.frequency + ((seed % 9) - 4) * 4,
+    };
+    if (identity.slug === 'gold-book') return { ...profile, frequency: 128, wave: 'triangle', filter: 720, ratio: 1.5 };
+    if (identity.slug === 'platinum-standard') return { ...profile, frequency: 152, wave: 'sine', filter: 820 };
+    return profile;
+  }
+
+  function playCompletionBell(slug = '') {
+    const now = Date.now();
+    if (now - state.lastCompletionAt < 320 || !audioAllowed('chime', { signal: true })) return false;
+    state.lastCompletionAt = now;
+    pulseTexture('accepted');
+    const context = primeAudio();
+    if (!context || context.state !== 'running') return false;
+    const profile = completionProfile(slug);
+    const start = context.currentTime + 0.012;
+    const master = context.createGain();
+    master.gain.setValueAtTime(profile.master, start);
+    master.connect(context.destination);
+    scheduleToneVoice(context, master, profile, start, 1, 1);
+    scheduleToneVoice(context, master, profile, start + 0.025, profile.ratio || 1.5, 0.3);
+    scheduleToneVoice(context, master, profile, start + 0.065, (profile.ratio || 1.5) * 1.55, 0.11);
+    return true;
+  }
+
+  function cycleSoundMode() {
+    const order = ['signals', 'full', 'off'];
+    state.preferences.feedbackSounds = order[(order.indexOf(state.preferences.feedbackSounds) + 1) % order.length];
+    savePreferences();
+    updateSoundControls();
+    if (state.preferences.feedbackSounds !== 'off') playInteractionTone('accepted', { force: true, signal: true });
+  }
+
+  function textureClamp(value, minimum, maximum) {
+    return Math.max(minimum, Math.min(maximum, Number(value || 0)));
+  }
+
+  function textureSeed(index, salt = 0) {
+    const raw = (index + 1) * 0.618033988749895 + (salt + 1) * 0.144269504088896;
+    return raw - Math.floor(raw);
+  }
+
+  function textureFluidSquareWave(value, squareWeight) {
+    const sine = Math.sin(value);
+    const softenedSquare = Math.tanh(sine * 3.4);
+    return sine * (1 - squareWeight) + softenedSquare * squareWeight;
+  }
+
+  function textureFractalWave(value, squareWeight, phase = 0) {
+    const primary = textureFluidSquareWave(value + phase * 0.05, squareWeight);
+    const octave = textureFluidSquareWave(value * 1.93 + phase * 0.38, squareWeight * 0.72);
+    const filament = textureFluidSquareWave(value * 3.71 - phase * 0.24, squareWeight * 0.52);
+    const hairline = textureFluidSquareWave(value * 7.13 + phase * 0.13, squareWeight * 0.34);
+    return primary * 0.62 + octave * 0.24 + filament * 0.10 + hairline * 0.04;
+  }
+
+  function textureIdentitySeed(value) {
+    const text = String(value || 'norman');
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return ((hash >>> 0) % 10000) / 10000;
+  }
+
+  function textureMotionSignature(texture = textureForSelection()) {
+    const pattern = String(texture?.pattern || 'prime-orbit-weave').toLowerCase();
+    const slug = slugify(texture?.slug || root.dataset.identitySlug || 'norman');
+    const seed = textureIdentitySeed(`${slug}:${pattern}`);
+    const angle = Number(texture?.angle ?? 96);
+    const crossAngle = Number(texture?.cross ?? 6);
+    const grain = Math.max(10, Number(texture?.grain || 24));
+    const crossGrain = Math.max(14, Number(texture?.cross_grain || 44));
+    let family = 'weave';
+    if (/orbit/.test(pattern)) family = 'orbit';
+    else if (/plaid/.test(pattern)) family = 'plaid';
+    else if (/scan|noise/.test(pattern)) family = 'scan';
+    else if (/stone|course/.test(pattern)) family = 'masonry';
+    else if (/facet|diamond|platinum|brushed/.test(pattern)) family = 'facet';
+    else if (/bar|rail|shelf|lane|scorecard/.test(pattern)) family = 'channels';
+    else if (/pin|grid|pixel|panel|parcel/.test(pattern)) family = 'grid';
+    else if (/aperture/.test(pattern)) family = 'aperture';
+    else if (/microscope|stage/.test(pattern)) family = 'stage';
+    else if (/contour|field-map/.test(pattern)) family = 'contour';
+    else if (/sunburst|beam/.test(pattern)) family = 'radiant';
+    else if (/book|memo|fiber|spreadsheet/.test(pattern)) family = 'editorial';
+    else if (/mesh|lattice|weave/.test(pattern)) family = 'mesh';
+    else if (/void|static/.test(pattern)) family = 'void';
+    else if (/halftone|tooth/.test(pattern)) family = 'halftone';
+
+    const familyProfiles = {
+      weave: { tempo: 0.92, amplitude: 0.92, frequency: 0.94, drift: 0.94, square: 0.02, shear: 0.00, wake: 0.88, damping: 0.82, point: 0.10 },
+      orbit: { tempo: 0.82, amplitude: 1.14, frequency: 0.76, drift: 0.86, square: -0.06, shear: 0.02, wake: 1.08, damping: 0.92, point: 0.08 },
+      plaid: { tempo: 0.72, amplitude: 0.72, frequency: 0.86, drift: 0.62, square: 0.18, shear: -0.01, wake: 0.66, damping: 0.72, point: 0.08 },
+      scan: { tempo: 1.34, amplitude: 0.86, frequency: 1.34, drift: 1.42, square: 0.28, shear: -0.02, wake: 1.26, damping: 1.12, point: 0.28 },
+      masonry: { tempo: 0.48, amplitude: 0.54, frequency: 0.68, drift: 0.42, square: 0.34, shear: 0.00, wake: 0.48, damping: 0.56, point: 0.04 },
+      facet: { tempo: 0.88, amplitude: 0.96, frequency: 1.06, drift: 0.82, square: 0.42, shear: 0.04, wake: 0.84, damping: 0.82, point: 0.12 },
+      channels: { tempo: 1.04, amplitude: 0.68, frequency: 1.18, drift: 1.26, square: 0.24, shear: 0.01, wake: 1.06, damping: 0.92, point: 0.10 },
+      grid: { tempo: 0.94, amplitude: 0.64, frequency: 1.26, drift: 0.92, square: 0.36, shear: 0.00, wake: 0.92, damping: 0.86, point: 0.32 },
+      aperture: { tempo: 0.78, amplitude: 1.18, frequency: 0.82, drift: 0.84, square: -0.08, shear: 0.05, wake: 1.18, damping: 0.96, point: 0.08 },
+      stage: { tempo: 0.58, amplitude: 0.48, frequency: 0.92, drift: 0.46, square: 0.18, shear: 0.00, wake: 0.56, damping: 0.66, point: 0.16 },
+      contour: { tempo: 0.66, amplitude: 1.08, frequency: 0.72, drift: 0.74, square: -0.10, shear: 0.02, wake: 1.04, damping: 0.90, point: 0.06 },
+      radiant: { tempo: 1.02, amplitude: 1.04, frequency: 0.88, drift: 1.16, square: 0.00, shear: 0.06, wake: 1.12, damping: 0.96, point: 0.12 },
+      editorial: { tempo: 0.52, amplitude: 0.58, frequency: 0.78, drift: 0.48, square: 0.14, shear: -0.01, wake: 0.58, damping: 0.64, point: 0.06 },
+      mesh: { tempo: 0.82, amplitude: 0.88, frequency: 1.02, drift: 0.82, square: 0.10, shear: 0.03, wake: 0.86, damping: 0.82, point: 0.18 },
+      void: { tempo: 0.42, amplitude: 0.82, frequency: 1.46, drift: 0.34, square: 0.44, shear: -0.06, wake: 0.72, damping: 1.18, point: 0.36 },
+      halftone: { tempo: 0.96, amplitude: 0.82, frequency: 1.28, drift: 0.88, square: 0.22, shear: 0.03, wake: 1.02, damping: 0.92, point: 0.52 },
+    };
+    const base = familyProfiles[family] || familyProfiles.weave;
+    const angleDelta = ((((angle - crossAngle) % 360) + 540) % 360) - 180;
+    const density = textureClamp(28 / ((grain + crossGrain) / 2), 0.62, 1.42);
+    return {
+      ...base,
+      family,
+      motif: pattern,
+      seed,
+      direction: Math.cos(angle * Math.PI / 180) >= 0 ? 1 : -1,
+      tempo: base.tempo * (0.91 + seed * 0.18),
+      amplitude: base.amplitude * (0.92 + seed * 0.16),
+      frequency: base.frequency * density * (0.94 + seed * 0.12),
+      drift: base.drift * (0.90 + (1 - seed) * 0.20),
+      shear: base.shear + angleDelta / 7200,
+      phaseOffset: seed * Math.PI * 2,
+      segment: Math.max(14, grain * (0.78 + seed * 0.42)),
+      crossSegment: Math.max(18, crossGrain * (0.74 + (1 - seed) * 0.36)),
+    };
+  }
+
+  function interpolatedTextureProfile(target, delta) {
+    if (!state.texture.renderProfile) {
+      state.texture.renderProfile = { ...target };
+      return state.texture.renderProfile;
+    }
+    const transition = textureClamp(target.transition || 1, 0.45, 1.8);
+    const amount = 1 - Math.pow(0.002, Math.max(0.001, delta) / transition);
+    Object.keys(target).forEach((key) => {
+      const current = Number(state.texture.renderProfile[key]);
+      const next = Number(target[key]);
+      state.texture.renderProfile[key] = Number.isFinite(current)
+        ? current + (next - current) * amount
+        : next;
+    });
+    return state.texture.renderProfile;
+  }
+
+  function addTextureInput(x, y, energy, kind = 'input', velocityX = 0, velocityY = 0) {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) return;
+    const cleanX = textureClamp(x, 0.03, 0.97);
+    const cleanY = textureClamp(y, 0.03, 0.97);
+    const cleanEnergy = textureClamp(energy, 0.008, 0.42);
+    state.texture.targetX = cleanX;
+    state.texture.targetY = cleanY;
+    state.texture.inputEnergy = Math.min(2.2, state.texture.inputEnergy + cleanEnergy);
+    state.texture.impulse = Math.min(2.8, state.texture.impulse + cleanEnergy * 1.8);
+    state.texture.flowX = textureClamp(state.texture.flowX + velocityX, -1.6, 1.6);
+    state.texture.flowY = textureClamp(state.texture.flowY + velocityY, -1.6, 1.6);
+    root.dataset.textureReactive = 'true';
+    window.clearTimeout(state.texture.reactiveTimer);
+    state.texture.reactiveTimer = window.setTimeout(() => {
+      delete root.dataset.textureReactive;
+    }, kind === 'pointer' ? 900 : 1150);
+    if (kind === 'pointer') {
+      const pointerWake = state.texture.disturbances.find((item) => item.kind === 'pointer');
+      if (pointerWake) {
+        pointerWake.x = cleanX;
+        pointerWake.y = cleanY;
+        pointerWake.energy = Math.min(0.8, pointerWake.energy + cleanEnergy * 0.7);
+        pointerWake.velocityX = velocityX;
+        pointerWake.velocityY = velocityY;
+        pointerWake.age = 0;
+      } else {
+        state.texture.disturbances.push({
+          x: cleanX, y: cleanY, energy: cleanEnergy, velocityX, velocityY, age: 0, kind,
+        });
+      }
+    } else {
+      state.texture.disturbances.push({
+        x: cleanX, y: cleanY, energy: cleanEnergy, velocityX, velocityY, age: 0, kind,
+      });
+    }
+    if (state.texture.disturbances.length > 9) state.texture.disturbances.shift();
+    startTextureField();
+  }
+
+  function buildTextureLines(width, height) {
+    const lines = [];
+    const style = getComputedStyle(root);
+    const span = Math.hypot(width, height) * 0.72;
+    const families = [
+      {
+        angle: parseFloat(style.getPropertyValue('--texture-angle')) || 96,
+        spacing: parseFloat(style.getPropertyValue('--texture-spacing')) || 24,
+        alpha: 0.58,
+      },
+      {
+        angle: parseFloat(style.getPropertyValue('--texture-cross-angle')) || 6,
+        spacing: parseFloat(style.getPropertyValue('--texture-cross-spacing')) || 48,
+        alpha: 0.30,
+      },
+    ];
+    let threadIndex = 0;
+    families.forEach((family, familyIndex) => {
+      const spacing = Math.max(12, Math.min(72, family.spacing));
+      for (let offset = -span; offset <= span; offset += spacing) {
+        lines.push({
+          family: familyIndex,
+          angle: family.angle * Math.PI / 180,
+          offset,
+          phase: textureSeed(threadIndex, 1) * Math.PI * 2,
+          phase2: textureSeed(threadIndex, 5) * Math.PI * 2,
+          alpha: family.alpha * (0.68 + textureSeed(threadIndex, 6) * 0.34),
+          harmonic: 0.7 + textureSeed(threadIndex, 4) * 0.8,
+          speed: 0.92 + textureSeed(threadIndex, 2) * 0.16,
+          amplitude: 0.84 + textureSeed(threadIndex, 3) * 0.26,
+          major: threadIndex % 5 === 0,
+          glint: textureSeed(threadIndex, 9),
+        });
+        threadIndex += 1;
+      }
+    });
+    if (lines.length > 240) {
+      state.texture.lines = lines.filter((_, index) => index % Math.ceil(lines.length / 240) === 0);
+    } else {
+      state.texture.lines = lines;
+    }
+  }
+
+  function pulseComposerTexture(position = 0.5, intensity = 0.18) {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) return;
+    root.style.setProperty(
+      '--composer-ripple-x',
+      `${(textureClamp(position, 0.12, 0.88) * 100).toFixed(2)}%`,
+    );
+    root.style.setProperty(
+      '--composer-reactive-level',
+      textureClamp(intensity, 0.06, 0.32).toFixed(3),
+    );
+    root.dataset.composerReactive = 'true';
+    window.clearTimeout(state.texture.composerTimer);
+    state.texture.composerTimer = window.setTimeout(() => {
+      delete root.dataset.composerReactive;
+      root.style.setProperty('--composer-reactive-level', '0');
+    }, 180);
+  }
+
+  function drawTextureMotif(context, width, height, motion, colors, profile) {
+    const motif = motion.motif;
+    const phase = state.texture.phase * motion.direction + motion.phaseOffset;
+    const alpha = Math.min(0.24, Number(profile.alpha || 0.22) * 0.72);
+    const grain = Math.max(12, motion.segment);
+    const cross = Math.max(18, motion.crossSegment);
+    context.save();
+    context.globalAlpha = alpha;
+    context.strokeStyle = colors[1];
+    context.fillStyle = colors[0];
+    context.lineWidth = 0.65;
+
+    if (/prime-orbit-weave|aperture-sweep|keystone-arch-weave|cloud-mesh/.test(motif)) {
+      const originX = state.texture.focusX * width;
+      const originY = state.texture.focusY * height;
+      const count = /prime-orbit/.test(motif) ? 5 : /cloud/.test(motif) ? 7 : 4;
+      for (let index = 0; index < count; index += 1) {
+        context.beginPath();
+        const radius = 48 + index * (grain * 1.5);
+        const offset = /cloud/.test(motif) ? Math.sin(index * 2.3 + phase) * 34 : 0;
+        context.ellipse(
+          originX + offset,
+          originY + Math.cos(index * 1.7 + phase * 0.3) * 16,
+          radius * (/keystone/.test(motif) ? 0.72 : 1.4),
+          radius * (/aperture/.test(motif) ? 0.42 : 0.62),
+          (motion.seed - 0.5) * 0.8,
+          /keystone/.test(motif) ? Math.PI : 0,
+          Math.PI * 2,
+        );
+        context.stroke();
+      }
+    } else if (/stone-course/.test(motif)) {
+      for (let y = grain; y < height; y += grain) {
+        const row = Math.round(y / grain);
+        context.beginPath();
+        context.moveTo(0, y);
+        context.lineTo(width, y);
+        context.stroke();
+        for (let x = (row % 2 ? grain : grain * 0.5); x < width; x += grain * 2.2) {
+          context.fillRect(x, y - grain, 0.7, grain);
+        }
+      }
+    } else if (/call-bars/.test(motif)) {
+      for (let x = grain * 0.5; x < width; x += grain * 1.25) {
+        const heightScale = 0.18 + (Math.sin(x * 0.021 - phase * 2.4) + 1) * 0.18;
+        context.fillRect(x, height * (0.5 - heightScale), grain * 0.46, height * heightScale * 2);
+      }
+    } else if (/archive-shelves|rack-rails|scorecard-lines|gilded-book-grain|memo-fiber/.test(motif)) {
+      const step = /rack-rails/.test(motif) ? grain : cross * 0.72;
+      for (let y = step; y < height; y += step) {
+        context.globalAlpha = alpha * (0.55 + ((y / step) % 3) * 0.14);
+        context.beginPath();
+        context.moveTo(0, y + Math.sin(phase + y * 0.01) * (/memo|book/.test(motif) ? 2 : 0));
+        context.lineTo(width, y);
+        context.stroke();
+      }
+    } else if (/circuit-pins|parcel-pinboard/.test(motif)) {
+      const yStep = cross * 0.9;
+      const xStep = grain * 2;
+      for (let y = yStep * 0.5; y < height; y += yStep) {
+        context.beginPath();
+        context.moveTo(0, y);
+        context.lineTo(width, y);
+        context.stroke();
+        for (let x = xStep * 0.5; x < width; x += xStep) {
+          const offset = /parcel/.test(motif) ? Math.sin(x * 0.018 + y * 0.011) * grain * 0.35 : 0;
+          context.beginPath();
+          context.arc(x, y + offset, /parcel/.test(motif) ? 1.5 : 1.15, 0, Math.PI * 2);
+          context.fill();
+        }
+      }
+    } else if (/microscope-stage/.test(motif)) {
+      const x = width * (0.42 + Math.sin(phase * 0.18) * 0.03);
+      const y = height * (0.48 + Math.cos(phase * 0.16) * 0.03);
+      context.strokeRect(x - cross * 2, y - cross, cross * 4, cross * 2);
+      context.beginPath();
+      context.moveTo(x, y - cross * 2.2);
+      context.lineTo(x, y + cross * 2.2);
+      context.moveTo(x - cross * 3.2, y);
+      context.lineTo(x + cross * 3.2, y);
+      context.stroke();
+    } else if (/contour-lines|field-map/.test(motif)) {
+      for (let row = 0; row < 7; row += 1) {
+        context.beginPath();
+        for (let x = 0; x <= width; x += 18) {
+          const y = height * (0.18 + row * 0.105)
+            + Math.sin(x * 0.009 + phase * 0.34 + row) * (8 + row * 1.8)
+            + Math.sin(x * 0.0023 - phase * 0.18) * 14;
+          if (x === 0) context.moveTo(x, y);
+          else context.lineTo(x, y);
+        }
+        context.stroke();
+      }
+    } else if (/sunburst|beam-sweep/.test(motif)) {
+      const originX = /sunburst/.test(motif) ? width * 0.08 : width * 0.12;
+      const originY = /sunburst/.test(motif) ? height * 0.88 : height * 0.56;
+      for (let index = 0; index < 11; index += 1) {
+        const angle = -1.15 + index * 0.105 + Math.sin(phase * 0.22) * 0.025;
+        context.beginPath();
+        context.moveTo(originX, originY);
+        context.lineTo(originX + Math.cos(angle) * width * 1.2, originY + Math.sin(angle) * width * 1.2);
+        context.stroke();
+      }
+    } else if (/dashboard-pixels|command-grid|panel-rhythm/.test(motif)) {
+      const cell = /panel-rhythm/.test(motif) ? grain * 2.4 : grain * 1.8;
+      for (let y = cell * 0.5; y < height; y += cell) {
+        for (let x = cell * 0.5; x < width; x += cell) {
+          const gate = (Math.round(x / cell) * 3 + Math.round(y / cell) * 5 + Math.floor(motion.seed * 11)) % 4;
+          if (gate < (/dashboard/.test(motif) ? 2 : 1)) {
+            context.fillRect(x, y, /panel/.test(motif) ? cell * 0.62 : 2.2, /panel/.test(motif) ? cell * 0.34 : 2.2);
+          }
+        }
+      }
+    } else if (/spreadsheet-slope/.test(motif)) {
+      for (let row = 0; row < 8; row += 1) {
+        const y = height * (0.16 + row * 0.1);
+        context.beginPath();
+        context.moveTo(0, y + row * 2);
+        context.lineTo(width, y - width * 0.055 + row * 2);
+        context.stroke();
+      }
+    } else if (/brushed-platinum/.test(motif)) {
+      for (let y = grain * 0.5; y < height; y += grain * 0.42) {
+        const start = ((y * 13 + motion.seed * width) % (width * 0.28)) - width * 0.1;
+        context.globalAlpha = alpha * (0.32 + ((y / grain) % 4) * 0.12);
+        context.fillRect(start, y, width * (0.42 + motion.seed * 0.28), 0.7);
+      }
+    } else if (/packet-lanes/.test(motif)) {
+      for (let row = 0; row < 6; row += 1) {
+        const y = height * (0.2 + row * 0.12);
+        for (let packet = 0; packet < 7; packet += 1) {
+          const x = ((packet * cross * 2.3 + row * grain + phase * 18) % (width + cross)) - cross;
+          context.fillRect(x, y, cross * 0.72, grain * 0.38);
+        }
+      }
+    } else if (/void-static|scan-noise/.test(motif)) {
+      const count = /void/.test(motif) ? 38 : 90;
+      for (let index = 0; index < count; index += 1) {
+        const x = textureSeed(index, 31) * width;
+        const y = textureSeed(index, 37) * height;
+        const gate = /void/.test(motif)
+          ? (index + Math.floor(phase * 0.3)) % 5 === 0
+          : true;
+        if (gate) context.fillRect(x, y, /scan/.test(motif) ? grain * 0.5 : 1, 0.8);
+      }
+    } else if (/halftone-tooth/.test(motif)) {
+      const spacing = grain * 1.15;
+      for (let y = spacing * 0.5; y < height; y += spacing) {
+        for (let x = spacing * 0.5; x < width; x += spacing) {
+          const radius = 0.65 + (Math.sin(x * 0.04 + y * 0.025 - phase) + 1) * 0.72;
+          context.beginPath();
+          context.arc(x + (Math.round(y / spacing) % 2) * spacing * 0.45, y, radius, 0, Math.PI * 2);
+          context.fill();
+        }
+      }
+    }
+    context.restore();
+  }
+
+  function drawTextureField(timestamp = 0) {
+    const canvas = nodes.textureCanvas;
+    const context = canvas?.getContext?.('2d', { alpha: true });
+    if (!context) return;
+    const rect = root.getBoundingClientRect();
+    const dpr = Math.min(2, Math.max(1.5, window.devicePixelRatio || 1));
+    const width = Math.max(320, rect.width);
+    const height = Math.max(320, rect.height);
+    if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      buildTextureLines(width, height);
+    }
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    const last = state.texture.lastTime || timestamp;
+    const delta = Math.min(0.05, Math.max(0, (timestamp - last) / 1000));
+    state.texture.lastTime = timestamp;
+    const stateProfile = TEXTURE_MOTION_PROFILES[root.dataset.microtextureState]
+      || TEXTURE_MOTION_PROFILES.ready;
+    const motion = textureMotionSignature();
+    const targetProfile = {
+      ...stateProfile,
+      speed: stateProfile.speed * motion.tempo,
+      drift: stateProfile.drift * motion.drift,
+      amplitude: stateProfile.amplitude * motion.amplitude,
+      frequency: stateProfile.frequency * motion.frequency,
+      square: textureClamp(stateProfile.square + motion.square, 0, 0.82),
+      shear: stateProfile.shear + motion.shear,
+      glint: stateProfile.glint * (0.84 + motion.wake * 0.22),
+    };
+    const profile = interpolatedTextureProfile(targetProfile, delta);
+    state.texture.phase += delta * Number(profile.speed || 0.15);
+    state.texture.impulse *= Math.pow(0.08, delta || 0.016);
+    state.texture.inputEnergy *= Math.pow(0.32, delta || 0.016);
+    state.texture.flowX *= Math.pow(0.12, delta || 0.016);
+    state.texture.flowY *= Math.pow(0.12, delta || 0.016);
+    state.texture.disturbances.forEach((item) => { item.age += delta; });
+    state.texture.disturbances = state.texture.disturbances.filter((item) => item.age < 4.8);
+    const focusEase = Math.min(1, delta * 3.6);
+    state.texture.focusX += (state.texture.targetX - state.texture.focusX) * focusEase;
+    state.texture.focusY += (state.texture.targetY - state.texture.focusY) * focusEase;
+    const visualTarget = textureClamp(state.texture.inputEnergy / 1.35, 0, 1);
+    const visualRate = visualTarget > state.texture.visualLevel ? 10.5 : 2.15;
+    const visualEase = 1 - Math.exp(-delta * visualRate);
+    state.texture.visualLevel += (visualTarget - state.texture.visualLevel) * visualEase;
+    if (timestamp - state.texture.lastVisualSync > 30 || !state.texture.lastVisualSync) {
+      root.style.setProperty('--texture-reactive-level', state.texture.visualLevel.toFixed(4));
+      root.style.setProperty('--texture-focus-x', `${(state.texture.focusX * 100).toFixed(2)}%`);
+      root.style.setProperty('--texture-focus-y', `${(state.texture.focusY * 100).toFixed(2)}%`);
+      state.texture.lastVisualSync = timestamp;
+    }
+    const style = getComputedStyle(root);
+    const colors = [
+      style.getPropertyValue('--agent-accent').trim() || '#5fd2c4',
+      style.getPropertyValue('--agent-accent-2').trim() || '#76a8ff',
+    ];
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.save();
+    context.scale(dpr, dpr);
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const span = Math.hypot(width, height) * 0.75;
+    const pattern = root.dataset.identityPattern || '';
+    const stepped = /scan|pixel|pin|grid|bar|shelf|stone|book|memo|platinum/.test(pattern);
+    const contour = /contour|aperture|field|sweep|orbit/.test(pattern);
+    const editorial = /book|memo|cross|ledger|editorial/.test(pattern);
+    const signal = /signal|scan|radio|pulse|wave/.test(pattern);
+    const focusX = state.texture.focusX * width;
+    const focusY = state.texture.focusY * height;
+    const squareWeight = textureClamp(
+      Number(profile.square || 0) + (stepped ? 0.16 : editorial ? 0.08 : 0),
+      0,
+      0.84,
+    );
+    const baseAmplitude = Number(profile.amplitude || 2.3);
+    const baseFrequency = Number(profile.frequency || 0.0092);
+    const flowOffset = state.texture.phase * Math.max(0, Number(profile.drift || 0))
+      * 18 * motion.direction;
+    const interactiveAmplitude = state.texture.inputEnergy
+      * (signal ? 1.1 : 0.82) * motion.wake;
+    drawTextureMotif(context, width, height, motion, colors, profile);
+    context.save();
+    context.globalCompositeOperation = 'lighter';
+    for (let band = 0; band < 2; band += 1) {
+      const bandSeed = textureSeed(band, 21);
+      const baseline = height * (0.3 + band * 0.38);
+      const bandAmplitude = 10 + baseAmplitude * (1.8 + bandSeed * 0.8);
+      context.beginPath();
+      for (let x = -80; x <= width + 80; x += 18) {
+        const focusEnvelope = Math.exp(-Math.abs(x - focusX) / Math.max(220, width * 0.34));
+        const focusLift = (focusY - baseline) * focusEnvelope * state.texture.inputEnergy * 0.055;
+        let disturbanceLift = 0;
+        for (const disturbance of state.texture.disturbances) {
+          const disturbanceX = disturbance.x * width + disturbance.velocityX * disturbance.age * 34;
+          const distance = Math.abs(x - disturbanceX);
+          const envelope = Math.exp(-distance / (150 + disturbance.age * 70)) * Math.exp(-disturbance.age * 0.68);
+          disturbanceLift += Math.sin(distance * 0.017 - disturbance.age * 3.8 + bandSeed * 6)
+            * envelope * disturbance.energy * 22;
+        }
+        const broadPhase = state.texture.phase * motion.direction + motion.phaseOffset;
+        let broadShape = Math.sin(x * 0.0046 + broadPhase * (0.72 + band * 0.08) + bandSeed * 7);
+        let broadDetail = Math.sin(x * 0.0091 - broadPhase * 0.41 + bandSeed * 13) * 0.28;
+        if (motion.family === 'orbit' || motion.family === 'aperture') {
+          const radial = Math.hypot(x - focusX, baseline - focusY);
+          broadShape = Math.sin(radial * 0.010 - broadPhase * (motion.family === 'aperture' ? 2.2 : 1.3) + band);
+          broadDetail = Math.cos((x - focusX) * 0.006 + broadPhase + bandSeed * 9) * 0.34;
+        } else if (motion.family === 'masonry') {
+          const course = Math.floor((x + (band % 2) * motion.segment * 0.5) / motion.segment);
+          broadShape = (course % 2 ? 0.34 : -0.34) + Math.sin(broadPhase + band) * 0.08;
+          broadDetail = 0;
+        } else if (motion.family === 'facet') {
+          broadShape = (2 / Math.PI) * Math.asin(Math.sin(x * 0.0082 + broadPhase + bandSeed * 5));
+          broadDetail *= 0.46;
+        } else if (motion.family === 'scan' || motion.family === 'channels') {
+          const packet = Math.sin(x * 0.026 - broadPhase * (motion.family === 'scan' ? 8 : 4) + bandSeed * 11);
+          broadShape = Math.round(packet * 3) / 3;
+          broadDetail *= 0.22;
+        } else if (motion.family === 'grid' || motion.family === 'stage') {
+          broadShape = Math.round(broadShape * (motion.family === 'grid' ? 4 : 2))
+            / (motion.family === 'grid' ? 4 : 2);
+          broadDetail *= 0.18;
+        } else if (motion.family === 'contour') {
+          broadShape += Math.sin(x * 0.0023 - broadPhase * 0.24 + band) * 0.62;
+        } else if (motion.family === 'radiant') {
+          broadShape = Math.sin((x - focusX) * 0.007 + broadPhase * 1.7 + bandSeed * 8);
+          broadDetail = Math.sin(Math.abs(x - focusX) * 0.014 - broadPhase * 2.4) * 0.24;
+        } else if (motion.family === 'editorial' || motion.family === 'plaid') {
+          broadShape *= 0.42;
+          broadDetail *= 0.18;
+        } else if (motion.family === 'void') {
+          broadShape = Math.sin(x * 0.017 + broadPhase * 0.34 + bandSeed * 19)
+            * (Math.sin(x * 0.0021 - broadPhase) > 0.58 ? 1 : 0.08);
+          broadDetail = 0;
+        } else if (motion.family === 'halftone') {
+          broadShape = Math.sin(x * 0.011 + broadPhase * 1.2 + bandSeed * 7)
+            * (0.64 + Math.sin(x * 0.039 - broadPhase * 2.1) * 0.24);
+          broadDetail *= 0.38;
+        }
+        const y = baseline
+          + broadShape * bandAmplitude
+          + broadDetail * bandAmplitude
+          + focusLift
+          + disturbanceLift;
+        if (x === -80) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      }
+      context.strokeStyle = colors[band % colors.length];
+      context.globalAlpha = 0.006 + Number(profile.alpha || 0.22) * 0.018 + state.texture.inputEnergy * 0.006;
+      context.lineWidth = 7 + bandSeed * 8;
+      context.stroke();
+    }
+    context.restore();
+    for (let index = 0; index < state.texture.lines.length; index += 1) {
+      const line = state.texture.lines[index];
+      const directionX = Math.cos(line.angle);
+      const directionY = Math.sin(line.angle);
+      const normalX = -directionY;
+      const normalY = directionX;
+      const glintPoints = line.major ? [] : null;
+      context.beginPath();
+      for (let point = -span; point <= span; point += 16) {
+        const local = point + flowOffset * line.speed + line.harmonic * 14;
+        const across = line.offset / Math.max(1, span);
+        const domainWarp = Math.sin(
+          (local / Math.max(1, span) * 1.618033988749895 + across * 0.618033988749895 + state.texture.phase * 0.035)
+          * Math.PI * 2 + line.phase,
+        ) * 0.52 + Math.sin(
+          (local / Math.max(1, span) * 2.414213562373095 - across * 1.272019649514069 + state.texture.phase * 0.057)
+          * Math.PI * 2 + line.phase2,
+        ) * 0.30;
+        const waveInput = local * baseFrequency * line.harmonic
+          + state.texture.phase * 2.85 * line.speed
+          + line.phase
+          + domainWarp * 0.42;
+        let shape = textureFractalWave(waveInput, squareWeight, line.phase2);
+        shape += Math.sin(waveInput * 0.31 + state.texture.phase * 0.72 + line.phase2) * 0.18;
+        if (motion.family === 'orbit') {
+          shape += Math.sin(waveInput * 0.48 - state.texture.phase * 1.4 + motion.phaseOffset) * 0.46;
+        } else if (motion.family === 'plaid') {
+          shape = Math.round(shape * 2.4) / 2.4 * (line.family ? 0.58 : 0.76);
+        } else if (motion.family === 'scan') {
+          shape = Math.round(shape * 5) / 5;
+          shape += textureFluidSquareWave(point * 0.051 - state.texture.phase * 13 + line.phase, 0.58) * 0.24;
+        } else if (motion.family === 'masonry') {
+          const course = Math.floor((point + (line.major ? motion.segment * 0.5 : 0)) / motion.segment);
+          shape = (course % 2 ? 0.32 : -0.32) + shape * 0.12;
+        } else if (motion.family === 'facet') {
+          shape = (2 / Math.PI) * Math.asin(Math.sin(waveInput + line.phase2)) * 0.84
+            + (2 / Math.PI) * Math.asin(Math.sin(waveInput * 0.5 - line.phase)) * 0.18;
+        } else if (motion.family === 'channels') {
+          shape *= line.family ? 0.18 : 0.48;
+          shape += textureFluidSquareWave(point * 0.026 - state.texture.phase * 6 + line.phase, 0.46) * 0.16;
+        } else if (motion.family === 'grid') {
+          shape = Math.round(shape * 4) / 4 * 0.62;
+        } else if (motion.family === 'aperture') {
+          shape += Math.sin(waveInput * 0.52 - state.texture.phase * 2.2 + line.phase2) * 0.58;
+        } else if (motion.family === 'stage') {
+          shape = Math.round(shape * 2) / 2 * 0.28;
+        } else if (motion.family === 'contour') {
+          shape += Math.sin(point * 0.0032 + line.offset * 0.011 + state.texture.phase * 0.28) * 0.72;
+        } else if (motion.family === 'radiant') {
+          shape += Math.sin(point * 0.009 - state.texture.phase * 2.4 + motion.phaseOffset) * 0.44;
+        } else if (motion.family === 'editorial') {
+          shape = shape * 0.34 + Math.sin(point * 0.0024 + line.phase) * 0.16;
+        } else if (motion.family === 'mesh') {
+          shape += Math.sin(waveInput * 0.71 + line.offset * 0.017 - state.texture.phase) * 0.32;
+        } else if (motion.family === 'void') {
+          shape *= Math.sin(point * 0.018 + line.phase2) > 0.36 ? 0.72 : 0.06;
+        } else if (motion.family === 'halftone') {
+          shape = Math.round(shape * 3.5) / 3.5;
+          shape += Math.sin(point * 0.061 + line.phase2 - state.texture.phase * 2.8) * 0.12;
+        }
+        if (contour) shape += Math.sin(point * 0.004 + line.phase * 0.7) * 0.38;
+        if (editorial) shape *= line.family ? 0.42 : 0.72;
+        if (signal) shape += textureFluidSquareWave(point * 0.042 - state.texture.phase * 9 + line.phase, 0.38) * 0.20;
+        const baseX = centerX + directionX * point + normalX * line.offset;
+        const baseY = centerY + directionY * point + normalY * line.offset;
+        const focusDistance = Math.hypot(baseX - focusX, baseY - focusY);
+        const wake = Math.exp(-focusDistance / Math.max(180, Math.min(width, height) * 0.42));
+        const travelingWake = Math.sin(
+          focusDistance * 0.025 - state.texture.phase * (signal ? 16 : 8) + line.phase,
+        ) * wake * interactiveAmplitude;
+        let disturbanceWarp = 0;
+        for (const disturbance of state.texture.disturbances) {
+          const disturbanceX = disturbance.x * width + disturbance.velocityX * disturbance.age * 34;
+          const disturbanceY = disturbance.y * height + disturbance.velocityY * disturbance.age * 34;
+          const distance = Math.hypot(baseX - disturbanceX, baseY - disturbanceY);
+          const radius = 72 + disturbance.age * (disturbance.kind === 'key' ? 56 : 82);
+          const envelope = Math.exp(-distance / (radius * (1.18 + motion.wake * 0.32)))
+            * Math.exp(-disturbance.age * (0.96 / motion.damping));
+          let wave = Math.sin(
+            distance * (motion.family === 'contour' ? 0.014 : motion.family === 'scan' ? 0.032 : 0.021)
+            - disturbance.age * (3.2 + motion.tempo * 1.4) + line.phase2,
+          );
+          if (motion.family === 'grid' || motion.family === 'masonry') wave = Math.round(wave * 3) / 3;
+          if (motion.family === 'facet') wave = (2 / Math.PI) * Math.asin(Math.sin(wave * Math.PI));
+          disturbanceWarp += wave * envelope * disturbance.energy * baseAmplitude * 11.8;
+        }
+        const shear = Number(profile.shear || 0) * point * (line.family ? -0.34 : 0.34);
+        const ambientWarp = (shape + domainWarp * 0.07) * baseAmplitude * line.amplitude;
+        const inputBillow = textureFractalWave(
+          waveInput * 0.47 + state.texture.flowX * 0.9 - state.texture.flowY * 0.6,
+          squareWeight * 0.72,
+          line.phase,
+        ) * state.texture.inputEnergy * baseAmplitude * 1.08;
+        const warp = (ambientWarp + inputBillow + travelingWake + disturbanceWarp) * (line.family ? 0.62 : 1)
+          + state.texture.impulse * textureFluidSquareWave(point * 0.03 + line.phase, squareWeight) * 1.45;
+        const offset = line.offset + shear + warp;
+        const x = centerX + directionX * point + normalX * offset;
+        const y = centerY + directionY * point + normalY * offset;
+        if (glintPoints) glintPoints.push([x, y]);
+        if (point === -span) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      }
+      const familyAlpha = editorial && line.family ? 0.76 : 1;
+      const activeLift = Math.min(0.06, state.texture.inputEnergy * 0.025);
+      context.globalAlpha = Math.min(
+        0.62,
+        (Number(profile.alpha || 0.22) + activeLift) * line.alpha * familyAlpha * 2.45,
+      );
+      context.strokeStyle = colors[line.family % colors.length];
+      context.lineWidth = line.family ? 0.72 : (line.major ? 1.12 : 0.82);
+      context.stroke();
+      if (glintPoints?.length && Number(profile.glint || 0) > 0.015) {
+        const travel = state.texture.phase * Math.max(0, Number(profile.drift || 0)) * 0.019 * line.speed + line.glint;
+        const center = Math.floor((((travel % 1) + 1) % 1) * (glintPoints.length - 1));
+        const radius = Math.max(2, Math.floor(glintPoints.length * 0.035));
+        const startIndex = Math.max(0, center - radius);
+        const endIndex = Math.min(glintPoints.length - 1, center + radius);
+        const startPoint = glintPoints[startIndex];
+        const endPoint = glintPoints[endIndex];
+        if (startPoint && endPoint && endIndex > startIndex) {
+          const gradient = context.createLinearGradient(startPoint[0], startPoint[1], endPoint[0], endPoint[1]);
+          gradient.addColorStop(0, 'transparent');
+          gradient.addColorStop(0.5, colors[line.family % colors.length]);
+          gradient.addColorStop(1, 'transparent');
+          context.save();
+          context.globalCompositeOperation = 'lighter';
+          context.globalAlpha = Number(profile.glint || 0) * (0.56 + state.texture.inputEnergy * 0.08);
+          context.strokeStyle = gradient;
+          context.lineWidth = line.family ? 0.68 : 1.05;
+          context.beginPath();
+          for (let pointIndex = startIndex; pointIndex <= endIndex; pointIndex += 1) {
+            const glintPoint = glintPoints[pointIndex];
+            if (pointIndex === startIndex) context.moveTo(glintPoint[0], glintPoint[1]);
+            else context.lineTo(glintPoint[0], glintPoint[1]);
+          }
+          context.stroke();
+          context.restore();
+        }
+      }
+    }
+    if (motion.point > 0.12 || /scan|pixel|pin|grid|lattice|weave/.test(pattern)) {
+      context.fillStyle = colors[1];
+      context.globalAlpha = Number(profile.alpha || 0.22) * motion.point;
+      const spacing = Math.max(24, parseFloat(style.getPropertyValue('--texture-cross-spacing')) || 42);
+      for (let y = spacing / 2; y < height; y += spacing * 1.5) {
+        for (let x = spacing / 2; x < width; x += spacing * 1.5) {
+          const column = Math.round(x / spacing);
+          const row = Math.round(y / spacing);
+          const gate = motion.family === 'void'
+            ? (column * 7 + row * 11 + Math.floor(state.texture.phase * 2)) % 13 === 0
+            : (column + row + Math.floor(motion.seed * 7)) % 3 === 0;
+          if (gate) {
+            const size = motion.family === 'halftone'
+              ? 0.7 + (Math.sin(column * 1.7 + row * 0.9 + state.texture.phase) + 1) * 0.7
+              : motion.family === 'grid' ? 1.2 : 0.9;
+            context.fillRect(x - size / 2, y - size / 2, size, size);
+          }
+        }
+      }
+    }
+    context.restore();
+    if (shouldAnimateTexture()) {
+      state.texture.frame = window.requestAnimationFrame(drawTextureField);
+    } else {
+      state.texture.frame = 0;
+    }
+  }
+
+  function shouldAnimateTexture() {
+    return !window.matchMedia?.('(max-width: 767.98px), (prefers-reduced-motion: reduce)')?.matches
+      && document.visibilityState !== 'hidden';
+  }
+
+  function startTextureField() {
+    if (state.texture.frame) return;
+    state.texture.lastTime = performance.now();
+    state.texture.frame = window.requestAnimationFrame(drawTextureField);
+  }
+
+  function setWorkspaceMenuOpen(open) {
+    const expanded = Boolean(open && state.groups.length > 1);
+    const restoreFocus = !expanded && !nodes.groupList.hidden && nodes.groupList.contains(document.activeElement);
+    nodes.groupList.hidden = !expanded;
+    nodes.workspaceButton.setAttribute('aria-expanded', String(expanded));
+    if (restoreFocus) nodes.workspaceButton.focus({ preventScroll: true });
+  }
+
+  function conversationSkeletonHtml(count) {
+    return Array.from({ length: count }, (_, index) => `
+      <div class="bridge-loading-row bridge-loading-row--conversation" aria-hidden="true"
+        style="--skeleton-delay:${index * 70}ms">
+        <span class="bridge-loading-row__mark"></span>
+        <span class="bridge-loading-row__copy"><i></i><i></i></span>
+      </div>
+    `).join('');
+  }
+
+  function agentSkeletonHtml(count) {
+    return `
+      <section class="bridge-directory-group bridge-directory-group--loading" aria-label="Loading agents">
+        <header class="bridge-directory-group__head"><span>Loading agents</span><small></small></header>
+        <div class="bridge-directory-group__items">
+          ${Array.from({ length: count }, (_, index) => `
+            <div class="bridge-loading-row bridge-loading-row--agent" aria-hidden="true"
+              style="--skeleton-delay:${index * 55}ms">
+              <span class="bridge-loading-row__mark"></span>
+              <span class="bridge-loading-row__copy"><i></i><i></i></span>
+              <span class="bridge-loading-row__presence"></span>
+            </div>
+          `).join('')}
+        </div>
+      </section>
+    `;
+  }
+
+  function updateBootInterstitial({ phase, detail, completed, total, complete = false } = {}) {
+    if (!nodes.bootInterstitial) return;
+    if (phase) state.boot.phase = phase;
+    if (detail) state.boot.detail = detail;
+    if (Number.isFinite(completed)) state.boot.completed = completed;
+    if (Number.isFinite(total)) state.boot.total = total;
+    const progress = state.boot.total
+      ? Math.min(100, Math.round((state.boot.completed / state.boot.total) * 100))
+      : 8;
+    nodes.bootTitle.textContent = state.boot.phase;
+    nodes.bootDetail.textContent = state.boot.detail;
+    if (nodes.bootActivity) {
+      nodes.bootActivity.textContent = complete ? '' : '.'.repeat(state.boot.activityStep);
+    }
+    nodes.bootProgress.style.setProperty('--bridge-boot-progress', `${complete ? 100 : Math.max(8, progress)}%`);
+    nodes.bootInterstitial.classList.toggle('is-complete', complete);
+    nodes.bootInterstitial.classList.toggle('is-loading', !complete);
+    nodes.bootInterstitial.hidden = false;
+    window.clearTimeout(state.boot.dismissTimer);
+    if (complete) {
+      window.clearInterval(state.boot.activityTimer);
+      state.boot.activityTimer = 0;
+      window.clearTimeout(state.boot.dismissTimer);
+      state.boot.dismissTimer = window.setTimeout(() => {
+        nodes.bootInterstitial.hidden = true;
+      }, 520);
+    }
+  }
+
+  function startBootActivity() {
+    window.clearInterval(state.boot.activityTimer);
+    state.boot.activityStep = 1;
+    state.boot.activityTimer = window.setInterval(() => {
+      state.boot.activityStep = state.boot.activityStep >= 4 ? 1 : state.boot.activityStep + 1;
+      if (nodes.bootActivity && !nodes.bootInterstitial.hidden) {
+        nodes.bootActivity.textContent = '.'.repeat(state.boot.activityStep);
+      }
+    }, 340);
+  }
+
+  function bootUpdateForRequest(completed, total) {
+    updateBootInterstitial({
+      phase: 'Loading chats',
+      detail: `Refreshing workspace information (${completed} of ${total})`,
+      completed, total,
+    });
+  }
+
+  const navigationMarkup = new WeakMap();
+
+  function updateNavigationMarkup(container, html) {
+    if (navigationMarkup.get(container) === html) return;
+    const active = document.activeElement;
+    const attributes = ['data-cockpit-group', 'data-domain', 'data-conversation-id', 'data-agent', 'data-create-room'];
+    const key = container.contains(active) && attributes.find((name) => active.hasAttribute(name));
+    const value = key ? active.getAttribute(key) : null;
+    const scrollTop = container.scrollTop;
+    container.innerHTML = html;
+    navigationMarkup.set(container, html);
+    if (key) {
+      const replacement = Array.from(container.querySelectorAll('button')).find((button) => (
+        button.hasAttribute(key) && button.getAttribute(key) === value
+      ));
+      replacement?.focus({ preventScroll: true });
+    }
+    container.scrollTop = scrollTop;
+  }
+
+  function renderGroups() {
+    root.dataset.groupCount = String(state.groups.length);
+    updateNavigationMarkup(nodes.groupList, state.groups.map((group) => `
+      <button class="bridge-workspace-option ${group.id === state.group ? 'is-active' : ''}" type="button"
+        data-cockpit-group="${escapeHtml(group.id)}" aria-current="${group.id === state.group ? 'true' : 'false'}">
+        <span class="bridge-workspace-option__mark">${escapeHtml(group.mark)}</span>
+        <span class="bridge-workspace-option__copy">
+          <strong>${escapeHtml(group.label)}</strong>
+          <small>${escapeHtml(group.policy || 'Workspace')}</small>
+        </span>
+        ${group.id === state.group ? iconHtml('check') : ''}
+      </button>
+    `).join(''));
+    document.querySelectorAll('[data-cockpit-view]').forEach((button) => {
+      const activeView = state.view === 'global-attention' ? 'attention' : state.view;
+      button.classList.toggle('is-active', button.dataset.cockpitView === activeView);
+    });
+    const group = currentGroup();
+    nodes.groupTitle.textContent = group.label;
+    nodes.workspaceMark.textContent = group.mark;
+    nodes.workspaceButton.disabled = state.groups.length < 2;
+    nodes.workspaceButton.title = state.groups.length < 2 ? group.label : 'Switch workspace';
+    if (state.groups.length < 2) setWorkspaceMenuOpen(false);
+    nodes.message.placeholder = `Message ${currentDomain()?.display_name || group.label}`;
+    nodes.inspectorAvatar.textContent = group.mark;
+    nodes.inspectorGroup.textContent = group.label;
+    nodes.inspectorPolicy.textContent = group.policy;
+  }
+
+  function renderDomains() {
+    const domains = currentGroup().domains.filter((domain) => {
+      if (!state.search) return true;
+      return `${domain.display_name} ${domain.kind}`.toLowerCase().includes(state.search);
+    });
+    if (!domains.length) {
+      updateNavigationMarkup(nodes.domains, `<div class="cockpit-nav-empty">${state.search ? 'No matching lanes.' : 'No configured lanes.'}</div>`);
+      return;
+    }
+    updateNavigationMarkup(nodes.domains, domains.map((domain) => `
+      <button class="cockpit-nav-item cockpit-nav-item--compact ${domain.slug === state.domain ? 'is-active' : ''}"
+        type="button" data-domain="${escapeHtml(domain.slug)}">
+        <span class="cockpit-nav-item__icon">${iconHtml('route')}</span>
+        <span><strong>${escapeHtml(domain.display_name)}</strong><small>${escapeHtml(domain.default_policy_mode || domain.kind || 'lane')}</small></span>
+      </button>
+    `).join(''));
+  }
+
+  function statusTone(status) {
+    const value = String(status || '').toLowerCase();
+    if (['done', 'completed', 'online', 'running'].includes(value)) return 'is-online';
+    if (['blocked', 'failed', 'waiting_approval', 'error'].includes(value)) return 'is-warning';
+    return '';
+  }
+
+  function renderWorkstreams() {
+    if (state.authRequired) {
+      updateNavigationMarkup(nodes.rooms, '<div class="cockpit-nav-empty">Log in to load your rooms.</div>');
+      return;
+    }
+    if (!state.bootstrapped) {
+      updateNavigationMarkup(nodes.rooms, conversationSkeletonHtml(2));
+      return;
+    }
+    const rooms = state.conversations.filter((conversation) => {
+      if (conversation.kind !== 'room') return false;
+      if (slugify(conversation.principal_slug) !== slugify(currentGroup().slug)) return false;
+      if (!state.search) return true;
+      return `${conversation.title} ${(conversation.member_slugs || []).join(' ')}`
+        .toLowerCase().includes(state.search);
+    });
+    if (!rooms.length && state.search) {
+      updateNavigationMarkup(nodes.rooms, '<div class="cockpit-nav-empty">No matching rooms.</div>');
+      return;
+    }
+    if (!rooms.length) {
+      updateNavigationMarkup(nodes.rooms, '<button class="bridge-empty-action" type="button" data-create-room><svg class="cockpit-icon"><use href="#bridge-icon-plus"/></svg><span><strong>Create a room</strong><small>Bring a few bots together</small></span></button>');
+      return;
+    }
+    updateNavigationMarkup(nodes.rooms, rooms.map((conversation) => {
+      const job = latestConversationJob(conversation);
+      const members = conversation.member_slugs || [];
+      return `
+        <button class="bridge-conversation-item ${conversation.conversation_id === state.selectedConversationId ? 'is-active' : ''}"
+          type="button" data-conversation-id="${escapeHtml(conversation.conversation_id)}">
+          ${roomIdentityStackHtml(members)}
+          <span class="bridge-conversation-item__copy">
+            <span><strong>${escapeHtml(conversation.title)}</strong><time>${escapeHtml(formatTime(job?.updated_at || conversation.updated_at))}</time></span>
+            <small>${escapeHtml(job ? truncate(resultText(job, jobEvents(job)) || jobObjective(job), 48) : `${members.length} bot${members.length === 1 ? '' : 's'}`)}</small>
+          </span>
+        </button>`;
+    }).join(''));
+  }
+
+  function renderAgents() {
+    if (state.authRequired) {
+      nodes.agentCount.textContent = '0';
+      updateNavigationMarkup(nodes.agents, '<div class="cockpit-nav-empty">Your bot directory appears after login.</div>');
+      return;
+    }
+    if (!state.bootstrapped) {
+      nodes.agentCount.textContent = '';
+      updateNavigationMarkup(nodes.agents, agentSkeletonHtml(7));
+      return;
+    }
+    const agents = filteredAgents();
+    nodes.agentCount.textContent = String(agents.length);
+    if (!agents.length) {
+      updateNavigationMarkup(nodes.agents, state.search
+        ? '<div class="cockpit-nav-empty">No bots match your search.</div><button class="bridge-empty-action" type="button" data-clear-search>Clear search</button>'
+        : '<div class="cockpit-nav-empty">No bots in this workspace.</div>');
+      return;
+    }
+    updateNavigationMarkup(nodes.agents, groupedAgents(agents).map((group) => `
+      <section class="bridge-directory-group" data-directory-group="${escapeHtml(group.key)}"
+        style="${escapeHtml(identityStyle(group.agents[0]?.slug || 'norman'))}">
+        <header class="bridge-directory-group__head">
+          <span>${escapeHtml(group.label)}</span><small>${group.agents.length}</small>
+        </header>
+        <div class="bridge-directory-group__items">
+          ${group.agents.map((agent) => {
+            const heartbeat = heartbeatFor(agent);
+            const conversation = state.conversations.find((item) => (
+              item.kind === 'direct'
+              && slugify(item.direct_agent_slug) === slugify(agent.slug)
+              && slugify(item.principal_slug) === slugify(currentGroup().slug)
+            ));
+            const job = conversation ? latestConversationJob(conversation) : state.jobs.find((item) => {
+              const recipients = jobMetadata(item).recipients || [];
+              return recipients.map(slugify).includes(slugify(agent.slug));
+            });
+            return `
+              <button class="bridge-conversation-item ${slugify(agent.slug) === slugify(state.selectedAgent) ? 'is-active' : ''}"
+                type="button" data-agent="${escapeHtml(agent.slug)}" style="${escapeHtml(identityStyle(agent.slug))}">
+                ${botIdentityTileHtml(agent)}
+                <span class="bridge-conversation-item__copy">
+                  <span><strong>${escapeHtml(agent.display_name)}</strong><time>${escapeHtml(formatTime(job?.updated_at || job?.created_at))}</time></span>
+                  <small>${escapeHtml(job ? truncate(resultText(job, jobEvents(job)) || jobObjective(job), 48) : (agent.domain_name || agent.class_name || 'Available'))}</small>
+                </span>
+                <i class="bridge-presence-dot ${heartbeat ? 'is-online' : ''}" title="${heartbeat ? 'Available' : 'No recent heartbeat'}"></i>
+              </button>`;
+          }).join('')}
+        </div>
+      </section>
+    `).join(''));
+  }
+
+  function messageMetaHtml(job) {
+    if (!job) return '';
+    const route = jobContract(job).route_policy || {};
+    const metadata = jobMetadata(job);
+    const result = job?.result || job?.result_json || {};
+    const receipt = result.route_receipt || metadata.route_receipt || {};
+    const usage = metadata.usage || result.usage || receipt.usage || receipt || {};
+    const provider = route.provider || route.preferred_provider || metadata.provider || '';
+    const model = route.model || metadata.model || '';
+    const lane = metadata.usage_bucket || receipt.usage_bucket || '';
+    const status = String(job.status || '').toLowerCase();
+    const chips = [];
+    const routeLabel = [provider, model].filter(Boolean).join(' / ');
+    const routeReason = String(
+      usage.route_reason || usage.route_rationale || metadata.route_rationale || '',
+    ).trim();
+    if (routeLabel) {
+      chips.push(`<span class="cockpit-message-chip" data-chip="route" title="${escapeHtml(routeReason || routeLabel)}"><i></i>${escapeHtml(routeLabel)}</span>`);
+    }
+    if (lane) {
+      chips.push(`<span class="cockpit-message-chip" data-chip="lane">${escapeHtml(displaySlug(lane))}</span>`);
+    }
+    const input = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0);
+    const output = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
+    if (input || output) {
+      const cached = Number(usage.cached_input_tokens ?? 0);
+      const reasoning = Number(usage.reasoning_output_tokens ?? 0);
+      const usageTitle = [
+        `Input ${formatCompactNumber(input)} tokens`,
+        cached ? `${formatCompactNumber(cached)} cached` : '',
+        `Output ${formatCompactNumber(output)} tokens`,
+        reasoning ? `${formatCompactNumber(reasoning)} reasoning` : '',
+        usage.total_tokens ? `${formatCompactNumber(usage.total_tokens)} total` : '',
+      ].filter(Boolean).join('; ');
+      chips.push(`<span class="cockpit-message-chip" data-chip="usage" title="${escapeHtml(usageTitle)}">${escapeHtml(`${formatCompactNumber(input)} in / ${formatCompactNumber(output)} out`)}</span>`);
+    }
+    const cost = Number(usage.estimated_cost_usd ?? receipt.estimated_cost_usd ?? 0);
+    if (Number.isFinite(cost) && cost > 0) {
+      chips.push(`<span class="cockpit-message-chip" data-chip="spend" title="Recorded estimated spend">${escapeHtml(formatUsd(cost))}</span>`);
+    } else {
+      const estimate = subscriptionCreditEstimate(usage);
+      if (estimate) {
+        chips.push(`<span class="cockpit-message-chip" data-chip="spend" title="${escapeHtml(estimate.title)}">${escapeHtml(estimate.label)}</span>`);
+      }
+    }
+    const localPreflight = localPreflightSummary(usage);
+    if (localPreflight) {
+      chips.push(`<span class="cockpit-message-chip" data-chip="preflight" title="${escapeHtml(localPreflight.title)}">${escapeHtml(localPreflight.label)}</span>`);
+    }
+    if (status && !['done', 'complete', 'completed', 'succeeded', 'verified'].includes(status)) {
+      chips.push(`<span class="cockpit-message-chip" data-chip="state" data-tone="${escapeHtml(status)}">${escapeHtml(status.replaceAll('_', ' '))}</span>`);
+    }
+    return chips.join('');
+  }
+
+  function formatCompactNumber(value) {
+    const number = Math.max(0, Number(value) || 0);
+    if (number >= 1000000) return `${(number / 1000000).toFixed(1)}m`;
+    if (number >= 1000) return `${(number / 1000).toFixed(number >= 10000 ? 0 : 1)}k`;
+    return String(Math.round(number));
+  }
+
+  function formatUsd(value) {
+    const amount = Math.max(0, Number(value) || 0);
+    if (amount < 0.01) return '< $0.01';
+    return `$${amount.toFixed(amount < 1 ? 2 : 1)}`;
+  }
+
+  function subscriptionCreditEstimate(usage) {
+    const routeClass = String(usage.route_class || usage.route_execution || '').toLowerCase();
+    if (!/cloud|openai/.test(routeClass)) return null;
+    const input = Math.max(0, Number(usage.input_tokens) || 0);
+    const cached = Math.min(input, Math.max(0, Number(usage.cached_input_tokens) || 0));
+    const output = Math.max(0, Number(usage.output_tokens) || 0);
+    if (!input && !output) return null;
+    const uncached = Math.max(0, input - cached);
+    const standard = (uncached * 2 + cached * 0.2 + output * 12) / 1000000;
+    const longContext = (uncached * 4 + cached * 0.4 + output * 18) / 1000000;
+    const isLongContext = input >= 128000;
+    const label = isLongContext
+      ? `~${formatUsd(standard)}-${formatUsd(longContext)} eq.`
+      : `~${formatUsd(standard)} eq.`;
+    return {
+      label,
+      title: `API-equivalent estimate only; this turn used ChatGPT/Codex subscription credits, not an invoiced API charge. ${formatCompactNumber(uncached)} uncached input, ${formatCompactNumber(cached)} cached input, ${formatCompactNumber(output)} output.`,
+    };
+  }
+
+  function localPreflightSummary(usage) {
+    if (!usage || !usage.local_preflight_used) return null;
+    const model = String(usage.local_preflight_model || 'local preflight').trim();
+    const posture = String(usage.local_preflight_route_posture || usage.local_preflight_status || 'recorded')
+      .replaceAll('_', ' ');
+    const tokens = Math.max(0, Number(usage.local_preflight_tokens) || 0);
+    const specialist = Number(usage.local_specialist_executed_count) || 0;
+    return {
+      label: `Qwen ${posture}`,
+      title: `${model} used ${formatCompactNumber(tokens)} local tokens. ${specialist
+        ? `${specialist} local specialist stage${specialist === 1 ? '' : 's'} executed.`
+        : 'No local specialist stage executed, so this did not reduce the cloud context.'}`,
+    };
+  }
+
+  function attachmentHtml(attachments, slug) {
+    const items = Array.isArray(attachments) ? attachments : [];
+    if (!items.length) return '';
+    return `<div class="cockpit-message-media">${items.map((attachment) => {
+      const token = String(attachment.token || '');
+      const name = String(attachment.name || 'Attachment');
+      const source = `/api/v1/bridge/conversations/agents/${encodeURIComponent(slugify(slug))}/media/${encodeURIComponent(token)}`;
+      const downloadSource = `${source}?download=1`;
+      if (attachment.kind === 'image' || String(attachment.content_type || '').startsWith('image/')) {
+        return `<figure class="cockpit-message-media__figure">
+          <a href="${source}" target="_blank" rel="noopener" aria-label="Open ${escapeHtml(name)}">
+            <img src="${source}" alt="${escapeHtml(name)}" loading="lazy" decoding="async">
+          </a>
+          <figcaption>
+            <span>${iconHtml('palette')}</span>
+            <span>${escapeHtml(name)}</span>
+            <a class="cockpit-message-media__download" href="${downloadSource}" aria-label="Download ${escapeHtml(name)}" title="Download ${escapeHtml(name)}">${iconHtml('download')}</a>
+          </figcaption>
+        </figure>`;
+      }
+      return `<div class="cockpit-message-media__file">
+        <a href="${source}" target="_blank" rel="noopener"><span>${iconHtml('file-text')}</span><strong>${escapeHtml(name)}</strong></a>
+        <a class="cockpit-message-media__download" href="${downloadSource}" aria-label="Download ${escapeHtml(name)}" title="Download ${escapeHtml(name)}">${iconHtml('download')}</a>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
+  function messageHtml({ author, text, time, operator = false, slug = 'norman', job = null, continuation = false, attachments = [] }) {
+    const identity = identityContract(slug);
+    const head = operator ? `
+      <header class="cockpit-message__head cockpit-message__head--operator">
+        <span class="cockpit-message__role">You</span>
+        <span class="cockpit-message__telemetry"><time>${escapeHtml(formatTime(time))}</time></span>
+      </header>` : `
+      <header class="cockpit-message__head">
+        <span class="cockpit-message__role">${entityCartoucheHtml(author || identity.label, {
+          slug: identity.slug,
+          kind: 'bot',
+          group: identity.group,
+          decorator: '◈',
+        })}</span>
+        <span class="cockpit-message__telemetry">${messageMetaHtml(job)}<time>${escapeHtml(formatTime(time))}</time></span>
+      </header>`;
+    return `
+      <article class="cockpit-message ${operator ? 'cockpit-message--operator' : 'cockpit-message--assistant'} ${continuation ? 'is-continuation' : ''}"
+        data-agent="${escapeHtml(identity.slug)}" data-variant="${escapeHtml(identity.styleVariant)}" style="${escapeHtml(identityStyle(identity.slug))}">
+        ${head}
+        <div class="cockpit-message__body">
+          ${text ? `<div class="cockpit-message__bubble">${operator ? escapeHtml(text) : renderMessageContent(text)}</div>` : ''}
+          ${operator ? '' : attachmentHtml(attachments, identity.slug)}
+          ${text && !operator ? '<button type="button" class="bridge-copy-reply" data-copy-reply aria-label="Copy reply">Copy</button>' : ''}
+        </div>
+      </article>`;
+  }
+
+  function eventHtml(event) {
+    const type = String(event.event_type || '');
+    const summary = event.summary || event.detail || type.replaceAll('.', ' ');
+    const className = /approval|blocked|failed|error/.test(type)
+      ? 'is-error'
+      : /completed|verified|checkpoint/.test(type)
+        ? 'is-complete'
+        : /planner|route|handoff|delegat/.test(type) ? 'is-handoff' : '';
+    const icon = /planner|route|handoff|delegat/.test(type)
+      ? 'route'
+      : /tool|shell/.test(type) ? 'wrench'
+        : /approval|blocked|failed|error/.test(type) ? 'alert'
+          : /completed|verified|checkpoint/.test(type) ? 'check' : 'activity';
+    const label = type
+      .replace(/^execution\./, '')
+      .replace(/^model\./, '')
+      .replace(/^job\./, '')
+      .replaceAll('_', ' ')
+      .replaceAll('.', ' / ');
+    return `<div class="cockpit-event ${className}">
+      <span class="cockpit-event__icon">${iconHtml(icon)}</span>
+      <span class="cockpit-event__body"><small>${escapeHtml(label || 'runtime')}</small><span class="cockpit-event__summary">${escapeHtml(summary)}</span></span>
+      <span class="cockpit-event__time">${escapeHtml(formatTime(event.created_at))}</span>
+    </div>`;
+  }
+
+  function isLegacyBridgeDiagnostic(value) {
+    const text = typeof value === 'object' && value
+      ? [value.prompt, value.response, value.result, value.error].filter(Boolean).join('\n')
+      : String(value || '');
+    return /prior bridge status|characters omitted from live transport|bridge opening the estate|this diagnostic reply has been superseded|this status used deterministic tui state|selected route:\s*codex\/gpt-5\.4|\[auto-continuation:/is.test(text.trim());
+  }
+
+  function normalizeBridgeResponse(text) {
+    const value = String(text || '').trim();
+    return isLegacyBridgeDiagnostic(value) ? '' : value;
+  }
+
+  function resultText(job, events = []) {
+    const result = job?.result || job?.result_json || {};
+    const modelEvent = [...events].reverse().find((event) => (
+      /model\.delta/.test(event.event_type || '')
+    )) || [...events].reverse().find((event) => (
+      /model\.completed/.test(event.event_type || '')
+    ));
+    const payload = eventPayload(modelEvent);
+    const modelText = payload.text
+      || payload.output
+      || payload.response
+      || payload.output_preview
+      || (/model\.delta/.test(modelEvent?.event_type || '') ? modelEvent?.detail : '');
+    if (String(modelText || '').trim()) return normalizeBridgeResponse(modelText);
+    if (String(result.detail || '').trim()) return normalizeBridgeResponse(result.detail);
+    const embedded = result.text || result.output || result.response;
+    if (String(embedded || '').trim()) return normalizeBridgeResponse(embedded);
+    const summary = String(result.summary || '').trim();
+    if (summary && !/^(static advisory )?response completed\\.?$|^job completed\\.?$/i.test(summary)) {
+      return normalizeBridgeResponse(summary);
+    }
+    return '';
+  }
+
+  function emptyFeed(title, detail, slug = 'norman', mark = '') {
+    const texture = textureForSlug(slug);
+    const identityMark = mark || texture?.mark || displaySlug(slug).slice(0, 1).toUpperCase();
+    const identity = identityContract(slug);
+    const agent = state.agents.find((item) => slugify(item.slug) === identity.slug) || {
+      slug: identity.slug,
+      display_name: identity.label,
+      class_name: 'agent',
+    };
+    nodes.feed.innerHTML = `<div class="cockpit-feed__empty" data-agent="${escapeHtml(identity.slug)}" style="${escapeHtml(identityStyle(identity.slug))}">
+      <div class="cockpit-presence" data-state="${escapeHtml(aggregateState())}" data-variant="${escapeHtml(identity.styleVariant)}"
+        data-motion="${escapeHtml(textureMotionSignature(identity.texture).family)}">
+        ${botIdentityTileHtml(agent, { hero: true })}
+        <span class="cockpit-presence__identity">
+          ${entityCartoucheHtml(identity.label, {
+            slug: identity.slug,
+            kind: 'tui',
+            mark: identityMark,
+            decorator: 'TUI',
+            compact: false,
+          })}
+          <span class="cockpit-presence__status">${iconHtml('radio')}<span>Ready</span></span>
+        </span>
+      </div>
+      <h2>${escapeHtml(title)}</h2>
+      <p>${escapeHtml(detail)}</p>
+    </div>`;
+  }
+
+  function workingMessageHtml(job, identity = responseIdentity(job)) {
+    const promptStatus = job?.job_id && job.job_id === state.prompt.jobId ? state.prompt.phase : '';
+    const stale = !promptStatus && isStalePendingJob(job);
+    const status = stale ? 'interrupted' : String(promptStatus || job?.status || 'queued').toLowerCase();
+    if (status === 'unconfirmed') {
+      return `<article class="cockpit-working" data-status="unconfirmed">
+        <strong>Delivery unconfirmed</strong>
+        <p>The connection ended before delivery was confirmed. Use Check delivery below to look up this message without sending it twice.</p>
+      </article>`;
+    }
+    const label = ['running', 'executing', 'planning'].includes(status)
+      ? 'Working'
+      : status === 'submitting' ? 'Sending'
+        : status === 'interrupted' ? 'Interrupted'
+        : ['blocked', 'waiting_approval'].includes(status) ? 'Needs attention'
+          : ['complete', 'completed'].includes(status) ? 'Complete'
+            : ['failed', 'error', 'canceled'].includes(status) ? 'Stopped' : 'Queued';
+    const icon = ['running', 'executing', 'planning'].includes(status)
+      ? 'activity'
+      : status === 'submitting' ? 'arrow-up'
+        : status === 'interrupted' ? 'alert'
+        : ['blocked', 'waiting_approval'].includes(status) ? 'alert'
+          : ['complete', 'completed'].includes(status) ? 'check'
+            : ['failed', 'error', 'canceled'].includes(status) ? 'close' : 'clock';
+    const stage = ['running', 'executing', 'planning'].includes(status)
+      ? 2
+      : status === 'submitting' ? 1
+        : ['blocked', 'waiting_approval', 'failed', 'error', 'canceled', 'interrupted'].includes(status) ? 3
+          : 0;
+    const stageDetail = ['running', 'executing', 'planning'].includes(status)
+      ? 'Working through the request'
+      : status === 'submitting'
+        ? 'Sending this to the selected station'
+        : ['blocked', 'waiting_approval'].includes(status)
+          ? 'Waiting for the next decision'
+          : status === 'interrupted'
+            ? 'This request can be sent again'
+            : 'Holding its place in the queue';
+    return `<article class="cockpit-working" data-status="${escapeHtml(status)}" data-agent="${escapeHtml(slugify(identity.slug))}"
+      style="${escapeHtml(identityStyle(identity.slug))}">
+      <div class="cockpit-working__head">
+        ${entityCartoucheHtml(identity.author, { slug: identity.slug, kind: 'bot', decorator: '◈' })}
+        <span class="cockpit-working__state"><i aria-hidden="true">${iconHtml(icon)}</i>${escapeHtml(label)}</span>
+      </div>
+      <div class="cockpit-working__detail">${escapeHtml(stale
+        ? 'This response did not start. Send it again when the runtime is available.'
+        : truncate(jobObjective(job) || 'Preparing a response', 96))}</div>
+      ${promptStatus && state.prompt.acceptedAt ? `<p class="cockpit-working__feedback" role="status">${escapeHtml(stationRequestFeedback(state.prompt))}</p>` : ''}
+      <div class="cockpit-working__progress" aria-label="${escapeHtml(stageDetail)}">
+        <span class="${stage >= 0 ? 'is-complete' : ''}">Received</span>
+        <span class="${stage >= 1 ? 'is-complete' : ''}">Queued</span>
+        <span class="${stage >= 2 ? 'is-active' : ''}">Working</span>
+        <span class="${stage >= 3 ? 'is-complete' : ''}">Result</span>
+      </div>
+      <div class="cockpit-working__signal" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+    </article>`;
+  }
+
+  function renderGeneralFeed() {
+    const wasNearLatest = (
+      nodes.feed.scrollHeight - nodes.feed.scrollTop - nodes.feed.clientHeight
+    ) < 80;
+    const conversation = selectedConversation();
+    const jobs = conversation && conversation.kind !== 'direct'
+      ? filteredJobs().filter(isBridgeJob).slice(0, 16).reverse()
+      : [];
+    const stationSlug = conversation?.kind === 'direct'
+      ? slugify(conversation.direct_agent_slug)
+      : '';
+    const stationTurns = stationSlug
+      ? (state.stationHistory[stationSlug]?.items || [])
+      : [];
+    const historyLoading = stationSlug && state.stationHistoryLoading.has(stationSlug);
+    const historyLoaded = stationSlug && state.stationHistoryLoaded[stationSlug];
+    const historyError = stationSlug ? state.stationHistoryErrors[stationSlug] : '';
+    const unresolved = pendingDelivery(conversation);
+    const localPrompt = unresolved && !promptBusy()
+      ? { job_id: `delivery:${unresolved.id}`, objective: unresolved.message, status: 'unconfirmed', metadata: { recipients: [...state.selectedRecipients] } }
+      : (
+      ['submitting', 'queued', 'running'].includes(state.prompt.phase)
+      && (!state.prompt.stationSlug || state.prompt.stationSlug === stationSlug)
+    )
+      ? {
+          job_id: state.prompt.jobId || '',
+          objective: state.prompt.objective,
+          status: state.prompt.phase,
+          created_at: new Date(state.prompt.startedAt || Date.now()).toISOString(),
+          metadata: { recipients: [...state.selectedRecipients] },
+        }
+      : null;
+    if (!jobs.length && !localPrompt && !stationTurns.length) {
+      if (stationSlug) {
+        const historyHeading = historyError
+          ? 'Station history unavailable'
+          : historyLoading || !historyLoaded
+            ? 'Loading station history'
+            : 'No station history yet';
+        const historyDetail = historyError
+          ? `This direct message could not be loaded right now. Try again to reconnect to ${escapeHtml(displaySlug(stationSlug))}.`
+          : historyLoading || !historyLoaded
+            ? `Fetching messages from ${escapeHtml(displaySlug(stationSlug))}. You can keep browsing while this loads.`
+            : `${escapeHtml(displaySlug(stationSlug))} is ready for a new direct message.`;
+        nodes.feed.innerHTML = `<div class="cockpit-feed__empty cockpit-history-state" role="status" aria-live="polite">
+          <span class="cockpit-history-state__icon">${iconHtml(historyLoading ? 'loader' : 'archive')}</span>
+          <h2>${historyHeading}</h2>
+          <p>${historyDetail}</p>
+          ${historyError ? `<button class="bridge-history-retry" type="button" data-history-retry="${escapeHtml(stationSlug)}">Try again</button>` : historyLoading || !historyLoaded ? '<div class="bridge-thread-skeleton" aria-hidden="true"><i></i><i></i><i></i></div>' : ''}
+        </div>`;
+        return;
+      }
+      const selected = state.agents.find((agent) => slugify(agent.slug) === slugify(state.selectedAgent));
+      const name = selected?.display_name || (state.selectedAgent ? displaySlug(state.selectedAgent) : 'Norman');
+      const slug = selected?.slug || state.selectedAgent || 'norman';
+      emptyFeed(
+        `Talk to ${name}`,
+        historyError
+          ? 'This station is available, but its prior thread could not be loaded.'
+          : conversation
+          ? 'Tell me what you want to get done. You can return to this conversation later.'
+          : `${currentGroup().label} is ready. Choose a room or direct message to begin.`,
+        slug,
+      );
+      return;
+    }
+    const visibleJobs = localPrompt ? [...jobs, localPrompt] : jobs;
+    const historySyncHtml = stationTurns.length && (historyLoading || historyError)
+      ? `<div class="bridge-history-sync" role="status">${historyLoading ? '<span aria-hidden="true"></span>' : ''}<small>${historyError ? 'Showing saved messages. Could not check for updates.' : 'Showing saved messages · Checking for updates…'}</small>${historyError ? `<button type="button" class="bridge-history-retry" data-history-retry="${escapeHtml(stationSlug)}">Retry</button>` : ''}</div>`
+      : '';
+    const historyHtml = stationTurns
+      .filter((turn) => !isLegacyBridgeDiagnostic(turn))
+      .map((turn, index) => {
+      const time = turn.finished_at || turn.started_at;
+      const response = normalizeBridgeResponse(turn.response || turn.error);
+      const attachments = turn.attachments || [];
+      const hasAssistantOutput = Boolean(response || attachments.length);
+      return `<section class="cockpit-turn cockpit-turn--history" data-station-turn="${escapeHtml(turn.turn_id || `${stationSlug}-${index}`)}">
+        <div class="cockpit-turn__messages">
+          ${messageHtml({ author: 'You', text: turn.prompt, time: turn.started_at || time, operator: true })}
+          ${hasAssistantOutput ? messageHtml({
+            author: state.stationHistory[stationSlug]?.agent_name || displaySlug(stationSlug),
+            slug: stationSlug,
+            text: response,
+            time,
+            job: {
+              status: turn.error ? 'failed' : 'complete',
+              metadata: {
+                model: turn.model,
+                provider: turn.runtime,
+                usage_bucket: turn.usage_bucket,
+                usage: turn.usage,
+              },
+            },
+            attachments,
+          }) : ''}
+        </div>
+      </section>`;
+      }).join('');
+    const bridgeHtml = visibleJobs.map((job) => {
+      const response = resultText(job, jobEvents(job));
+      const identity = responseIdentity(job);
+      const objective = jobObjective(job);
+      return `<section class="cockpit-turn" data-job-id="${escapeHtml(job.job_id || '')}">
+        <div class="cockpit-turn__messages">
+          ${objective ? messageHtml({ author: 'You', text: objective, time: job.created_at, operator: true, job }) : ''}
+          ${response
+            ? messageHtml({ author: identity.author, slug: identity.slug, text: response, time: job.updated_at, job })
+            : workingMessageHtml(job, identity)}
+        </div>
+      </section>`;
+    }).join('');
+    nodes.feed.innerHTML = `${historySyncHtml}${historyHtml}${bridgeHtml}`;
+    if (wasNearLatest) nodes.feed.scrollTop = nodes.feed.scrollHeight;
+  }
+
+  async function loadStationHistory(agentSlug, { force = false } = {}) {
+    const slug = slugify(agentSlug);
+    if (!slug || state.authRequired) return;
+    if (state.stationHistoryRequests[slug]) return state.stationHistoryRequests[slug];
+    if (!force && Date.now() - (state.stationHistoryUpdated[slug] || 0) < 15000) return;
+    if (!state.stationHistory[slug]) {
+      const cached = historyCache?.get(`history:${slug}`);
+      if (Array.isArray(cached?.items)) state.stationHistory[slug] = cached;
+    }
+    state.stationHistoryLoading.add(slug);
+    delete state.stationHistoryErrors[slug];
+    updateComposerState();
+    renderFeed();
+    const request = (async () => {
+      try {
+        const history = await fetchJson(
+          `${API}/bridge/conversations/agents/${encodeURIComponent(slug)}/history?limit=40`,
+          { timeoutMs: 10000 },
+        );
+        if (state.authRequired) return;
+        state.stationHistory[slug] = history;
+        state.stationHistoryLoaded[slug] = true;
+        state.stationHistoryUpdated[slug] = Date.now();
+        historyCache?.set(`history:${slug}`, history);
+      } catch (error) {
+        if ([401, 403].includes(Number(error.status))) {
+          delete state.stationHistory[slug];
+          historyCache?.clear();
+        }
+        state.stationHistoryErrors[slug] = error.message || 'Station history is unavailable';
+      } finally {
+        state.stationHistoryLoading.delete(slug);
+        delete state.stationHistoryRequests[slug];
+        if (slugify(selectedConversation()?.direct_agent_slug) === slug) { renderFeed(); renderRoom(); }
+        renderQuickChats();
+        updateComposerState();
+      }
+    })();
+    state.stationHistoryRequests[slug] = request;
+    return request;
+  }
+
+  function stationRequestFeedback(prompt) {
+    const minutes = Math.floor(Math.max(0, Date.now() - prompt.acceptedAt) / 60000);
+    const elapsed = minutes ? `${minutes} min ago` : 'just now';
+    const checked = prompt.lastCheckedAt ? ` Last checked ${new Date(prompt.lastCheckedAt).toLocaleTimeString()}.` : '';
+    if (state.authRequired) return `Request accepted ${elapsed}. Sign in to resume status checks; do not resend.`;
+    if (window.navigator.onLine === false) return `Request accepted ${elapsed}. You are offline. Checks resume when connected; do not resend.`;
+    if (prompt.checkError) return `Request accepted ${elapsed}. Status is temporarily unavailable; checking again automatically.${checked}`;
+    return `Request accepted ${elapsed}. ${prompt.phase === 'queued' ? 'Waiting for a response from the queue.' : 'Waiting for the station’s response.'}${checked} You can leave this chat and return.`;
+  }
+
+  async function waitForStationResponse(slug, knownTurnIds, submissionId, promptText, conversation = selectedConversation()) {
+    const prompt = conversationPrompt(conversation);
+    if (prompt.pollingId === submissionId) return;
+    prompt.pollingId = submissionId;
+    const busy = () => ['submitting', 'queued', 'running'].includes(prompt.phase);
+    try {
+      while (prompt.stationSlug === slug && prompt.jobId === `station:${submissionId}` && busy()) {
+        try {
+          if (window.navigator.onLine === false || state.authRequired) throw new Error('Status checks paused');
+          const history = await fetchJson(
+            `${API}/bridge/conversations/agents/${encodeURIComponent(slug)}/history?limit=40`,
+            { timeoutMs: 6500 },
+          );
+          if (prompt.jobId !== `station:${submissionId}`) return;
+          state.stationHistory[slug] = history;
+          historyCache?.set(`history:${slug}`, history);
+          state.stationHistoryUpdated[slug] = Date.now();
+          prompt.lastCheckedAt = Date.now();
+          prompt.checkError = '';
+          const completed = (history.items || []).find((turn, index) => {
+            const id = String(turn.turn_id || `${turn.started_at || ''}:${index}`);
+            const hasOutput = Boolean(turn.response || turn.error || (turn.attachments || []).length);
+            if (!hasOutput) return false;
+            const turnSubmissionId = String(turn.submission_id || '').trim();
+            if (turnSubmissionId) return turnSubmissionId === submissionId;
+            // Legacy history without receipt IDs must be newer than acceptance.
+            const rawTime = turn.started_at;
+            const started = typeof rawTime === 'number' ? rawTime * (rawTime < 1e12 ? 1000 : 1) : Date.parse(rawTime);
+            return !knownTurnIds.has(id) && started >= (prompt.submittedAt || prompt.acceptedAt) - 5000
+              && String(turn.prompt || '').trim() === promptText;
+          });
+          if (completed) {
+            saveStationRequest(conversation, null);
+            setConversationPromptPhase(conversation, completed.error ? 'failed' : 'complete', {
+              error: completed.error || '',
+            });
+            renderFeed();
+            return;
+          }
+        } catch (error) {
+          prompt.checkError = error.message || 'Status unavailable';
+        }
+        updateComposerState();
+        renderFeed();
+        // A monitoring timeout is not evidence of task failure. Back off, retain the
+        // receipt, and keep read-only checks going for as long as this page is open.
+        const age = Date.now() - (prompt.acceptedAt || Date.now());
+        await new Promise(resolve => window.setTimeout(resolve,
+          prompt.checkError || document.hidden ? 30000 : age > 60000 ? 15000 : 3000));
+      }
+    } finally {
+      if (prompt.pollingId === submissionId) prompt.pollingId = '';
+    }
+  }
+
+  function renderJobFeed() {
+    const wasNearLatest = (
+      nodes.feed.scrollHeight - nodes.feed.scrollTop - nodes.feed.clientHeight
+    ) < 80;
+    const snapshot = state.activity || {};
+    const job = snapshot.job || state.jobs.find((item) => item.job_id === state.selectedJobId);
+    if (!job) return renderGeneralFeed();
+    const events = snapshot.events || [];
+    const response = resultText(job, events);
+    const identity = responseIdentity(job);
+    const eventRows = events
+      .filter((event) => !/job\.created/.test(event.event_type || ''))
+      .map(eventHtml)
+      .join('');
+    nodes.feed.innerHTML = `<section class="cockpit-turn cockpit-turn--selected" data-job-id="${escapeHtml(job.job_id || '')}">
+      <div class="cockpit-turn__messages">
+        ${jobObjective(job) ? messageHtml({ author: 'You', text: jobObjective(job), time: job.created_at, operator: true, job }) : ''}
+        ${eventRows ? `<div class="cockpit-event-stack">${eventRows}</div>` : ''}
+        ${response
+          ? messageHtml({ author: identity.author, slug: identity.slug, text: response, time: job.updated_at, job })
+          : workingMessageHtml(job, identity)}
+      </div>
+    </section>`;
+    if (wasNearLatest) nodes.feed.scrollTop = nodes.feed.scrollHeight;
+  }
+
+  function renderAttention() {
+    const items = attentionItems().filter((item) => (
+      state.view === 'global-attention' || item.group === state.group
+    ));
+    if (!items.length) {
+      emptyFeed('No items need attention', 'Approvals, blocked jobs, and runtime failures will appear here.', 'norman', '!');
+      return;
+    }
+    nodes.feed.innerHTML = items.map((item) => {
+      const group = state.groups.find((candidate) => candidate.id === item.group);
+      const groupLabel = group?.label || item.group || 'Workspace';
+      if (item.type === 'command_approval') {
+        const approval = item.approval || {};
+        const destructive = String(approval.command_class || '').toLowerCase() === 'destructive';
+        const token = destructive ? String(approval.confirm_token || '') : '';
+        return `
+          <article class="cockpit-approval-card" data-approval-card="${escapeHtml(item.id)}">
+            <span class="cockpit-approval-card__mark">!</span>
+            <div class="cockpit-approval-card__body">
+              <div class="cockpit-approval-card__head">
+                <strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(groupLabel)}</span>
+              </div>
+              <small>${escapeHtml(item.detail)}</small>
+              ${approval.command_text ? `<code>${escapeHtml(approval.command_text)}</code>` : ''}
+              ${token ? `<label class="cockpit-approval-token"><span>Type <strong>${escapeHtml(token)}</strong> to approve</span><input type="text" autocomplete="off" spellcheck="false" data-approval-token></label>` : ''}
+              <div class="cockpit-action-error" data-approval-error hidden></div>
+              <div class="cockpit-approval-card__actions">
+                <button type="button" data-approval-kind="command" data-approval-id="${escapeHtml(approval.id)}" data-approval-action="reject">Reject</button>
+                <button type="button" data-approval-kind="command" data-approval-id="${escapeHtml(approval.id)}" data-approval-action="approve" data-required-token="${escapeHtml(token)}">Approve</button>
+              </div>
+            </div>
+          </article>`;
+      }
+      if (item.type === 'runtime_approval') {
+        return `
+          <article class="cockpit-approval-card" data-approval-card="${escapeHtml(item.id)}">
+            <span class="cockpit-approval-card__mark">!</span>
+            <div class="cockpit-approval-card__body">
+              <div class="cockpit-approval-card__head">
+                <strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(groupLabel)}</span>
+              </div>
+              <small>${escapeHtml(item.detail)}</small>
+              <label class="cockpit-approval-token"><span>Type <strong>ENABLE LIVE RUNTIME</strong> to approve</span><input type="text" autocomplete="off" spellcheck="false" data-approval-token></label>
+              <div class="cockpit-action-error" data-approval-error hidden></div>
+              <div class="cockpit-approval-card__actions">
+                <button type="button" data-approval-kind="runtime" data-runtime-job-id="${escapeHtml(item.job_id)}" data-approval-action="reject">Reject</button>
+                <button type="button" data-approval-kind="runtime" data-runtime-job-id="${escapeHtml(item.job_id)}" data-approval-action="approve" data-required-token="ENABLE LIVE RUNTIME">Approve</button>
+              </div>
+            </div>
+          </article>`;
+      }
+      return `
+        <button class="cockpit-attention-card" type="button" data-job-id="${escapeHtml(item.job_id)}">
+          <span class="cockpit-attention-card__mark"></span><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.detail)}</small></span>
+          <span class="cockpit-status">${escapeHtml(groupLabel)}</span>
+        </button>`;
+    }).join('');
+  }
+
+  function programDashboardOptions() {
+    return {
+      payload: state.programs, group: currentGroup(), agents: state.agents,
+      attention: attentionItems(), conversations: state.conversations,
+      loading: state.programsLoading, error: state.programsError,
+    };
+  }
+
+  async function loadPrograms({ force = false } = {}) {
+    if (state.authRequired || state.programsLoading) return;
+    if (!force && Date.now() - state.programsUpdated < 60000) return;
+    state.programs ||= historyCache?.get('programs');
+    state.programsLoading = true;
+    state.programsError = '';
+    renderFeed();
+    try {
+      const data = await fetchJson(`${API}/estate/applications`, { timeoutMs: 12000 });
+      if (!Array.isArray(data.applications)) throw new Error('Invalid program response');
+      if (state.authRequired) return;
+      state.programs = data;
+      state.programsUpdated = Date.now();
+      historyCache?.set('programs', data);
+    } catch (error) {
+      if ([401, 403].includes(Number(error.status))) {
+        state.programs = null;
+        historyCache?.clear();
+      }
+      state.programsError = 'Program data could not be refreshed';
+    } finally {
+      state.programsLoading = false;
+      renderFeed();
+    }
+  }
+
+  function renderFeed() {
+    const conversation = state.conversations?.find(item => item.conversation_id === state.selectedConversationId);
+    const conversationKey = conversation ? conversationIdentity(conversation) : state.selectedConversationId;
+    const context = `${state.authRequired}:${state.view}:${conversationKey}:${state.selectedJobId}`;
+    const sameContext = state.feedContext === context;
+    const top = nodes.feed.scrollTop;
+    const nearEnd = nodes.feed.scrollHeight - top - nodes.feed.clientHeight < 80;
+    const selection = window.getSelection?.();
+    // Leave an operator's text selection intact while copying a response.
+    if (sameContext && selection && !selection.isCollapsed && nodes.feed.contains(selection.anchorNode)) return;
+    state.feedPositions ||= new Map();
+    if (state.authRequired) {
+      state.feedPositions.clear();
+      state.messageContentCache?.clear();
+      state.messageContentCacheChars = 0;
+    }
+    if (!sameContext && state.feedContext && !state.authRequired) {
+      state.feedPositions.delete(state.feedContext);
+      state.feedPositions.set(state.feedContext, { top, nearEnd });
+      if (state.feedPositions.size > 50) state.feedPositions.delete(state.feedPositions.keys().next().value);
+    }
+    const remembered = !sameContext ? state.feedPositions.get(context) : null;
+    state.feedContext = context;
+    renderFeedContent();
+    if (sameContext && !nearEnd) nodes.feed.scrollTop = top;
+    else if (!sameContext && remembered) {
+      nodes.feed.scrollTop = remembered.nearEnd ? nodes.feed.scrollHeight : remembered.top;
+    } else if (!sameContext && !state.authRequired && (state.selectedConversationId || state.selectedJobId)) {
+      nodes.feed.scrollTop = nodes.feed.scrollHeight;
+    }
+    if (nodes.latestReply) updateReadingTools();
+  }
+
+  function renderFeedContent() {
+    root.dataset.activityView = String(state.view === 'activity' && !state.authRequired);
+    if (state.view === 'activity' && !state.authRequired) { root.dataset.homeDashboard = 'false'; renderActivity(); return; }
+    const home = !state.authRequired && state.view === 'general' && !state.selectedConversationId && !state.selectedJobId;
+    const enteringHome = home && root.dataset.homeDashboard !== 'true';
+    root.dataset.homeDashboard = String(home);
+    if (home && window.BridgeDashboard) {
+      nodes.feed.innerHTML = window.BridgeDashboard.render(programDashboardOptions());
+      if (enteringHome) nodes.feed.scrollTop = 0;
+      return;
+    }
+    if (state.authRequired) {
+      nodes.feed.innerHTML = `<div class="cockpit-feed__empty cockpit-auth-gate">
+        <span class="cockpit-auth-gate__mark">${iconHtml('key')}</span>
+        <h2>Log in to Norman</h2>
+        <p>Log in to load your rooms, agents, and station history.</p>
+        <button type="button" class="cockpit-auth-gate__action" data-sign-in>${iconHtml('key')}<span>Log in</span></button>
+      </div>`;
+      return;
+    }
+    if (state.view.includes('attention')) renderAttention();
+    else if (state.selectedJobId) renderJobFeed();
+    else renderGeneralFeed();
+    if (selectedConversation()?.kind === 'direct' && window.BridgeDashboard && state.programs) {
+      const nearEnd = nodes.feed.scrollHeight - nodes.feed.scrollTop - nodes.feed.clientHeight < 80;
+      const context = window.BridgeDashboard.context({ ...programDashboardOptions(), slug: selectedConversation().direct_agent_slug });
+      if (context) nodes.feed.insertAdjacentHTML('afterbegin', context);
+      if (nearEnd) nodes.feed.scrollTop = nodes.feed.scrollHeight;
+    }
+  }
+
+  function renderRoom() {
+    if (state.authRequired) {
+      nodes.roomTitle.innerHTML = entityCartoucheHtml('Norman Bridge', {
+        slug: 'norman',
+        kind: 'tui',
+        mark: 'N',
+        decorator: 'LOCKED',
+      });
+      nodes.roomSubtitle.textContent = 'Secure session required.';
+      nodes.message.placeholder = 'Log in to message Norman';
+      return;
+    }
+    const group = currentGroup();
+    const domain = currentDomain();
+    const conversation = selectedConversation();
+    let title = domain ? `${group.label} / ${domain.display_name}` : `${group.label} / General`;
+    let subtitle = domain ? `${domain.kind || 'Operational'} workspace` : 'Your chats and tasks in this workspace.';
+    let mark = domain ? String(domain.display_name).slice(0, 1).toUpperCase() : group.mark;
+    if (conversation) {
+      const directAgent = conversation.kind === 'direct'
+        ? state.agents.find((item) => slugify(item.slug) === slugify(conversation.direct_agent_slug))
+        : null;
+      title = conversation.title || directAgent?.display_name || displaySlug(conversation.direct_agent_slug);
+      const memberCount = (conversation.member_slugs || []).length;
+      subtitle = conversation.kind === 'room'
+        ? `${memberCount} bot${memberCount === 1 ? '' : 's'} in this room`
+        : (directAgent?.domain_name || directAgent?.class_name || 'Direct message');
+      const preview = conversationPreview(conversation);
+      if (preview) subtitle = `Last task: ${preview}`;
+      if (conversation._local_only) subtitle += ' · Saved on this device';
+      mark = conversation.kind === 'room'
+        ? '#'
+        : identityContract(conversation.direct_agent_slug).mark;
+    } else if (state.view === 'activity') {
+      title = 'Activity'; subtitle = 'Tasks and deliveries across your chats'; mark = '◷';
+    } else if (state.view.includes('attention')) {
+      title = state.view === 'global-attention' ? 'All workspaces / Attention' : `${group.label} / Attention`;
+      subtitle = 'Approvals, blockers, and failed work.';
+      mark = '!';
+    } else if (state.selectedAgent) {
+      const agent = state.agents.find((item) => slugify(item.slug) === slugify(state.selectedAgent));
+      const texture = textureForSlug(state.selectedAgent);
+      title = agent?.display_name || displaySlug(state.selectedAgent);
+      subtitle = `${group.label} agent / ${agent?.domain_name || 'general'}`;
+      mark = texture?.mark || String(agent?.display_name || state.selectedAgent || '?').slice(0, 1).toUpperCase();
+    } else if (state.selectedJobId) {
+      const job = state.jobs.find((item) => item.job_id === state.selectedJobId);
+      title = truncate(jobObjective(job) || 'Workstream', 68);
+      subtitle = `${group.label} workstream / ${job?.status || 'loading'}`;
+      mark = '[]';
+    }
+    const activeSlug = conversation?.direct_agent_slug || state.selectedAgent || responseIdentity(
+      state.activity?.job || state.jobs.find((item) => item.job_id === state.selectedJobId),
+    ).slug || 'norman';
+    const cartoucheKind = state.view.includes('attention') ? 'service' : 'tui';
+    nodes.roomTitle.innerHTML = entityCartoucheHtml(title, {
+      slug: activeSlug,
+      kind: cartoucheKind,
+      group: state.view.includes('attention') ? 'shared' : identityContract(activeSlug).group,
+      mark,
+      decorator: state.view.includes('attention') ? 'OPS' : 'TUI',
+    });
+    nodes.roomSubtitle.textContent = subtitle;
+    nodes.roomSubtitle.title = subtitle;
+    nodes.message.placeholder = `Message ${conversation ? title : (state.selectedAgent ? title : (domain?.display_name || group.label))}`;
+  }
+
+  function renderRecipients() {
+    if (state.authRequired) {
+      nodes.recipientRow.hidden = true;
+      nodes.selectedRecipients.innerHTML = '';
+      state.composeHintDefault = 'Sign in to send';
+      updateComposerState();
+      return;
+    }
+    const conversation = selectedConversation();
+    nodes.recipientRow.hidden = conversation?.kind !== 'room';
+    nodes.selectedRecipients.innerHTML = state.selectedRecipients.map((slug) => {
+      const agent = state.agents.find((item) => slugify(item.slug) === slugify(slug));
+      const label = agent?.display_name || displaySlug(slug);
+      return `<button class="cockpit-recipient" type="button" data-remove-recipient="${escapeHtml(slug)}"
+        aria-label="Remove ${escapeHtml(label)}">${entityCartoucheHtml(label, {
+          slug,
+          kind: 'bot',
+          decorator: '×',
+        })}</button>`;
+    }).join('');
+    const names = state.selectedRecipients.map((slug) => (
+      state.agents.find((item) => slugify(item.slug) === slugify(slug))?.display_name || slug
+    ));
+    state.composeHintDefault = '';
+    updateComposerState();
+  }
+
+  function renderInspector() {
+    const job = state.activity?.job
+      || state.jobs.find((item) => item.job_id === state.selectedJobId);
+    if (!job) {
+      nodes.jobDetails.innerHTML = '<div class="cockpit-detail-empty">Select a workstream to inspect its route, state, and artifacts.</div>';
+      nodes.openJob.disabled = true;
+      nodes.cancelJob.disabled = true;
+    } else {
+      const route = jobContract(job).route_policy || {};
+      const checkpointCount = (job.checkpoint_capsules || []).length;
+      const artifactCount = (job.artifacts || state.workstream?.artifacts || []).length;
+      nodes.jobDetails.innerHTML = [
+        ['Status', job.status || 'unknown'],
+        ['Job', job.job_id],
+        ['Workstream', job.workstream_id || 'standalone'],
+        ['Parent', job.parent_job_id || 'none'],
+        ['Principal', currentGroup().label],
+        ['Lane', jobDomain(job) || 'general'],
+        ['Provider', route.provider || route.preferred_provider || 'policy'],
+        ['Model', route.model || 'policy selected'],
+        ['Checkpoints', String(checkpointCount)],
+        ['Artifacts', String(artifactCount)],
+        ['Updated', formatTime(job.updated_at || job.created_at)],
+      ].map(([label, value]) => `<div class="cockpit-detail"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`).join('');
+      nodes.openJob.disabled = false;
+      nodes.cancelJob.disabled = ['done', 'failed', 'canceled'].includes(job.status);
+    }
+    const recipients = new Set(['norman', ...state.selectedRecipients]);
+    for (const recipient of (job ? jobMetadata(job).recipients || [] : [])) recipients.add(recipient);
+    nodes.participants.innerHTML = [...recipients].map((slug) => {
+      const name = slug === 'norman'
+        ? 'Norman'
+        : state.agents.find((item) => slugify(item.slug) === slugify(slug))?.display_name || slug;
+      return `<span class="cockpit-participant">${entityCartoucheHtml(name, {
+        slug,
+        kind: 'bot',
+        decorator: '◈',
+      })}</span>`;
+    }).join('');
+    renderCrew();
+  }
+
+  function renderCrew() {
+    const tasks = state.workstream?.subtasks || [];
+    nodes.crewSection.hidden = tasks.length === 0;
+    if (!tasks.length) {
+      nodes.crewList.innerHTML = '';
+      return;
+    }
+    nodes.crewList.innerHTML = tasks.map((task) => {
+      const metadata = jobMetadata(task);
+      const recipient = metadata.agent || metadata.target_agent || (metadata.recipients || [])[0] || 'Norman';
+      const status = String(task.status || 'queued').toLowerCase();
+      const tone = ['done', 'completed', 'running'].includes(status)
+        ? 'ok'
+        : ['blocked', 'failed', 'waiting_approval', 'error'].includes(status) ? 'warn' : 'neutral';
+      return `
+        <button class="cockpit-crew-item" type="button" data-job-id="${escapeHtml(task.job_id)}">
+          <span class="cockpit-crew-item__state" data-tone="${tone}"></span>
+          <span><strong>${escapeHtml(truncate(task.objective || 'Subtask', 48))}</strong><small>${escapeHtml(recipient)}</small></span>
+          <span>${escapeHtml(status)}</span>
+        </button>`;
+    }).join('');
+  }
+
+  function meterParts(node, label, value, detail, tone = 'neutral', fill = null) {
+    node.dataset.tone = tone;
+    node.querySelector('strong').textContent = value;
+    node.querySelector('small').textContent = label;
+    node.title = `${label}: ${value}${detail ? `. ${detail}` : ''}`;
+    node.setAttribute('aria-label', node.title);
+    if (fill !== null) node.style.setProperty('--meter-fill', `${Math.max(0, Math.min(100, fill))}%`);
+  }
+
+  function renderRuntime() {
+    const status = String(state.worker.status || '').toLowerCase();
+    const authRequired = state.authRequired;
+    const available = !authRequired && state.worker._available !== false;
+    renderConnection();
+
+    const runtimeJobs = recentBridgeRuntimeJobs();
+    const running = runtimeJobs.filter((job) => ['running', 'executing', 'planning'].includes(job.status)).length;
+    const queued = runtimeJobs.filter((job) => ['queued', 'pending', 'accepted'].includes(job.status)).length;
+    const blocked = runtimeJobs.filter((job) => ['blocked', 'waiting_approval'].includes(job.status)).length;
+    const queueValue = blocked ? `${blocked} blocked` : running ? `${running} active` : queued ? `${queued} queued` : 'Clear';
+    meterParts(nodes.queueMeter, 'Queue', queueValue, `${queued} queued / ${running} running / ${blocked} blocked`, blocked ? 'warn' : running ? 'active' : 'ok');
+
+    const usage = state.routeSummary.usage_ledger || state.worker.usage_ledger || {};
+    const total = Number(usage.total_tokens || 0);
+    const offline = Number(usage.offline_tokens || 0);
+    const cloud = Number(usage.cloud_llm_tokens || 0);
+    const localPct = Number(usage.local_llm_percent || usage.offline_percent || 0);
+    meterParts(
+      nodes.tokenMeter,
+      'Tokens',
+      total ? compactNumber(total) : '--',
+      total ? `${compactNumber(offline)} local / ${compactNumber(cloud)} cloud` : 'Ledger empty',
+      total ? (localPct >= 80 ? 'ok' : localPct >= 60 ? 'watch' : 'warn') : 'neutral',
+      total ? localPct : 0,
+    );
+
+    const route = state.routeSummary.route || {};
+    const latest = state.routeSummary.latest || usage.latest || {};
+    const routeTotal = Number(route.total || 0);
+    const routeValue = latest.provider || (routeTotal ? `${Number(route.local_percent || 0)}% local` : 'Policy');
+    const routeDetail = latest.model || (routeTotal ? `${route.allowed || 0} allowed / ${route.blocked || 0} blocked` : 'No evidence');
+    meterParts(nodes.routeMeter, 'Route', routeValue, routeDetail, Number(route.blocked || 0) ? 'warn' : routeTotal ? 'ok' : 'neutral');
+
+    const known = filteredAgents().length;
+    const live = filteredAgents().filter(heartbeatFor).length;
+    meterParts(
+      nodes.agentMeter,
+      'Agents',
+      live ? `${live} live` : `${known} known`,
+      `${live} recent heartbeat${live === 1 ? '' : 's'} / ${known} known`,
+      live ? 'ok' : 'neutral',
+    );
+
+    const warnings = attentionItems();
+    meterParts(nodes.warningMeter, 'Alerts', warnings.length ? String(warnings.length) : 'Clear', warnings.length ? 'Approval or runtime hold' : 'No holds', warnings.length ? 'warn' : 'ok');
+    nodes.menuCount.textContent = String(warnings.length);
+    nodes.menuCount.classList.toggle('d-none', warnings.length === 0);
+    setBridgeFavicon(!available || warnings.length ? 'warn' : running ? 'active' : 'ready');
+
+    nodes.warningStrip.hidden = available && warnings.length === 0;
+    if (!nodes.warningStrip.hidden) {
+      nodes.warningTitle.textContent = !available
+        ? authRequired
+          ? 'Log in to connect Norman'
+          : 'Runtime is unavailable'
+        : `${warnings.length} item${warnings.length === 1 ? '' : 's'} need attention`;
+      nodes.warningDetail.textContent = !available
+        ? authRequired
+          ? 'Device-saved chats remain available, but syncing and agent runs require an authenticated session.'
+          : 'Known agents and saved chats remain visible, but new jobs cannot execute until the runtime reconnects.'
+        : 'Review approvals, blocked work, and failed runs.';
+      nodes.warningAction.textContent = authRequired ? 'Log in' : 'Review';
+      nodes.warningAction.dataset.authAction = authRequired ? 'sign-in' : '';
+    }
+    void status;
+  }
+
+  function renderAttentionCounts() {
+    const count = attentionItems().length;
+    for (const target of [nodes.attentionCount, nodes.navAttentionCount]) {
+      target.textContent = String(count);
+      target.classList.toggle('d-none', count === 0);
+    }
+  }
+
+  function menuRows(panel) {
+    const usage = state.routeSummary.usage_ledger || state.worker.usage_ledger || {};
+    const route = state.routeSummary.route || {};
+    const warnings = attentionItems();
+    const rows = {
+      overview: [
+        ['Workspace', currentGroup().label],
+        ['Chat', selectedConversation()?.title || displaySlug(state.selectedAgent || 'norman')],
+        ['Sounds', state.preferences.feedbackSounds],
+        ['Connection', nodes.runtimeStatus.textContent],
+        ['Tasks', String(filteredJobs().length)],
+      ],
+      route: [
+        ['Route decisions', String(route.total || 0)],
+        ['Allowed', String(route.allowed || 0)],
+        ['Blocked', String(route.blocked || 0)],
+        ['Local share', route.total ? `${route.local_percent || 0}%` : 'Unavailable'],
+      ],
+      queues: [
+        ['Runnable', String(state.worker.runnable_count || 0)],
+        ['Running', String(state.jobs.filter((job) => job.status === 'running').length)],
+        ['Waiting approval', String(state.jobs.filter((job) => job.status === 'waiting_approval').length)],
+        ['Failed', String(state.jobs.filter((job) => job.status === 'failed').length)],
+      ],
+      usage: [
+        ['Tracked tokens', usage.total_tokens ? compactNumber(usage.total_tokens) : 'Unavailable'],
+        ['Local/offline', usage.offline_tokens ? compactNumber(usage.offline_tokens) : '--'],
+        ['Cloud LLM', usage.cloud_llm_tokens ? compactNumber(usage.cloud_llm_tokens) : '--'],
+        ['Local LLM share', usage.total_tokens ? `${usage.local_llm_percent || 0}%` : '--'],
+      ],
+      agents: [
+        ['Bots in workspace', String(filteredAgents().length)],
+        ['Recent heartbeats', String(filteredAgents().filter(heartbeatFor).length)],
+        ['All bots', String(state.agents.length)],
+        ['Selected', state.selectedAgent || 'None'],
+      ],
+      warnings: warnings.length
+        ? warnings.slice(0, 8).map((item) => [truncate(item.title, 34), truncate(item.detail, 46)])
+        : [['Status', 'No approvals or blocked work']],
+    };
+    return rows[panel] || rows.overview;
+  }
+
+  function renderMenuPanel() {
+    nodes.menuPanel.innerHTML = menuRows(state.menuPanel).map(([label, value]) => (
+      `<div class="cockpit-menu__row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`
+    )).join('');
+  }
+
+  const chatNavigation = window.BridgeNavigation?.createPreferences(root.dataset.cacheOwner);
+
+  function renderConnection() {
+    const node = nodes.runtimeStatus;
+    if (!node || !window.BridgeNavigation) return;
+    const status = window.BridgeNavigation.connectionLabel({
+      online: navigator.onLine !== false, authenticated: !state.authRequired,
+      connected: state.connection.connected, failed: state.connection.failed,
+    });
+    const label = node.querySelector('.cockpit-transport__label');
+    if (label.textContent !== status.label) label.textContent = status.label;
+    const glyph = node.querySelector('.cockpit-transport__icon');
+    const icon = status.tone === 'ok' ? 'radio' : 'alert';
+    if (glyph.dataset.icon !== icon) {
+      glyph.innerHTML = iconHtml(icon);
+      glyph.dataset.icon = icon;
+    }
+    node.dataset.tone = status.tone;
+    node.title = status.detail;
+    node.setAttribute('role', 'status');
+    node.setAttribute('aria-live', 'polite');
+    if (nodes.menuTransport && nodes.menuTransport.textContent !== status.label) nodes.menuTransport.textContent = status.label;
+  }
+
+  function conversationPreview(conversation) {
+    if (!conversation || state.authRequired) return '';
+    const candidates = [];
+    const job = latestConversationJob(conversation);
+    if (job) candidates.push({ text: jobObjective(job), at: job.created_at || job.updated_at });
+    if (conversation.kind === 'direct') {
+      const slug = slugify(conversation.direct_agent_slug);
+      const history = state.stationHistory[slug] || historyCache?.get(`history:${slug}`);
+      for (const turn of history?.items || []) {
+        if (turn.prompt) candidates.push({ text: turn.prompt, at: turn.started_at });
+      }
+    }
+    candidates.sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
+    return truncate(String(candidates[0]?.text || '').replace(/\s+/g, ' ').trim(), 100);
+  }
+
+  function renderQuickChats() {
+    const list = el('bridge-quick-chats');
+    const pin = el('bridge-pin-chat');
+    const current = selectedConversation();
+    if (pin) {
+      pin.hidden = state.authRequired || !current;
+      const pinned = current && chatNavigation?.pinned(current);
+      pin.textContent = pinned ? '★' : '☆';
+      pin.setAttribute('aria-pressed', String(Boolean(pinned)));
+      pin.setAttribute('aria-label', pinned ? 'Unpin chat' : 'Pin chat');
+      pin.title = pinned ? 'Unpin chat' : 'Pin chat';
+    }
+    if (!list || !chatNavigation) return;
+    const chats = state.authRequired ? [] : chatNavigation.list(state.conversations, state.search);
+    if (!state.authRequired && !state.search && current && !chats.some(c => c.conversation_id === current.conversation_id)) chats.unshift(current);
+    updateNavigationMarkup(list, chats.length ? chats.map(c => `<button class="bridge-quick-chat ${c.conversation_id === state.selectedConversationId ? 'is-active' : ''}"
+      type="button" data-conversation-id="${escapeHtml(c.conversation_id)}">
+      <span aria-hidden="true">${chatNavigation.pinned(c) ? '★' : '◷'}</span>
+      <span><strong>${escapeHtml(c.title || displaySlug(c.direct_agent_slug))}</strong><small>${escapeHtml(c.principal_slug || 'Chat')}${conversationPreview(c) ? ` · ${escapeHtml(conversationPreview(c))}` : ''}</small></span>
+      ${chatNavigation.pinned(c) ? '<span class="visually-hidden">Pinned</span>' : ''}</button>`).join('')
+      : state.search
+        ? '<div class="cockpit-nav-empty">No matching recent chats.</div>'
+        : '<div class="cockpit-nav-empty">Your recent chats appear here. Use the star to pin a favorite.</div>');
+  }
+
+  function renderActivity() {
+    const pending = state.conversations.map(conversation => ({ conversation, delivery: pendingDelivery(conversation) })).filter(x => x.delivery);
+    const active = ['running', 'executing', 'planning', 'queued', 'pending', 'accepted', 'blocked', 'waiting_approval'];
+    const jobs = [...state.jobs].sort((a,b) => Number(active.includes(b.status)) - Number(active.includes(a.status))
+      || (Date.parse(b.updated_at || b.created_at) || 0) - (Date.parse(a.updated_at || a.created_at) || 0)).slice(0, 40);
+    const cards = pending.map(({conversation:c, delivery:d}) => `<article class="bridge-activity-card" data-state="unconfirmed">
+      <span class="bridge-activity-state">Delivery unconfirmed · ${escapeHtml(c.title || c.direct_agent_slug)}</span>
+      <p>${escapeHtml(truncate(d.message, 240))}</p>
+      <button type="button" data-check-delivery="${escapeHtml(c.conversation_id)}">Check delivery</button>
+    </article>`);
+    for (const conversation of state.conversations) {
+      resumeStationRequest(conversation);
+      const prompt = conversationPrompt(conversation);
+      if (!prompt.stationSlug || !['queued', 'running'].includes(prompt.phase)) continue;
+      cards.push(`<article class="bridge-activity-card" data-state="running"><span class="bridge-activity-state">Accepted · ${escapeHtml(displaySlug(prompt.stationSlug))}</span>
+        <p>${escapeHtml(truncate(prompt.objective, 240))}</p><p>${escapeHtml(stationRequestFeedback(prompt))}</p><button type="button" data-agent="${escapeHtml(prompt.stationSlug)}">Open chat</button></article>`);
+    }
+    for (const job of jobs) {
+      const labels = { running: 'Working', executing: 'Working', planning: 'Planning', queued: 'Queued', pending: 'Pending', accepted: 'Accepted', blocked: 'Needs attention', waiting_approval: 'Needs approval', completed: 'Completed', done: 'Completed', failed: 'Failed', canceled: 'Canceled' };
+      cards.push(`<article class="bridge-activity-card" data-state="${escapeHtml(job.status)}">
+        <span class="bridge-activity-state">${escapeHtml(labels[job.status] || job.status || 'Unknown')} · ${escapeHtml(formatTime(job.updated_at || job.created_at))}</span>
+        <p>${escapeHtml(truncate(jobObjective(job), 240))}</p>
+        <button type="button" data-job-id="${escapeHtml(job.job_id)}">View task</button></article>`);
+    }
+    nodes.feed.innerHTML = `<section class="bridge-activity"><h2>Activity</h2><p class="bridge-activity-intro">Known tasks and deliveries across your chats. Open a task for details or check an unconfirmed send.</p>${cards.join('') || '<p>No recent tasks or unconfirmed sends.</p>'}</section>`;
+  }
+
+  function setActivityView() {
+    saveComposerDraft();
+    state.view = 'activity';
+    state.selectedConversationId = '';
+    state.selectedAgent = '';
+    state.selectedJobId = '';
+    state.activity = null;
+    state.workstream = null;
+    closeEventStream();
+    restoreComposerDraft(null);
+    renderAll();
+    closeDrawers();
+  }
+
+  function renderAll() {
+    renderQuickChats();
+    renderGroups();
+    renderDomains();
+    renderWorkstreams();
+    renderAgents();
+    renderRoom();
+    renderRecipients();
+    renderAttentionCounts();
+    renderInspector();
+    renderRuntime();
+    renderMenuPanel();
+    renderFeed();
+    updateComposerState();
+    syncMicrotexture();
+  }
+
+  function applyEstateDirectory(directory, { cached = false } = {}) {
+    state.nonConversationalStationSlugs = new Set(
+      directory.bridge?.non_conversational_station_slugs || [],
+    );
+    state.groups = normalizeGroups(directory);
+    if (!state.groups.some((group) => group.id === state.group)) state.group = state.groups[0].id;
+    state.agents = normalizeAgents(directory);
+    if (requestedAgent && !state.requestedAgentApplied) {
+      const requested = state.agents.find((agent) => slugify(agent.slug) === slugify(requestedAgent));
+      if (requested) {
+        state.group = requested.principal_id;
+        state.domain = requested.domain_slug;
+        state.selectedAgent = requested.slug;
+        state.selectedRecipients = [requested.slug];
+        state.view = 'agent';
+      }
+      state.requestedAgentApplied = true;
+    }
+    if (!cached) historyCache?.set('directory', directory);
+    renderAll();
+  }
+
+  async function loadBootstrap({ quiet = false } = {}) {
+    if (state.loading) return;
+    const showBootInterstitial = (!quiet || !state.bootstrapped) && !historyCache?.get('directory');
+    let bootHandoffTimer = 0;
+    let bootHandedOff = false;
+    state.loading = true;
+    state.boot.completed = 0;
+    state.boot.total = 0;
+    if (!showBootInterstitial && nodes.bootInterstitial) {
+      nodes.bootInterstitial.hidden = true;
+      window.clearInterval(state.boot.activityTimer);
+      window.clearTimeout(state.boot.dismissTimer);
+    }
+    if (showBootInterstitial) {
+      startBootActivity();
+      updateBootInterstitial({
+        phase: 'Loading chats',
+        detail: 'Loading conversations and connection status',
+        completed: 0,
+        total: 8,
+      });
+      // The shell and active direct session are already usable after first
+      // paint. Do not keep them behind unrelated dashboard telemetry.
+      bootHandoffTimer = window.setTimeout(() => {
+        if (state.loading) {
+          bootHandedOff = true;
+          updateBootInterstitial({
+            phase: 'Refreshing in the background',
+            detail: 'You can continue using your chats',
+            completed: state.boot.completed,
+            total: state.boot.total || 7,
+            complete: true,
+          });
+        }
+      }, 1400);
+    }
+    const localConversations = loadLocalConversations();
+    if (!state.conversations.length && localConversations.length) {
+      state.conversations = localConversations;
+    }
+    if (!quiet) renderRuntime();
+
+    // Keep Norman available while the actual console directory loads.
+    if (!state.authRequired && state.agents.length <= 1) {
+      state.agents = provisionalAgents();
+    }
+    state.bootstrapped = true;
+    const bootstrapConversation = restoreActiveConversation();
+    restoreComposerDraft(bootstrapConversation);
+    renderAll();
+    if (bootstrapConversation?.kind === 'direct' && bootstrapConversation.direct_agent_slug) {
+      void loadStationHistory(bootstrapConversation.direct_agent_slug);
+    }
+
+    const cachedDirectory = historyCache?.get('directory');
+    if (!quiet && !state.authRequired && cachedDirectory) applyEstateDirectory(cachedDirectory, { cached: true });
+
+    void loadPrograms();
+
+    const textureCatalogRequest = fetchJson(
+      '/static/textures/tui_microtexture_reference.json',
+      { timeoutMs: 3000 },
+    );
+    const pendingRequests = [
+      fetchEstateDirectory().then((directory) => {
+        if (!state.authRequired) applyEstateDirectory(directory);
+        return directory;
+      }),
+      fetchJson(`${API}/console-runtime/jobs?limit=200`, { timeoutMs: 8000 }),
+      fetchJson(`${API}/approvals/?status=pending&limit=100`, { timeoutMs: 8000 }),
+      fetchJson('/api/console-ui/heartbeats', { timeoutMs: 6000 }),
+      fetchJson(`${API}/console-runtime/worker/status`, { timeoutMs: 6000 }),
+      fetchJson(`${API}/console-runtime/route-summary?limit=1000`, { timeoutMs: 8000 }),
+      fetchJson(`${API}/bridge/conversations`, { timeoutMs: 8000 }).then((data) => {
+        if (!state.authRequired) {
+          mergeConversations(data.items || [], state.conversations.filter((item) => item._local_only));
+          const active = restoreActiveConversation();
+          renderAll();
+          if (active?.direct_agent_slug) void loadStationHistory(active.direct_agent_slug);
+        }
+        return data;
+      }),
+    ];
+
+    state.boot.total = pendingRequests.length;
+    const requests = await Promise.allSettled(pendingRequests.map((request) => request.finally(() => {
+      state.boot.completed += 1;
+      if (showBootInterstitial && !bootHandedOff) {
+        bootUpdateForRequest(state.boot.completed, state.boot.total);
+      }
+    })));
+    const [estate, jobs, approvals, heartbeats, worker, routeSummary, conversations] = requests;
+    if (heartbeats.status === 'fulfilled') state.heartbeats = heartbeats.value.items || [];
+    if (jobs.status === 'fulfilled') state.jobs = jobs.value.items || [];
+    if (approvals.status === 'fulfilled') state.approvals = approvals.value || [];
+    const workerAuthRequired = (
+      worker.status === 'rejected'
+      && Number(worker.reason?.status) === 401
+    );
+    state.worker = worker.status === 'fulfilled'
+      ? { ...worker.value, _available: true, _statusDelayed: false }
+      : workerAuthRequired
+        ? {
+            _available: false,
+            _authRequired: true,
+            error: worker.reason?.message || 'Login required',
+          }
+        : {
+            ...state.worker,
+            _available: true,
+            _statusDelayed: true,
+            status_error: worker.reason?.message || 'Runtime telemetry delayed',
+          };
+    state.authRequired = state.authRequired || state.worker._authRequired === true;
+    root.dataset.authenticated = state.authRequired ? 'false' : 'true';
+    if (routeSummary.status === 'fulfilled') state.routeSummary = routeSummary.value || {};
+    if (state.authRequired) {
+      historyCache?.clear();
+      state.stationHistory = {};
+      state.programs = null;
+      state.groups = [FALLBACK_GROUP];
+      state.group = FALLBACK_GROUP.id;
+      state.domain = '';
+      state.jobs = [];
+      state.approvals = [];
+      state.heartbeats = [];
+      state.agents = [{ ...FALLBACK_NORMAN }];
+      state.selectedJobId = '';
+      state.selectedAgent = '';
+      state.selectedRecipients = [];
+      state.view = 'general';
+    } else {
+      restoreAfterSignIn();
+    }
+    if (conversations.status === 'fulfilled') {
+      mergeConversations(conversations.value.items || [], [
+        ...localConversations,
+        ...state.conversations.filter((item) => item._local_only),
+      ]);
+    } else {
+      mergeConversations([], [
+        ...state.conversations.filter((item) => item._local_only),
+        ...localConversations,
+      ]);
+    }
+    discardNonConversationalDirectConversations();
+    const restoredConversation = restoreActiveConversation();
+    restoreComposerDraft(restoredConversation);
+    state.loading = false;
+    if (bootHandoffTimer) window.clearTimeout(bootHandoffTimer);
+    if (showBootInterstitial && !bootHandedOff) {
+      updateBootInterstitial({
+        phase: 'Chats loaded',
+        detail: 'Your workspace is live',
+        completed: state.boot.total,
+        total: state.boot.total,
+        complete: true,
+      });
+    }
+    reconcilePromptState();
+    renderAll();
+    void textureCatalogRequest.then((textureCatalog) => {
+      state.textureCatalog = Array.isArray(textureCatalog)
+        ? textureCatalog
+        : textureCatalog.items || textureCatalog.agents || [];
+      if (!state.authRequired) state.agents = mergeCatalogAgents(state.agents);
+      renderAll();
+    }).catch(() => {});
+    const conversation = restoredConversation || selectedConversation();
+    if (conversation?.kind === 'direct' && conversation.direct_agent_slug) {
+      void loadStationHistory(conversation.direct_agent_slug);
+    }
+    if (conversation) void hydrateConversationActivities(conversation);
+  }
+
+  async function hydrateConversationActivities(conversation) {
+    if (!conversation || conversation.kind === 'direct' || state.authRequired) return;
+    const jobs = state.jobs
+      .filter((job) => isBridgeJob(job) && conversationJob(job, conversation))
+      .slice(0, 16);
+    const missing = jobs.filter((job) => (
+      job?.job_id
+      && !state.jobActivities[job.job_id]
+      && !resultText(job)
+    ));
+    if (!missing.length) return;
+    await Promise.allSettled(missing.map(async (job) => {
+      state.jobActivities[job.job_id] = await fetchJson(
+        `${API}/console-runtime/jobs/${encodeURIComponent(job.job_id)}?limit=80`,
+      );
+    }));
+    if (state.selectedConversationId === conversation.conversation_id) {
+      renderAgents();
+      renderFeed();
+    }
+  }
+
+  async function loadSelectedActivity({ quiet = false } = {}) {
+    const jobId = state.selectedJobId;
+    if (!jobId) return;
+    const requestId = (state.activityRequestId || 0) + 1;
+    state.activityRequestId = requestId;
+    const isCurrent = () => state.selectedJobId === jobId && state.activityRequestId === requestId;
+    try {
+      const activity = await fetchJson(`${API}/console-runtime/jobs/${encodeURIComponent(jobId)}?limit=300`);
+      if (!isCurrent()) return;
+      const job = activity.job || {};
+      const workstream = job.workstream_id
+        ? await fetchJson(`${API}/console-runtime/workstreams/${encodeURIComponent(job.workstream_id)}`).catch(() => null)
+        : null;
+      if (!isCurrent()) return;
+      state.activity = activity;
+      state.workstream = workstream;
+      state.lastEventSequence = Math.max(
+        0,
+        ...(activity.events || []).map((event) => Number(event.sequence || 0)),
+      );
+      reconcilePromptState();
+      renderFeed();
+      renderInspector();
+      renderRoom();
+      connectJobEventStream(jobId);
+    } catch (error) {
+      if (isCurrent() && !quiet) nodes.feed.innerHTML = `<div class="cockpit-nav-empty">${escapeHtml(error.message)}</div>`;
+    }
+  }
+
+  function closeEventStream() {
+    if (state.eventSource) state.eventSource.close();
+    state.eventSource = null;
+    state.eventSourceJobId = '';
+  }
+
+  function promptPhaseForEvent(type) {
+    if (/job\.(completed)|verification\.completed/.test(type)) return 'complete';
+    if (/job\.(failed|canceled)|runtime\.error/.test(type)) return 'failed';
+    if (/job\.blocked|approval\.(required)|job\.approval_required/.test(type)) return 'blocked';
+    if (/job\.started|model\.(started|requested|delta)|tool\.started|shell\.started|execution\.advisory_only/.test(type)) return 'running';
+    if (/job\.created/.test(type)) return 'queued';
+    return '';
+  }
+
+  function handleRuntimeEvent(message) {
+    const jobId = state.eventSourceJobId;
+    if (!message.data || !jobId) return;
+    let event;
+    try {
+      event = JSON.parse(message.data);
+    } catch {
+      return;
+    }
+    const sequence = Number(event.sequence || message.lastEventId || 0);
+    if (sequence && sequence <= state.lastEventSequence) return;
+    state.lastEventSequence = Math.max(state.lastEventSequence, sequence);
+    const type = String(event.event_type || '');
+    const phase = promptPhaseForEvent(type);
+    const job = state.jobs.find((item) => item.job_id === jobId);
+    const localStatus = {
+      queued: 'queued',
+      running: 'running',
+      blocked: 'blocked',
+      failed: 'failed',
+      complete: 'completed',
+    }[phase];
+    if (job && localStatus) job.status = localStatus;
+    const selected = state.selectedJobId === jobId;
+    state.jobActivities[jobId] ||= { job, events: [] };
+    state.jobActivities[jobId].job ||= job;
+    if (state.jobActivities[jobId].job && localStatus) {
+      state.jobActivities[jobId].job.status = localStatus;
+    }
+    state.jobActivities[jobId].events ||= [];
+    state.jobActivities[jobId].events.push(event);
+    if (selected) {
+      state.activity ||= { job, events: [] };
+      state.activity.job ||= job;
+      if (state.activity.job && localStatus) state.activity.job.status = localStatus;
+      state.activity.events ||= [];
+      state.activity.events.push(event);
+    }
+    if (state.prompt.jobId === jobId && phase) {
+      setPromptPhase(phase);
+    } else if (!phase) {
+      playInteractionTone('tick');
+    }
+    const identity = responseIdentity(job || state.activity?.job);
+    if (phase === 'complete') playCompletionBell(identity.slug);
+    if (selected) {
+      renderFeed();
+      renderInspector();
+      renderRoom();
+    } else {
+      renderFeed();
+    }
+    if (/job\.(completed|failed|blocked|canceled)|approval\.(approved|rejected)/.test(type)) {
+      loadBootstrap({ quiet: true });
+      if (selected) loadSelectedActivity({ quiet: true });
+    }
+  }
+
+  function connectJobEventStream(jobId) {
+    closeEventStream();
+    if (!jobId || typeof window.EventSource !== 'function') return;
+    state.eventSourceJobId = jobId;
+    const source = new EventSource(
+      `${API}/console-runtime/jobs/${encodeURIComponent(jobId)}/events/stream?after=${state.lastEventSequence}`,
+      { withCredentials: true },
+    );
+    const eventTypes = [
+      'job.created', 'job.started', 'job.completed', 'job.failed', 'job.blocked', 'job.canceled',
+      'job.checkpointed', 'job.approval_required', 'model.started', 'model.completed',
+      'tool.started', 'tool.completed', 'tool.failed', 'shell.started', 'shell.completed',
+      'planner.decision', 'route.decided', 'approval.required', 'approval.approved',
+      'approval.rejected', 'artifact.created', 'verification.completed', 'runtime.error',
+      'execution.advisory_only',
+    ];
+    eventTypes.forEach((type) => source.addEventListener(type, (message) => {
+      if (state.eventSource === source) handleRuntimeEvent(message);
+    }));
+    source.onerror = () => {
+      if (state.eventSource === source && source.readyState === EventSource.CLOSED) closeEventStream();
+    };
+    state.eventSource = source;
+  }
+
+  async function decideApproval(button) {
+    const card = button.closest('[data-approval-card]');
+    if (!card || state.decisionInFlight) return;
+    const action = button.dataset.approvalAction;
+    const kind = button.dataset.approvalKind;
+    const requiredToken = button.dataset.requiredToken || '';
+    const token = card.querySelector('[data-approval-token]')?.value.trim() || '';
+    const errorNode = card.querySelector('[data-approval-error]');
+    if (action === 'approve' && requiredToken && token !== requiredToken) {
+      errorNode.textContent = 'The confirmation phrase does not match.';
+      errorNode.hidden = false;
+      return;
+    }
+    state.decisionInFlight = `${kind}:${button.dataset.approvalId || button.dataset.runtimeJobId}`;
+    card.querySelectorAll('button').forEach((candidate) => { candidate.disabled = true; });
+    if (errorNode) errorNode.hidden = true;
+    try {
+      const decisionLabel = action === 'approve' ? 'approved' : 'rejected';
+      if (kind === 'command') {
+        await postJson(
+          `${API}/approvals/${encodeURIComponent(button.dataset.approvalId)}/${action}`,
+          { confirm_token: token, reason: `${decisionLabel} from Norman Bridge` },
+        );
+      } else {
+        await postJson(
+          `${API}/console-runtime/jobs/${encodeURIComponent(button.dataset.runtimeJobId)}/approval`,
+          {
+            decision: action,
+            reason: `${decisionLabel} from Norman Bridge`,
+            confirm_live_execution: action === 'approve' ? token : '',
+          },
+        );
+      }
+      playInteractionTone(action === 'approve' ? 'approve' : 'accepted', { signal: true, force: true });
+      await loadBootstrap({ quiet: true });
+      if (state.selectedJobId) await loadSelectedActivity({ quiet: true });
+    } catch (error) {
+      playInteractionTone('error', { signal: true });
+      if (errorNode) {
+        errorNode.textContent = error.message;
+        errorNode.hidden = false;
+      }
+      card.querySelectorAll('button').forEach((candidate) => { candidate.disabled = false; });
+    } finally {
+      state.decisionInFlight = '';
+    }
+  }
+
+  function openDrawer(panel, trigger) {
+    setMenuOpen(false);
+    closeDrawers();
+    state.drawerOpener = trigger;
+    const drawer = panel === 'navigation' ? nodes.nav : nodes.inspector;
+    drawer.classList.add('is-open');
+    nodes.backdrop.classList.add('is-open');
+    root.classList.toggle('is-nav-open', panel === 'navigation');
+    trigger.setAttribute('aria-expanded', 'true');
+    drawer.querySelector(panel === 'navigation' ? '#cockpit-nav-close' : '#cockpit-inspector-close')?.focus({ preventScroll: true });
+  }
+
+  function closeDrawers() {
+    const restoreFocus = (nodes.nav.classList.contains('is-open') && nodes.nav.contains(document.activeElement))
+      || (nodes.inspector.classList.contains('is-open') && nodes.inspector.contains(document.activeElement));
+    const opener = state.drawerOpener;
+    setWorkspaceMenuOpen(false);
+    nodes.nav.classList.remove('is-open');
+    nodes.inspector.classList.remove('is-open');
+    nodes.backdrop.classList.remove('is-open');
+    root.classList.remove('is-nav-open');
+    opener?.setAttribute('aria-expanded', 'false');
+    state.drawerOpener = null;
+    if (restoreFocus && opener?.isConnected) opener.focus({ preventScroll: true });
+  }
+
+  function selectGroup(group) {
+    if (!state.groups.some((item) => item.id === group)) return;
+    saveComposerDraft();
+    state.group = group;
+    state.domain = '';
+    state.view = 'general';
+    state.selectedConversationId = '';
+    state.selectedJobId = '';
+    state.selectedAgent = '';
+    state.selectedRecipients = [];
+    clearActiveConversation();
+    restoreComposerDraft(null);
+    state.activity = null;
+    state.workstream = null;
+    closeEventStream();
+    renderAll();
+    setWorkspaceMenuOpen(false);
+    closeDrawers();
+  }
+
+  function selectDomain(domain) {
+    saveComposerDraft();
+    state.domain = state.domain === domain ? '' : domain;
+    state.view = 'general';
+    state.selectedConversationId = '';
+    state.selectedJobId = '';
+    state.selectedAgent = '';
+    clearActiveConversation();
+    restoreComposerDraft(null);
+    state.activity = null;
+    state.workstream = null;
+    closeEventStream();
+    renderAll();
+    closeDrawers();
+  }
+
+  function selectJob(jobId) {
+    closeEventStream();
+    state.lastEventSequence = 0;
+    const job = state.jobs.find((item) => item.job_id === jobId);
+    if (job) {
+      state.group = jobGroup(job);
+      state.domain = jobDomain(job);
+    }
+    state.view = 'job';
+    state.selectedJobId = jobId;
+    state.selectedAgent = '';
+    state.activity = null;
+    state.workstream = null;
+    renderAll();
+    loadSelectedActivity();
+    closeDrawers();
+  }
+
+  function selectAgent(slug) {
+    const agent = state.agents.find((item) => slugify(item.slug) === slugify(slug));
+    if (!agent) return;
+    openDirectConversation(agent);
+  }
+
+  async function openDirectConversation(agent) {
+    let conversation = state.conversations.find((item) => (
+      item.kind === 'direct'
+      && slugify(item.direct_agent_slug) === slugify(agent.slug)
+      && slugify(item.principal_slug) === slugify(agent.principal_slug)
+    ));
+    const payload = {
+      kind: 'direct',
+      title: agent.display_name,
+      principal_slug: agent.principal_slug || currentGroup().slug,
+      domain_slug: agent.domain_slug || '',
+      direct_agent_slug: agent.slug,
+      member_slugs: [agent.slug],
+    };
+
+    if (conversation) {
+      selectConversation(conversation.conversation_id);
+      if (!conversation._local_only) return;
+    } else {
+      conversation = persistConversationLocally(makeLocalConversation({
+        kind: 'direct',
+        title: agent.display_name,
+        principalSlug: payload.principal_slug,
+        domainSlug: payload.domain_slug,
+        directAgentSlug: agent.slug,
+        memberSlugs: [agent.slug],
+      }));
+      selectConversation(conversation.conversation_id);
+    }
+
+    try {
+      const remote = await postJson(`${API}/bridge/conversations`, payload);
+      replaceConversation(conversation, remote);
+    } catch (error) {
+      if (!persistenceUnavailable(error)) {
+        nodes.composeHint.textContent = 'This conversation is saved locally; server sync is unavailable.';
+      }
+    }
+  }
+
+  function selectConversation(conversationId) {
+    const conversation = state.conversations.find((item) => item.conversation_id === conversationId);
+    if (!conversation) return;
+    saveComposerDraft();
+    const group = state.groups.find((item) => slugify(item.slug) === slugify(conversation.principal_slug));
+    if (group) state.group = group.id;
+    state.domain = slugify(conversation.domain_slug);
+    state.view = conversation.kind === 'direct' ? 'agent' : 'room';
+    state.selectedConversationId = conversation.conversation_id;
+    state.selectedAgent = conversation.direct_agent_slug || '';
+    state.selectedRecipients = [...(conversation.member_slugs || [])];
+    state.selectedJobId = '';
+    state.activity = null;
+    state.workstream = null;
+    saveActiveConversation(conversation);
+    chatNavigation?.visit(conversation);
+    closeEventStream();
+    restoreComposerDraft(conversation);
+    renderAll();
+    if (conversation.kind === 'direct' && conversation.direct_agent_slug) {
+      loadStationHistory(conversation.direct_agent_slug);
+    }
+    void hydrateConversationActivities(conversation);
+    closeDrawers();
+    // Opening a chat on a phone is often for reading; do not summon its keyboard.
+    if (window.matchMedia?.('(pointer: fine) and (min-width: 768px)')?.matches) nodes.message.focus();
+  }
+
+  function renderRoomMemberPicker() {
+    const agents = filteredAgents();
+    if (!agents.length) {
+      nodes.roomMembers.innerHTML = `
+        <div class="bridge-room-members__empty">
+          ${iconHtml('alert')}
+          <strong>No bots are visible in this workspace</strong>
+          <span>Refresh the Bridge or check the bot directory.</span>
+        </div>`;
+      return;
+    }
+    nodes.roomMembers.innerHTML = `${groupedAgents(agents).map((group) => `
+      <section class="bridge-bot-group" data-bot-group="${escapeHtml(group.key)}"
+        style="${escapeHtml(identityStyle(group.agents[0]?.slug || 'norman'))}">
+        <header><span>${escapeHtml(group.label)}</span><small data-group-count>${group.agents.length}</small></header>
+        <div class="bridge-bot-group__grid">
+          ${group.agents.map((agent) => {
+            const heartbeat = heartbeatFor(agent);
+            const source = heartbeat
+              ? 'Available now'
+              : agent.directory_source === 'identity-catalog' ? 'Known station' : 'Directory bot';
+            const searchText = `${agent.display_name} ${agent.slug} ${source} ${agent.domain_name || ''} ${group.label}`;
+            return `<label class="bridge-room-member" data-search="${escapeHtml(searchText.toLowerCase())}"
+              style="${escapeHtml(identityStyle(agent.slug))}">
+              <input type="checkbox" name="member" value="${escapeHtml(agent.slug)}">
+              ${botIdentityTileHtml(agent)}
+              <span><strong>${escapeHtml(agent.display_name)}</strong><small>${escapeHtml(source)}${agent.domain_name ? ` · ${escapeHtml(agent.domain_name)}` : ''}</small></span>
+              <i>${iconHtml('check')}</i>
+            </label>`;
+          }).join('')}
+        </div>
+      </section>
+    `).join('')}
+      <div class="bridge-room-filter-empty" hidden>
+        ${iconHtml('search')}<strong>No matching bots</strong><span>Try a name, role, or workspace.</span>
+      </div>`;
+  }
+
+  function updateRoomSelectionState() {
+    const selected = nodes.roomMembers.querySelectorAll('input[name="member"]:checked').length;
+    const visible = [...nodes.roomMembers.querySelectorAll('.bridge-room-member')]
+      .filter((member) => !member.hidden).length;
+    nodes.roomSelection.textContent = `${selected} selected${nodes.roomSearch.value.trim() ? ` · ${visible} shown` : ''}`;
+    nodes.roomCreate.disabled = Boolean(state.roomCreating) || !nodes.roomName.value.trim() || selected === 0;
+  }
+
+  function filterRoomMembers() {
+    const query = nodes.roomSearch.value.trim().toLowerCase();
+    let visibleTotal = 0;
+    nodes.roomMembers.querySelectorAll('.bridge-bot-group').forEach((group) => {
+      const members = [...group.querySelectorAll('.bridge-room-member')];
+      members.forEach((member) => {
+        member.hidden = Boolean(query && !member.dataset.search.includes(query));
+      });
+      const visible = members.filter((member) => !member.hidden).length;
+      visibleTotal += visible;
+      group.hidden = visible === 0;
+      const count = group.querySelector('[data-group-count]');
+      if (count) count.textContent = query && visible !== members.length ? `${visible}/${members.length}` : String(members.length);
+    });
+    const empty = nodes.roomMembers.querySelector('.bridge-room-filter-empty');
+    if (empty) empty.hidden = !query || visibleTotal > 0;
+    updateRoomSelectionState();
+  }
+
+  function openRoomDialog() {
+    if (!state.roomDialogInitialized) {
+      nodes.roomName.value = '';
+      nodes.roomSearch.value = '';
+      nodes.roomError.hidden = true;
+      renderRoomMemberPicker();
+      filterRoomMembers();
+      state.roomDialogInitialized = true;
+    }
+    if (!nodes.roomDialog.open) nodes.roomDialog.showModal();
+    if (!state.roomCreating) window.setTimeout(() => {
+      if (nodes.roomDialog.open) nodes.roomName.focus();
+    }, 0);
+  }
+
+  function finishRoomCreation(conversation) {
+    state.roomDialogInitialized = false;
+    if (nodes.roomDialog.open) {
+      nodes.roomDialog.close();
+      selectConversation(conversation.conversation_id);
+    } else {
+      renderQuickChats();
+      renderWorkstreams();
+      announceReadingAction('Room created. Find it in your conversations.');
+    }
+  }
+
+  async function createRoom(event) {
+    event.preventDefault();
+    if (state.roomCreating) return;
+    const members = [...nodes.roomForm.querySelectorAll('input[name="member"]:checked')]
+      .map((input) => input.value);
+    const title = nodes.roomName.value.trim();
+    if (!title || !members.length) {
+      nodes.roomError.textContent = !title ? 'Give the room a name.' : 'Invite at least one bot.';
+      nodes.roomError.hidden = false;
+      return;
+    }
+    const payload = {
+      kind: 'room',
+      title,
+      principal_slug: currentGroup().slug,
+      domain_slug: state.domain || '',
+      member_slugs: members,
+    };
+    state.roomCreating = true;
+    nodes.roomError.hidden = true;
+    nodes.roomForm.setAttribute('aria-busy', 'true');
+    const createLabel = nodes.roomCreate.innerHTML;
+    nodes.roomCreate.textContent = 'Creating…';
+    updateRoomSelectionState();
+    const inputs = [...nodes.roomForm.querySelectorAll('input')].map(input => [input, input.disabled]);
+    inputs.forEach(([input]) => { input.disabled = true; });
+    try {
+      const conversation = await postJson(`${API}/bridge/conversations`, payload);
+      state.conversations.unshift({ ...conversation, _local_only: false });
+      finishRoomCreation(conversation);
+    } catch (error) {
+      if (!persistenceUnavailable(error)) {
+        nodes.roomError.textContent = error.message;
+        nodes.roomError.hidden = false;
+        if (!nodes.roomDialog.open) announceReadingAction('Room creation needs attention. Reopen New room to review and retry.');
+        return;
+      }
+      const conversation = persistConversationLocally(makeLocalConversation({
+        kind: 'room',
+        title,
+        principalSlug: payload.principal_slug,
+        domainSlug: payload.domain_slug,
+        memberSlugs: members,
+      }));
+      finishRoomCreation(conversation);
+    } finally {
+      state.roomCreating = false;
+      nodes.roomForm.removeAttribute('aria-busy');
+      nodes.roomCreate.innerHTML = createLabel;
+      inputs.forEach(([input, disabled]) => { input.disabled = disabled; });
+      updateRoomSelectionState();
+    }
+  }
+
+  function setAttentionView(global = false) {
+    state.view = global ? 'global-attention' : 'attention';
+    state.selectedJobId = '';
+    state.selectedAgent = '';
+    state.activity = null;
+    state.workstream = null;
+    closeEventStream();
+    renderAll();
+    closeDrawers();
+  }
+
+  function setMenuOpen(open, panel = state.menuPanel) {
+    const restoreFocus = !open && nodes.menu.contains(document.activeElement);
+    if (open) closeDrawers();
+    state.menuPanel = panel || 'overview';
+    root.classList.toggle('is-menu-open', open);
+    nodes.menu.setAttribute('aria-hidden', String(!open));
+    nodes.menu.inert = !open;
+    nodes.menuButton.setAttribute('aria-expanded', String(open));
+    renderMenuPanel();
+    if (open) nodes.menu.querySelector('button:not([disabled]), a[href]')?.focus({ preventScroll: true });
+    else if (restoreFocus) nodes.menuButton.focus({ preventScroll: true });
+  }
+
+  function resizeComposer({ immediate = false } = {}) {
+    window.cancelAnimationFrame(state.composerFrame);
+    const apply = () => {
+      state.composerFrame = 0;
+      const previousScrollTop = nodes.message.scrollTop;
+      nodes.message.style.height = '0px';
+      const cssLimit = Number.parseFloat(window.getComputedStyle(nodes.message).maxHeight);
+      const limit = Math.max(44, Math.min(140, Number.isFinite(cssLimit) ? cssLimit : 140));
+      const height = Math.max(44, Math.min(nodes.message.scrollHeight, limit));
+      nodes.message.style.height = `${height}px`;
+      nodes.message.style.overflowY = nodes.message.scrollHeight > height ? 'auto' : 'hidden';
+      nodes.message.scrollTop = previousScrollTop;
+    };
+    if (immediate) apply();
+    else state.composerFrame = window.requestAnimationFrame(apply);
+  }
+
+  // Keep unresolved IDs across reloads; a retry checks the durable server receipt.
+  const pendingDeliveries = {};
+  function deliveryKey(conversation = selectedConversation()) {
+    return `${root.dataset.cacheOwner || 'anonymous'}:${composerDraftKey(conversation)}`;
+  }
+
+  function pendingDelivery(conversation = selectedConversation()) {
+    const key = deliveryKey(conversation);
+    if (pendingDeliveries[key]) return pendingDeliveries[key];
+    try {
+      const saved = JSON.parse(window.sessionStorage.getItem(`bridge-delivery:${key}`) || 'null');
+      if (saved && typeof saved.id === 'string' && typeof saved.message === 'string') {
+        pendingDeliveries[key] = saved;
+        return saved;
+      }
+    } catch (_) { /* Memory still protects retries when storage is unavailable. */ }
+    return null;
+  }
+
+  function saveDelivery(conversation, delivery) {
+    const key = deliveryKey(conversation);
+    if (delivery) pendingDeliveries[key] = delivery;
+    else delete pendingDeliveries[key];
+    try {
+      if (delivery) window.sessionStorage.setItem(`bridge-delivery:${key}`, JSON.stringify(delivery));
+      else window.sessionStorage.removeItem(`bridge-delivery:${key}`);
+    } catch (_) { /* Optional browser storage. */ }
+  }
+
+  // Accepted work is separate from uncertain delivery: restoring it must never POST.
+  function savedStationRequest(conversation) {
+    const prompt = conversationPrompt(conversation);
+    if (prompt.receipt) return prompt.receipt;
+    try {
+      const saved = JSON.parse(window.sessionStorage.getItem(`bridge-accepted:${deliveryKey(conversation)}`) || 'null');
+      if (saved && typeof saved.id === 'string' && typeof saved.message === 'string'
+          && saved.slug === slugify(conversation?.direct_agent_slug) && Number.isFinite(saved.acceptedAt)
+          && Array.isArray(saved.knownTurnIds)) return saved;
+    } catch (_) { /* Recovery is optional when browser storage is unavailable. */ }
+    return null;
+  }
+
+  function saveStationRequest(conversation, receipt) {
+    conversationPrompt(conversation).receipt = receipt;
+    try {
+      const key = `bridge-accepted:${deliveryKey(conversation)}`;
+      if (receipt) window.sessionStorage.setItem(key, JSON.stringify(receipt));
+      else window.sessionStorage.removeItem(key);
+    } catch (_) { /* The open page continues to track work in memory. */ }
+  }
+
+  function resumeStationRequest(conversation) {
+    if (conversation?.kind !== 'direct') return;
+    const receipt = savedStationRequest(conversation);
+    if (!receipt) return;
+    const prompt = conversationPrompt(conversation);
+    if (prompt.pollingId === receipt.id) return;
+    Object.assign(prompt, { phase: receipt.queued ? 'queued' : 'running',
+      jobId: `station:${receipt.id}`, stationSlug: receipt.slug, objective: receipt.message,
+      acceptedAt: receipt.acceptedAt, submittedAt: receipt.submittedAt || receipt.acceptedAt, error: '' });
+    void waitForStationResponse(receipt.slug, new Set(receipt.knownTurnIds), receipt.id, receipt.message, conversation);
+  }
+
+  function restoreFailedDraft(conversation, text) {
+    const key = composerDraftKey(conversation);
+    const isCurrent = key === composerDraftKey();
+    const existing = isCurrent ? nodes.message.value : String(state.composerDrafts[key] || '');
+    const recovered = existing.trim() && existing !== text ? `${text}\n\n${existing}` : text;
+    saveComposerDraft(conversation, recovered);
+    if (isCurrent) {
+      nodes.message.value = recovered;
+      resizeComposer({ immediate: true });
+    }
+  }
+
+  async function submitMessage(event) {
+    event.preventDefault();
+    const conversation = selectedConversation();
+    const setSubmissionPhase = (phase, patch = {}) => setConversationPromptPhase(conversation, phase, patch);
+    const pending = pendingDelivery(conversation);
+    const text = pending?.message || nodes.message.value.trim();
+    const stationSlug = conversation?.kind === 'direct'
+      ? slugify(conversation.direct_agent_slug)
+      : '';
+    if (state.authRequired || navigator.onLine === false || !text || promptBusy() || (!pending && !stationSlug && state.worker._available === false)) {
+      updateComposerState();
+      return;
+    }
+    const group = currentGroup();
+    const domain = currentDomain();
+    const recipients = [...state.selectedRecipients];
+    let created = null;
+    setSubmissionPhase('submitting', {
+      jobId: '',
+      objective: text,
+      error: '',
+      startedAt: Date.now(),
+    });
+    if (!pending) {
+      nodes.message.value = '';
+      saveComposerDraft(conversation, '');
+      resizeComposer({ immediate: true });
+    }
+    renderFeed();
+    playInteractionTone('send', { signal: true, force: true });
+    try {
+      if (stationSlug) {
+        const currentItems = state.stationHistory[stationSlug]?.items || [];
+        const knownTurnIds = new Set(currentItems.map((turn, index) => (
+          String(turn.turn_id || `${turn.started_at || ''}:${index}`)
+        )));
+        const submissionId = pending?.id || `bridge-${crypto.randomUUID()}`;
+        saveDelivery(conversation, { id: submissionId, message: text });
+        const receipt = await postJson(
+          `${API}/bridge/conversations/agents/${encodeURIComponent(stationSlug)}/messages`,
+          {
+            message: text,
+            conversation_id: conversation._local_only ? '' : conversation.conversation_id,
+            submission_id: submissionId,
+          },
+          { timeoutMs: 45000 },
+        );
+        if (!receipt.accepted) {
+          if (receipt.safe_to_retry) {
+            saveDelivery(conversation, null);
+            throw Object.assign(new Error(receipt.error || 'Message was not accepted. It is safe to retry.'), { safeToRetry: true });
+          }
+          throw new Error('Delivery is not confirmed yet. Check delivery to look up the original message without sending it twice.');
+        }
+        const acceptedAt = Date.now();
+        saveStationRequest(conversation, { id: submissionId, message: text, slug: stationSlug, acceptedAt, submittedAt: conversationPrompt(conversation).startedAt, queued: Boolean(receipt.queued), knownTurnIds: [...knownTurnIds] });
+        saveDelivery(conversation, null);
+        setSubmissionPhase(receipt.queued ? 'queued' : 'running', {
+          acceptedAt,
+          submittedAt: conversationPrompt(conversation).startedAt,
+          jobId: `station:${submissionId}`,
+          stationSlug,
+        });
+        renderFeed();
+        void waitForStationResponse(stationSlug, knownTurnIds, submissionId, text, conversation);
+        return;
+      }
+      const runtimeId = pending?.id || `bridge-${crypto.randomUUID()}`;
+      if (pending) {
+        const snapshot = await fetchJson(`${API}/console-runtime/jobs/${encodeURIComponent(runtimeId)}?limit=300`);
+        const job = snapshot.job || snapshot;
+        if (!['running', 'completed', 'failed', 'canceled', 'blocked'].includes(job.status)) {
+          throw new Error('The task is recorded, but execution is not confirmed. Check delivery again; it will not be started twice.');
+        }
+        saveDelivery(conversation, null);
+        setSubmissionPhase(job.status === 'completed' ? 'complete' : job.status === 'running' ? 'running' : 'failed', { jobId: runtimeId });
+        await loadBootstrap({ quiet: true });
+        return;
+      }
+      saveDelivery(conversation, { id: runtimeId, message: text });
+      created = await postJson(`${API}/console-runtime/jobs`, {
+        job_id: runtimeId,
+        objective: text,
+        execution_mode: 'advisory',
+        done_when: ['Return a clear conversational response to the operator.'],
+        max_runtime_seconds: 300,
+        checkpoint_interval_seconds: 300,
+        question_budget: 1,
+        durable_workstream: false,
+        route_policy: {},
+        metadata: {
+          source: 'norman_bridge',
+          principal: group.slug,
+          realm: group.slug,
+          domain: domain?.slug || '',
+          lane: domain?.slug || '',
+          room: state.selectedAgent || domain?.slug || 'general',
+          recipients,
+          interaction: 'conversation',
+          bridge_conversation_id: conversation?.conversation_id,
+          bridge_conversation_kind: conversation?.kind || 'home',
+          bridge_conversation_title: conversation?.title || '',
+        },
+      });
+      state.jobs.unshift(created);
+      state.lastEventSequence = 0;
+      setSubmissionPhase('queued', { jobId: created.job_id });
+      renderFeed();
+      connectJobEventStream(created.job_id);
+      await postJson(
+        `${API}/console-runtime/jobs/${encodeURIComponent(created.job_id)}/runs`,
+        {
+          worker_id: 'norman-bridge',
+          execution_mode: 'advisory',
+          dry_run: false,
+          complete: true,
+          continuous: false,
+          durable_workstream: false,
+          max_steps: 1,
+          max_runtime_seconds: 300,
+          local_token_budget: 4096,
+          cloud_token_budget: 0,
+          goal_phase_sequence: ['chat'],
+          planner_kind: 'chat',
+          max_output_tokens: 1024,
+          route_policy: {},
+          metadata: {
+            source: 'norman_bridge',
+            principal: group.slug,
+            domain: domain?.slug || '',
+            recipients,
+            bridge_conversation_id: conversation?.conversation_id,
+          },
+          include_capabilities: false,
+          live_execution_approved: false,
+        },
+        { timeoutMs: 180000 },
+      );
+      saveDelivery(conversation, null);
+      if (conversationPrompt(conversation).jobId === created.job_id && ['submitting', 'queued'].includes(conversationPrompt(conversation).phase)) {
+        setSubmissionPhase('running');
+      }
+      await loadBootstrap({ quiet: true });
+    } catch (error) {
+      const rejected = [400, 401, 403, 409, 422, 429].includes(Number(error.status));
+      // A rejected receipt check says nothing about the original submission.
+      // Keep its ID unless the server explicitly confirms it is safe to retry.
+      if ((error.safeToRetry || (!pending && rejected)) && (stationSlug || !created)) {
+        saveDelivery(conversation, null);
+        restoreFailedDraft(conversation, text);
+      }
+      setSubmissionPhase(pendingDelivery(conversation) ? 'unconfirmed' : 'failed', {
+        jobId: created?.job_id || '',
+        error: pendingDelivery(conversation)
+          ? 'Delivery is not confirmed. Check delivery to look up the original message without sending it twice.'
+          : error.message,
+      });
+      renderFeed();
+    } finally {
+      updateComposerState();
+    }
+  }
+
+  async function cancelSelectedJob() {
+    if (!state.selectedJobId) return;
+    nodes.cancelJob.disabled = true;
+    try {
+      await postJson(`${API}/console-runtime/jobs/${encodeURIComponent(state.selectedJobId)}/cancel`, {
+        reason: 'Canceled from Norman Bridge',
+      });
+      await loadBootstrap({ quiet: true });
+      await loadSelectedActivity({ quiet: true });
+    } catch (error) {
+      nodes.composeHint.textContent = `Unable to cancel: ${error.message}`;
+    }
+  }
+
+  function handleGlobalKeydown(event) {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || nodes.roomDialog?.open) return;
+    if (event.key === 'Escape') {
+      if (nodes.workspaceButton?.getAttribute('aria-expanded') === 'true') setWorkspaceMenuOpen(false);
+      else if (nodes.menuButton?.getAttribute('aria-expanded') === 'true') setMenuOpen(false);
+      else closeDrawers();
+      return;
+    }
+    const target = event.target;
+    if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey
+      || target?.closest?.('input, textarea, select, [contenteditable="true"], [role="textbox"]')) return;
+    if (event.key === '/') {
+      event.preventDefault();
+      nodes.message.focus();
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      nodes.feed.scrollTop = nodes.feed.scrollHeight;
+    }
+  }
+
+  function handleComposerKeydown(event) {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+    if (event.key !== 'Enter' || event.shiftKey || nodes.send.disabled) return;
+    // A phone's Return key should not send a half-written message.
+    if (window.matchMedia?.('(pointer: coarse)').matches && !event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    nodes.composer.requestSubmit();
+  }
+
+  function navigationControl(target, attribute) {
+    return target.closest(`button[${attribute}], a[${attribute}]`);
+  }
+
+  function updateReadingTools() {
+    const away = nodes.feed.scrollHeight - nodes.feed.scrollTop - nodes.feed.clientHeight > 100;
+    const chat = !state.authRequired && ['agent', 'general', 'room'].includes(state.view);
+    nodes.latestReply.hidden = !chat || !away;
+  }
+
+  function announceReadingAction(message) {
+    window.clearTimeout(state.readingFeedbackTimer);
+    nodes.readingFeedback.textContent = message;
+    nodes.readingFeedback.hidden = false;
+    state.readingFeedbackTimer = window.setTimeout(() => {
+      nodes.readingFeedback.hidden = true;
+    }, 6000);
+  }
+
+  async function copyReply(button) {
+    const bubble = button.closest('.cockpit-message')?.querySelector('.cockpit-message__bubble');
+    if (!bubble || button.disabled) return;
+    const text = bubble.innerText || bubble.textContent || '';
+    button.disabled = true;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(text);
+      announceReadingAction('Reply copied.');
+    } catch (_) {
+      if (bubble.isConnected) {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(bubble);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        announceReadingAction('Clipboard unavailable. Reply selected—use your device’s Copy command.');
+      } else {
+        announceReadingAction('Clipboard unavailable. Select the reply and use your device’s Copy command.');
+      }
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function setupReadingTools() {
+    const wrap = nodes.composer.parentElement;
+    nodes.latestReply = document.createElement('button');
+    nodes.latestReply.type = 'button';
+    nodes.latestReply.className = 'bridge-latest-reply';
+    nodes.latestReply.textContent = '↓ Latest reply';
+    nodes.latestReply.setAttribute('aria-label', 'Go to latest reply');
+    nodes.latestReply.hidden = true;
+    nodes.latestReply.addEventListener('click', () => {
+      nodes.feed.scrollTop = nodes.feed.scrollHeight;
+      updateReadingTools();
+    });
+    nodes.readingFeedback = document.createElement('div');
+    nodes.readingFeedback.className = 'bridge-reading-feedback';
+    nodes.readingFeedback.setAttribute('role', 'status');
+    nodes.readingFeedback.setAttribute('aria-live', 'polite');
+    nodes.readingFeedback.hidden = true;
+    wrap.append(nodes.latestReply, nodes.readingFeedback);
+    nodes.feed.addEventListener('scroll', updateReadingTools, { passive: true });
+    nodes.feed.addEventListener('click', event => {
+      const button = event.target.closest('[data-copy-reply]');
+      if (button) void copyReply(button);
+    });
+    window.addEventListener('resize', updateReadingTools);
+  }
+
+  function clearDirectorySearch() {
+    nodes.search.value = '';
+    scheduleDirectorySearch();
+    nodes.search.focus({ preventScroll: true });
+  }
+
+  function scheduleDirectorySearch() {
+    const query = nodes.search.value.trim().toLowerCase();
+    if (query === state.search) return;
+    state.search = query;
+    if (state.searchFrame) return;
+    state.searchFrame = window.requestAnimationFrame(() => {
+      state.searchFrame = 0;
+      renderQuickChats();
+      renderDomains();
+      renderWorkstreams();
+      renderAgents();
+    });
+  }
+
+  function bindEvents() {
+    setupReadingTools();
+    nodes.menuButton.setAttribute('aria-label', 'Open controls');
+    if (!el('bridge-menu-close')) {
+      const close = document.createElement('button');
+      close.id = 'bridge-menu-close';
+      close.type = 'button';
+      close.className = 'cockpit-icon-button';
+      close.setAttribute('aria-label', 'Close controls');
+      close.textContent = '×';
+      close.addEventListener('click', () => setMenuOpen(false));
+      nodes.menu.querySelector('.cockpit-menu__head')?.append(close);
+    }
+    nodes.menu.inert = !root.classList.contains('is-menu-open');
+    root.addEventListener('pointermove', (event) => {
+      if (event.pointerType === 'touch') return;
+      const rect = root.getBoundingClientRect();
+      const x = textureClamp((event.clientX - rect.left) / rect.width, 0.03, 0.97);
+      const y = textureClamp((event.clientY - rect.top) / rect.height, 0.03, 0.97);
+      const now = performance.now();
+      const elapsed = Math.max(8, now - (state.texture.pointerAt || now - 16));
+      const deltaX = state.texture.pointerAt ? x - state.texture.pointerX : 0;
+      const deltaY = state.texture.pointerAt ? y - state.texture.pointerY : 0;
+      const distance = Math.hypot(deltaX * rect.width, deltaY * rect.height);
+      const speed = distance / elapsed;
+      const energy = 0.018 + Math.min(0.075, speed * 0.052);
+      const interactive = event.target.closest?.('.bridge-conversation-item, .bridge-room-member');
+      const tile = interactive?.querySelector?.('.bridge-simple-cartouche');
+      if (tile) {
+        const tileRect = tile.getBoundingClientRect();
+        exciteCartouche(
+          tile,
+          0.28 + Math.min(0.58, speed * 0.34),
+          ((event.clientX - tileRect.left) / Math.max(1, tileRect.width)) * 100,
+          ((event.clientY - tileRect.top) / Math.max(1, tileRect.height)) * 100,
+          520,
+        );
+      }
+      addTextureInput(
+        x,
+        y,
+        energy,
+        'pointer',
+        textureClamp(deltaX * 22, -0.32, 0.32),
+        textureClamp(deltaY * 22, -0.32, 0.32),
+      );
+      state.texture.pointerX = x;
+      state.texture.pointerY = y;
+      state.texture.pointerAt = now;
+    }, { passive: true });
+    root.addEventListener('pointerleave', () => {
+      state.texture.targetX = 0.58;
+      state.texture.targetY = state.prompt.phase === 'running' ? 0.62 : 0.46;
+      state.texture.pointerAt = 0;
+    }, { passive: true });
+    root.addEventListener('keydown', (event) => {
+      if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(event.key)) return;
+      const rect = root.getBoundingClientRect();
+      const editable = event.target.closest?.('input, textarea, [contenteditable="true"]');
+      const targetRect = editable?.getBoundingClientRect?.();
+      const sequence = state.texture.keySequence += 1;
+      const spread = ((sequence * 0.618033988749895) % 1) - 0.5;
+      if (editable) {
+        pulseComposerTexture(
+          0.5 + spread * 0.42,
+          event.repeat ? 0.1 : 0.18,
+        );
+        return;
+      }
+      const x = targetRect
+        ? textureClamp((targetRect.left + targetRect.width * (0.5 + spread * 0.56) - rect.left) / rect.width, 0.05, 0.95)
+        : 0.34 + ((sequence * 0.381966011250105) % 0.32);
+      const y = targetRect
+        ? textureClamp((targetRect.top + targetRect.height * 0.52 - rect.top) / rect.height, 0.06, 0.94)
+        : 0.48;
+      addTextureInput(x, y, event.repeat ? 0.046 : 0.088, 'key', spread * 0.024, -0.052);
+      exciteCartouche(
+        activeIdentityTile(),
+        event.repeat ? 0.28 : 0.48,
+        50 + spread * 58,
+        42 + ((sequence * 0.381966011250105) % 24),
+        760,
+      );
+    });
+    root.addEventListener('pointerdown', (event) => {
+      const control = event.target.closest('button, a, input, textarea, [tabindex]');
+      if (!control || control.disabled) return;
+      primeAudio();
+      const label = String(control.getAttribute('aria-label') || control.title || control.textContent || '').toLowerCase();
+      const kind = /approve|confirm/.test(label)
+        ? 'approve'
+        : /send|queue/.test(label) ? 'press' : 'click';
+      playInteractionTone(kind);
+      control.classList.add('is-tactile-pressed');
+      window.setTimeout(() => control.classList.remove('is-tactile-pressed'), 140);
+    }, { passive: true });
+    root.addEventListener('click', (event) => {
+      if (event.target.closest('[data-program-refresh]')) {
+        void loadPrograms({ force: true });
+        return;
+      }
+      const programAgent = event.target.closest('[data-program-agent]');
+      if (programAgent) {
+        selectAgent(programAgent.dataset.programAgent);
+        return;
+      }
+      const retry = event.target.closest('[data-history-retry]');
+      if (retry) {
+        void loadStationHistory(retry.dataset.historyRetry, { force: true });
+        return;
+      }
+      const approvalButton = event.target.closest('[data-approval-action]');
+      if (approvalButton) {
+        decideApproval(approvalButton);
+        return;
+      }
+      const groupButton = event.target.closest('[data-cockpit-group]');
+      if (groupButton) {
+        selectGroup(groupButton.dataset.cockpitGroup);
+        return;
+      }
+      const check = event.target.closest('[data-check-delivery]');
+      if (check) {
+        const conversation = state.conversations.find(c => c.conversation_id === check.dataset.checkDelivery);
+        if (conversation) {
+          const unresolved = pendingDelivery(conversation);
+          selectConversation(conversation.conversation_id);
+          if (unresolved) void submitMessage(event);
+        }
+        return;
+      }
+      if (event.target.closest('#bridge-pin-chat')) {
+        const conversation = selectedConversation();
+        if (conversation) { chatNavigation?.toggle(conversation); renderQuickChats(); }
+        return;
+      }
+      const viewButton = event.target.closest('[data-cockpit-view]');
+      if (viewButton?.dataset.cockpitView === 'activity') { setActivityView(); return; }
+      if (viewButton?.dataset.cockpitView === 'attention') {
+        setAttentionView(false);
+      } else if (viewButton?.dataset.cockpitView === 'general') {
+        saveComposerDraft();
+        state.view = 'general';
+        state.selectedConversationId = '';
+        state.selectedJobId = '';
+        state.selectedAgent = '';
+        clearActiveConversation();
+        restoreComposerDraft(null);
+        state.activity = null;
+        state.workstream = null;
+        closeEventStream();
+        renderAll();
+        closeDrawers();
+      }
+      const domainButton = event.target.closest('[data-domain]');
+      if (domainButton) selectDomain(domainButton.dataset.domain);
+      const jobButton = navigationControl(event.target, 'data-job-id');
+      if (jobButton?.dataset.jobId) selectJob(jobButton.dataset.jobId);
+      const agentButton = navigationControl(event.target, 'data-agent');
+      if (agentButton?.dataset.agent) selectAgent(agentButton.dataset.agent);
+      const conversationButton = navigationControl(event.target, 'data-conversation-id');
+      if (conversationButton?.dataset.conversationId) selectConversation(conversationButton.dataset.conversationId);
+      if (event.target.closest('[data-clear-search]')) clearDirectorySearch();
+      if (event.target.closest('[data-create-room]')) openRoomDialog();
+      const recipientButton = event.target.closest('[data-remove-recipient]');
+      if (recipientButton) {
+        state.selectedRecipients = state.selectedRecipients.filter((item) => item !== recipientButton.dataset.removeRecipient);
+        renderRecipients();
+        renderInspector();
+      }
+      const meter = event.target.closest('[data-menu-panel]');
+      if (meter) setMenuOpen(true, meter.dataset.menuPanel);
+      const signIn = event.target.closest('[data-sign-in], [data-auth-action="sign-in"]');
+      if (signIn) beginSignIn();
+      else if (event.target.closest('[data-open-attention]')) setAttentionView(true);
+    });
+    nodes.workspaceButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      setWorkspaceMenuOpen(nodes.workspaceButton.getAttribute('aria-expanded') !== 'true');
+    });
+    document.addEventListener('click', (event) => {
+      if (!event.target.closest('.bridge-workspace-switcher')) setWorkspaceMenuOpen(false);
+    });
+    el('cockpit-refresh').addEventListener('click', () => loadBootstrap());
+    el('cockpit-menu-refresh').addEventListener('click', () => loadBootstrap());
+    el('cockpit-new-thread').addEventListener('click', openRoomDialog);
+    nodes.roomForm.addEventListener('submit', createRoom);
+    nodes.roomName.addEventListener('input', updateRoomSelectionState);
+    nodes.roomSearch.addEventListener('input', filterRoomMembers);
+    nodes.roomMembers.addEventListener('change', (event) => {
+      const input = event.target.closest('input[name="member"]');
+      if (!input) return;
+      const tile = input.closest('.bridge-room-member')?.querySelector('.bridge-simple-cartouche');
+      exciteCartouche(tile, input.checked ? 0.92 : 0.42, 58, 42, 880);
+      updateRoomSelectionState();
+    });
+    nodes.roomDialog.querySelectorAll('[data-close-room-dialog]').forEach((button) => {
+      button.addEventListener('click', () => nodes.roomDialog.close());
+    });
+    for (const id of ['cockpit-add-recipient', 'cockpit-nav-open', 'cockpit-inspector-toggle']) {
+      const trigger = el(id);
+      const panel = id === 'cockpit-inspector-toggle' ? 'details' : 'navigation';
+      trigger.setAttribute('aria-expanded', 'false');
+      trigger.setAttribute('aria-controls', panel === 'navigation' ? 'cockpit-nav' : 'cockpit-inspector');
+      trigger.addEventListener('click', () => openDrawer(panel, trigger));
+    }
+    el('cockpit-nav-close').addEventListener('click', closeDrawers);
+    el('cockpit-inspector-close').addEventListener('click', closeDrawers);
+    nodes.backdrop.addEventListener('click', closeDrawers);
+    nodes.menuButton.addEventListener('click', () => setMenuOpen(!root.classList.contains('is-menu-open')));
+    nodes.menuBackdrop.addEventListener('click', () => setMenuOpen(false));
+    nodes.soundToggle?.addEventListener('click', cycleSoundMode);
+    nodes.soundTest?.addEventListener('click', () => playCompletionBell(state.selectedAgent || 'norman'));
+    nodes.composer.addEventListener('submit', submitMessage);
+    nodes.message.addEventListener('input', () => {
+      saveComposerDraft();
+      resizeComposer();
+      updateComposerState();
+      playInteractionTone('type');
+    });
+    nodes.message.addEventListener('focus', () => playInteractionTone('focus'));
+    nodes.message.addEventListener('keydown', handleComposerKeydown);
+    nodes.search.addEventListener('input', scheduleDirectorySearch);
+    nodes.openJob.addEventListener('click', () => {
+      if (state.selectedJobId) window.open(`${API}/console-runtime/jobs/${encodeURIComponent(state.selectedJobId)}`, '_blank', 'noopener');
+    });
+    nodes.cancelJob.addEventListener('click', cancelSelectedJob);
+    document.addEventListener('keydown', handleGlobalKeydown);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        startTextureField();
+        const streamJobId = state.prompt.jobId || state.selectedJobId;
+        if (streamJobId && !streamJobId.startsWith('station:') && !state.eventSource) connectJobEventStream(streamJobId);
+      }
+    });
+    window.addEventListener('resize', () => {
+      state.texture.lines = [];
+      if (!state.texture.frame) startTextureField();
+      syncVisualViewport();
+    });
+    window.visualViewport?.addEventListener('resize', syncVisualViewport);
+    window.visualViewport?.addEventListener('scroll', syncVisualViewport);
+    window.addEventListener('offline', () => {
+      renderConnection();
+      updateComposerState();
+      renderFeed();
+    });
+    window.addEventListener('online', () => {
+      state.connection.failed = true;
+      renderConnection();
+      updateComposerState();
+      void loadBootstrap({ quiet: true });
+    });
+    window.addEventListener('beforeunload', closeEventStream);
+  }
+
+  let viewportSyncFrame = 0;
+
+  function syncVisualViewport() {
+    window.cancelAnimationFrame(viewportSyncFrame);
+    viewportSyncFrame = window.requestAnimationFrame(() => {
+      const keepAtEnd = nodes.feed.scrollHeight - nodes.feed.scrollTop - nodes.feed.clientHeight < 80;
+      const viewport = window.visualViewport;
+      const height = Math.max(320, Math.round(viewport?.height || window.innerHeight));
+      document.documentElement.style.setProperty('--bridge-visual-height', `${height}px`);
+      if (keepAtEnd) nodes.feed.scrollTop = nodes.feed.scrollHeight;
+    });
+  }
+
+  function startPolling() {
+    window.clearTimeout(state.pollTimer);
+    const scheduleNextPoll = () => {
+      const delayMs = 60000 + Math.floor(Math.random() * 30000);
+      state.pollTimer = window.setTimeout(async () => {
+        if (document.visibilityState === 'visible') {
+          await loadBootstrap({ quiet: true });
+          if (state.selectedJobId) await loadSelectedActivity({ quiet: true });
+        }
+        scheduleNextPoll();
+      }, delayMs);
+    };
+    scheduleNextPoll();
+  }
+
+  loadPreferences();
+  updateSoundControls();
+  syncVisualViewport();
+  bindEvents();
+  resizeComposer({ immediate: true });
+  updateComposerState();
+  renderAll();
+  loadBootstrap();
+  startPolling();
+})();

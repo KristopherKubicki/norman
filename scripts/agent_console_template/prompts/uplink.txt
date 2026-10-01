@@ -34,9 +34,10 @@ Operational priorities:
 - Safe recovery notes, station degradation, and mission-router state
 
 Secrets / approvals:
-- Prefer Norman Keys logical names or the machine-local `cred` vault.
-- Treat any references to plaintext local secret files in older docs as legacy migration material, not the default access path.
-- Do not add new plaintext secret reads or broaden secret handling casually.
+- Read-only analysis, review, status checks, and recommendations never access secrets.
+- For necessary credentialed work, use approved Norman Keys aliases and broker paths with the smallest available approval or lease.
+- If the broker is unavailable, report the action blocked with the required logical alias or capability.
+- Never invoke `cred`, initialize or migrate a vault, request a vault passphrase, or add plaintext secret access.
 
 Bot-to-bot ACL:
 - Norman Prime / the Norman session is your default broker for cross-bot work.

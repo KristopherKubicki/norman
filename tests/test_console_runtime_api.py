@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from app.api.deps import get_console_runtime_user, get_current_user
+from app.core.auth_cache import clear_auth_caches
 from app.core.config import settings
+from app.core.estate_registry import resident_model
 from app.crud.user import create_user, get_user_by_email
 from app.main import app
 from app.schemas.user import UserCreate
@@ -112,6 +116,110 @@ def test_console_runtime_api_defaults_jobs_to_local_warm_policy_routing(test_app
     assert route_policy["model_selection"] == "warm_policy"
 
 
+def test_console_runtime_api_coordinates_spark_subtasks_and_retries(test_app):
+    suffix = uuid.uuid4().hex
+    coordinator_id = f"job-api-coordinator-{suffix}"
+    first_id = f"job-api-first-{suffix}"
+    second_id = f"job-api-second-{suffix}"
+    coordinator = test_app.post(
+        "/api/v1/console-runtime/jobs",
+        json={
+            "job_id": coordinator_id,
+            "objective": "Coordinate related work without consuming the main session",
+        },
+    )
+    assert coordinator.status_code == 200
+
+    created_workstream = test_app.post(
+        "/api/v1/console-runtime/workstreams",
+        json={
+            "coordinator_job_id": coordinator_id,
+            "title": "API coordination test",
+            "max_concurrency": 10,
+        },
+    )
+    assert created_workstream.status_code == 200
+    workstream_id = created_workstream.json()["workstream_id"]
+
+    delegated = test_app.post(
+        f"/api/v1/console-runtime/workstreams/{workstream_id}/subtasks",
+        json={
+            "subtasks": [
+                {
+                    "job_id": first_id,
+                    "title": "Research",
+                    "objective": "Gather the requested evidence",
+                    "required_artifacts": ["evidence.md"],
+                },
+                {
+                    "job_id": second_id,
+                    "title": "Synthesize",
+                    "objective": "Synthesize the completed research",
+                    "depends_on": [first_id],
+                },
+            ]
+        },
+    )
+    assert delegated.status_code == 200
+    delegated_payload = delegated.json()
+    first = delegated_payload["items"][0]
+    second = delegated_payload["items"][1]
+    assert first["workstream_id"] == workstream_id
+    assert first["parent_job_id"] == coordinator_id
+    assert first["contract"]["route_policy"]["provider"] == "norllama"
+    assert first["contract"]["route_policy"]["preferred_provider"] == "norllama"
+    assert first["contract"]["route_policy"]["norllama_pool"] == "default"
+    assert first["contract"]["route_policy"]["local_first"] is True
+    assert first["contract"]["route_policy"]["allow_cloud_proxy"] is False
+    assert "preferred_worker_id" not in first["contract"]["route_policy"]
+    assert second["parent_job_id"] == coordinator_id
+    assert delegated_payload["snapshot"]["subtasks"][1]["depends_on"] == [first_id]
+
+    recorded_result = test_app.post(
+        f"/api/v1/console-runtime/jobs/{first_id}/result",
+        json={
+            "status": "done",
+            "summary": "Evidence captured",
+            "artifacts": ["evidence.md"],
+        },
+    )
+    assert recorded_result.status_code == 200
+    assert recorded_result.json()["artifacts"] == ["evidence.md"]
+
+    completed = test_app.post(
+        f"/api/v1/console-runtime/jobs/{first_id}/runs",
+        json={
+            "worker_id": "api-workstream-test",
+            "dry_run": True,
+            "include_capabilities": False,
+        },
+    )
+    assert completed.status_code == 200
+    assert completed.json()["job"]["status"] == "done"
+
+    canceled = test_app.post(
+        f"/api/v1/console-runtime/jobs/{second_id}/cancel",
+        json={"reason": "Retry with a narrower prompt"},
+    )
+    assert canceled.status_code == 200
+    assert canceled.json()["status"] == "canceled"
+    retried = test_app.post(f"/api/v1/console-runtime/jobs/{second_id}/retry")
+    assert retried.status_code == 200
+    assert retried.json()["status"] == "queued"
+
+    canceled_workstream = test_app.post(
+        f"/api/v1/console-runtime/workstreams/{workstream_id}/cancel",
+        json={"reason": "Coordinator closed the workstream"},
+    )
+    assert canceled_workstream.status_code == 200
+    snapshot = canceled_workstream.json()
+    assert snapshot["workstream"]["status"] == "canceled"
+    assert snapshot["status_counts"] == {"done": 1, "canceled": 1}
+    assert snapshot["artifacts"] == ["evidence.md"]
+    assert snapshot["result_cards"][0]["job_id"] == first_id
+    assert snapshot["result_cards"][0]["summary"] == "Evidence captured"
+
+
 def test_console_runtime_api_exposes_kernel_capabilities(test_app, monkeypatch):
     from app.api.api_v1.routers import console_runtime as console_runtime_router
 
@@ -144,6 +252,7 @@ def test_console_runtime_api_exposes_kernel_capabilities(test_app, monkeypatch):
     assert payload["kernel"]["supports"]["explicit_cloud_escalation"] is True
     assert payload["kernel"]["supports"]["norllama_frontdoor"] is True
     assert payload["kernel"]["supports"]["continuous_goal_loop"] is True
+    assert payload["kernel"]["supports"]["durable_workstreams"] is True
     assert payload["kernel"]["supports"]["phased_goal_loop"] is True
     assert payload["kernel"]["supports"]["bounded_goal_runs"] is True
     assert payload["kernel"]["supports"]["local_token_budget"] is True
@@ -170,8 +279,9 @@ def test_console_runtime_api_exposes_kernel_capabilities(test_app, monkeypatch):
     assert payload["norllama"]["capability_catalog"]["schema"] == (
         "norman.norllama.capability-catalog.v1"
     )
-    assert payload["norllama"]["capability_catalog"]["defaults"]["code"] == (
-        "qwen3.6:27b"
+    assert (
+        payload["norllama"]["capability_catalog"]["defaults"]["code"]
+        == resident_model()
     )
     assert payload["norllama"]["specialist_lanes"]["schema"] == (
         "norman.norllama.specialist-lanes.v1"
@@ -382,7 +492,7 @@ def test_console_runtime_api_exposes_route_summary(test_app):
     assert embedded["local_first_kpi"]["status"] == "on_target"
 
     response = test_app.get(
-        "/api/v1/console-runtime/route-summary" "?job_id=job-visible-api-route-summary"
+        "/api/v1/console-runtime/route-summary?job_id=job-visible-api-route-summary"
     )
     assert response.status_code == 200
     summary = response.json()
@@ -448,6 +558,7 @@ def test_console_runtime_api_records_norllama_route_outcomes(test_app):
                 "model": "gemma4:26b-a4b-it-q4_K_M",
                 "endpoint": "https://llm.home.arpa",
                 "upstream": "http://192.168.2.150:18151",
+                "cooldown_seconds": 60,
                 "reason": "planner timed out",
             },
         },
@@ -467,6 +578,8 @@ def test_console_runtime_api_records_norllama_route_outcomes(test_app):
     )
     assert gemma["cooldown"]["active"] is True
     assert gemma["cooldown"]["status"] == "timeout"
+    assert gemma["cooldown"]["cooldown_seconds"] == 60
+    assert gemma["cooldown"]["remaining_seconds"] <= 60
 
     route_summary = test_app.get("/api/v1/console-runtime/route-summary")
     assert route_summary.status_code == 200
@@ -586,6 +699,43 @@ def test_console_runtime_api_runs_one_dry_run_worker_step(test_app):
     assert payload["snapshot"]["category_counts"]["tool"] == 2
 
 
+def test_console_runtime_api_preserves_explicit_cloud_policy_for_denial(test_app):
+    job_id = "job-api-cloud-policy-denied"
+    created = test_app.post(
+        "/api/v1/console-runtime/jobs",
+        json={
+            "job_id": job_id,
+            "objective": "Verify cloud policy denial before model invocation",
+            "route_policy": {
+                "provider": "bedrock",
+                "model": "anthropic.claude-test",
+                "allow_cloud_proxy": True,
+                "cloud_llm_disabled": True,
+            },
+        },
+    )
+    assert created.status_code == 200
+
+    response = test_app.post(
+        f"/api/v1/console-runtime/jobs/{job_id}/runs",
+        json={
+            "worker_id": "api-cloud-policy-test",
+            "dry_run": True,
+            "include_capabilities": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["route_blocked"] is True
+    assert payload["model_result"] is None
+    assert payload["job"]["status"] == "blocked"
+    assert "cloud LLM provider blocked by policy" in payload["blocked_reason"]
+    event_types = {event["event_type"] for event in payload["snapshot"]["events"]}
+    assert "policy.egress_blocked" in event_types
+    assert "model.requested" not in event_types
+
+
 @pytest.mark.asyncio
 async def test_console_runtime_api_run_endpoint_offloads_worker_to_thread(monkeypatch):
     from app.api.api_v1.routers import console_runtime
@@ -676,6 +826,40 @@ def test_console_runtime_api_runs_continuous_goal_loop(test_app):
     assert payload["snapshot"]["category_counts"]["goal"] == 4
     assert payload["snapshot"]["category_counts"]["route"] == 2
     assert payload["snapshot"]["route_summary"]["cloud_evidence_count"] == 0
+
+
+def test_console_runtime_api_durable_run_checkpoints_without_explicit_verifier_status(
+    test_app,
+):
+    created = test_app.post(
+        "/api/v1/console-runtime/jobs",
+        json={
+            "job_id": "job-visible-api-durable-run",
+            "objective": "Complete only after an explicit durable verifier result",
+            "durable_workstream": True,
+        },
+    )
+    assert created.status_code == 200
+
+    response = test_app.post(
+        "/api/v1/console-runtime/jobs/job-visible-api-durable-run/runs",
+        json={
+            "worker_id": "api-durable-test",
+            "dry_run": True,
+            "continuous": True,
+            "durable_workstream": True,
+            "max_steps": 1,
+            "goal_phase_sequence": ["verify"],
+            "include_capabilities": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["durable_workstream"] is True
+    assert payload["job"]["status"] == "checkpointed"
+    assert payload["stop_reason"] == "max_steps"
+    assert payload["steps"][0]["verification_signal"] == ""
 
 
 def test_console_runtime_api_exposes_worker_status(test_app, monkeypatch):
@@ -891,6 +1075,7 @@ def test_console_runtime_api_approval_resumes_waiting_job(test_app):
 
 
 def test_console_runtime_api_accepts_configured_service_token(test_app, db):
+    clear_auth_caches()
     previous_token = settings.console_runtime_service_token
     previous_email = settings.console_runtime_service_user_email
     saved_current_override = app.dependency_overrides.pop(get_current_user, None)
@@ -933,6 +1118,7 @@ def test_console_runtime_api_accepts_configured_service_token(test_app, db):
             item["job_id"] == "job-service-token" for item in listed.json()["items"]
         )
     finally:
+        clear_auth_caches()
         settings.console_runtime_service_token = previous_token
         settings.console_runtime_service_user_email = previous_email
         if saved_current_override is not None:

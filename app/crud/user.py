@@ -90,7 +90,7 @@ def update_user(db: Session, user_id: int, user_data: UserUpdate):
     if user is None:
         return None
 
-    update_data = user_data.dict(exclude_unset=True)
+    update_data = user_data.model_dump(exclude_unset=True)
     if "password" in update_data:
         user.password = get_password_hash(update_data.pop("password"))
     for field, value in update_data.items():

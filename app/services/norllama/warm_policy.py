@@ -33,31 +33,16 @@ from app.services.norllama.route_outcomes import (
     local_route_cooldown,
     normalize_route_outcome,
 )
+from app.services.norllama.lane_policy import lane_policy_for_model
 
 DEFAULT_WARM_RECOMMENDATIONS: list[dict[str, Any]] = [
     {
-        "model": "qwen3.6:35b-a3b-q4_K_M",
-        "profile": "qwen36_router_local",
+        "model": "qwen3-coder:30b-a3b-q4_K_M",
+        "profile": "qwen3_coder_30b_local",
         "priority": "p0",
         "source": "fallback",
-        "use_for": "interactive local planning, routing, filtering, scout prep, and summarization",
-        "guardrail": "Use as the fast production local brain; verify risky work.",
-    },
-    {
-        "model": "qwen3.6:27b",
-        "profile": "qwen36_coding_local",
-        "priority": "p0",
-        "source": "fallback",
-        "use_for": "default local coding, repo reasoning, and execution drafting",
+        "use_for": "default local agent, planning, coding, filtering, summarization, and verification",
         "guardrail": "Run tests and verifier checks before final authority.",
-    },
-    {
-        "model": "qwen3.5:122b-a10b-q4_K_M",
-        "profile": "qwen35_heavy_judge_local",
-        "priority": "p1",
-        "source": "fallback",
-        "use_for": "heavy local judge, verifier, and escalation reducer",
-        "guardrail": "Use for expensive verification and high-value decisions.",
     },
     {
         "model": "bge-m3:latest",
@@ -342,6 +327,73 @@ def _model_family(model: str) -> str:
     if "llama" in clean:
         return "llama"
     return "general"
+
+
+def _policy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return _clean(value).lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _catalog_item_for_model(model: Any) -> dict[str, Any]:
+    clean_model = _clean(model)
+    if not clean_model:
+        return {}
+    catalog = catalog_by_model()
+    direct = catalog.get(clean_model)
+    if isinstance(direct, dict):
+        return dict(direct)
+    lowered = clean_model.lower()
+    for alias, item in catalog.items():
+        if alias.lower() == lowered and isinstance(item, dict):
+            return dict(item)
+    return {}
+
+
+def _recommendation_routing_policy(item: dict[str, Any]) -> dict[str, Any]:
+    """Resolve automatic-routing constraints without alias collisions.
+
+    The concrete recommendation model wins over aggregate aliases. Catalog
+    recommendation rows can share a runtime model (for example, world tools
+    and the Coder brain), so resolving aliases first would incorrectly mark
+    the general Coder route as tool-only.
+    """
+
+    catalog_item: dict[str, Any] = {}
+    resolution_source = ""
+    for key in ("model", "runtime_model", "served_model"):
+        catalog_item = _catalog_item_for_model(item.get(key))
+        if catalog_item:
+            resolution_source = f"direct_{key}"
+            break
+    if not catalog_item:
+        for key in ("model_aliases", "aliases", "desired_models"):
+            values = item.get(key)
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                catalog_item = _catalog_item_for_model(value)
+                if catalog_item:
+                    resolution_source = key
+                    break
+            if catalog_item:
+                break
+
+    direct_dispatch = _clean(item.get("dispatch"))
+    dispatch = direct_dispatch or _clean(catalog_item.get("dispatch")) or "unified_chat"
+    manual_only = _policy_flag(item.get("manual_only")) or _policy_flag(
+        catalog_item.get("manual_only")
+    )
+    tool_only = _policy_flag(item.get("tool_only")) or bool(
+        dispatch and dispatch != "unified_chat"
+    )
+    return {
+        "catalog_model": _clean(catalog_item.get("model")),
+        "manual_only": manual_only,
+        "tool_only": tool_only,
+        "dispatch": dispatch,
+        "resolution_source": resolution_source or "recommendation",
+    }
 
 
 def _public_models_from_mesh(mesh: dict[str, Any]) -> list[str]:
@@ -1281,8 +1333,15 @@ def _recommendation_lanes(item: dict[str, Any]) -> list[str]:
         )
     )
     lanes: set[str] = set()
-    explicit_lane = _clean(item.get("lane_id")).lower()
-    explicit_route_lane = explicit_lane in ROUTE_GUARDRAIL_LANES
+    explicit_roles = {
+        role
+        for raw_role in [
+            item.get("lane_id"),
+            *(item.get("roles") if isinstance(item.get("roles"), list) else []),
+        ]
+        if (role := _clean(raw_role).lower()) in ROUTE_GUARDRAIL_LANES
+    }
+    explicit_route_lane = bool(explicit_roles)
     class_lanes = {
         "code": "coder",
         "judge": "judge",
@@ -1303,12 +1362,11 @@ def _recommendation_lanes(item: dict[str, Any]) -> list[str]:
         "world": "world",
     }
     class_lane = class_lanes.get(capability_class, "")
-    if explicit_route_lane:
-        lanes.add(explicit_lane)
+    lanes.update(explicit_roles)
     if class_lane:
         lanes.add(class_lane)
     narrow_specialist = bool(
-        (explicit_route_lane and explicit_lane in NARROW_SPECIALIST_LANES)
+        bool(explicit_roles & NARROW_SPECIALIST_LANES)
         or class_lane in NARROW_SPECIALIST_LANES
     )
     if not narrow_specialist:
@@ -1334,16 +1392,52 @@ def _route_guardrail(
     cooldown: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     model = _clean(item.get("model"))
-    lanes = _recommendation_lanes(item)
+    routing_policy = _recommendation_routing_policy(item)
+    candidate_lanes = _recommendation_lanes(item)
+    lane_policies = {
+        lane: lane_policy_for_model(
+            model=model,
+            lane=lane,
+            benchmark_quality=quality,
+        )
+        for lane in candidate_lanes
+    }
+    allowed_lanes = [
+        lane
+        for lane in candidate_lanes
+        if bool((lane_policies.get(lane) or {}).get("allowed"))
+    ]
+    lane_policy = (
+        lane_policies[allowed_lanes[0]]
+        if allowed_lanes
+        else lane_policies.get(
+            candidate_lanes[0],
+            lane_policy_for_model(
+                model=model,
+                lane="",
+                benchmark_quality=quality,
+            ),
+        )
+    )
+    lanes = allowed_lanes
     size_b = _model_size_b(model)
     canary = "canary" in lanes or _clean(item.get("priority")) == "canary"
     active_cooldown = isinstance(cooldown, dict) and bool(cooldown.get("active"))
-    if active_cooldown:
+    if routing_policy["manual_only"]:
+        authority = "manual_only"
+        route_state = "manual_only"
+    elif routing_policy["tool_only"]:
+        authority = "tool_only"
+        route_state = "tool_only"
+    elif active_cooldown:
         authority = "blocked"
         route_state = "cooldown"
     elif not quality.get("eligible"):
         authority = "blocked"
         route_state = "benchmark_blocked"
+    elif not lane_policy["allowed"]:
+        authority = "blocked"
+        route_state = "lane_policy_blocked"
     elif canary or (size_b is not None and size_b <= SMALL_MODEL_MAX_B):
         authority = "canary_only"
         route_state = "canary"
@@ -1358,12 +1452,22 @@ def _route_guardrail(
     return {
         "schema": "norman.norllama.route-guardrail.v1",
         "lanes": lanes,
+        "blocked_lanes": [
+            lane for lane in candidate_lanes if lane not in set(allowed_lanes)
+        ],
         "authority": authority,
         "route_state": route_state,
         "final_authority": False,
+        "manual_only": routing_policy["manual_only"],
+        "tool_only": routing_policy["tool_only"],
+        "dispatch": routing_policy["dispatch"],
+        "catalog_model": routing_policy["catalog_model"],
+        "catalog_resolution_source": routing_policy["resolution_source"],
+        "lane_policy": lane_policy,
+        "lane_policies": lane_policies,
         "production_route_eligible": bool(quality.get("production_route_eligible")),
         "capability_route_state": _clean(quality.get("capability_route_state")),
-        "requires_verification": authority != "blocked",
+        "requires_verification": authority not in {"blocked", "tool_only"},
         "cloud_escalation_required_for": [
             "workspace mutation",
             "external writes",
@@ -1371,7 +1475,14 @@ def _route_guardrail(
             "billing/provider changes",
             "final authority",
         ],
-        "reason": _clean(cooldown.get("reason") if active_cooldown else "")
+        "reason": (
+            "model is explicit manual-only and excluded from automatic routing"
+            if routing_policy["manual_only"]
+            else "model is a tool-only specialist and excluded from unified-chat routing"
+            if routing_policy["tool_only"]
+            else _clean(cooldown.get("reason") if active_cooldown else "")
+        )
+        or _clean(lane_policy.get("reason") if not lane_policy["allowed"] else "")
         or _clean(quality.get("reason")),
         "cooldown": dict(cooldown or {}),
     }
@@ -1384,6 +1495,8 @@ def _route_guardrail_matrix(evaluated: list[dict[str, Any]]) -> dict[str, Any]:
             "eligible_models": [],
             "blocked_models": [],
             "canary_models": [],
+            "manual_only_models": [],
+            "tool_only_models": [],
         }
         for lane in ROUTE_GUARDRAIL_LANES
     }
@@ -1395,7 +1508,9 @@ def _route_guardrail_matrix(evaluated: list[dict[str, Any]]) -> dict[str, Any]:
             else {}
         )
         authority = _clean(guardrail.get("authority")) or "blocked"
-        for lane in guardrail.get("lanes") or []:
+        eligible_lanes = [str(lane) for lane in guardrail.get("lanes") or []]
+        blocked_lanes = [str(lane) for lane in guardrail.get("blocked_lanes") or []]
+        for lane in eligible_lanes + blocked_lanes:
             if lane not in lanes or not model:
                 continue
             entry = {
@@ -1407,9 +1522,13 @@ def _route_guardrail_matrix(evaluated: list[dict[str, Any]]) -> dict[str, Any]:
                 "benchmark_quality": item.get("benchmark_quality")
                 if isinstance(item.get("benchmark_quality"), dict)
                 else {},
-                "authority": authority,
+                "authority": "blocked" if lane in blocked_lanes else authority,
             }
-            if authority == "blocked":
+            if entry["authority"] == "manual_only":
+                lanes[lane]["manual_only_models"].append(entry)
+            elif entry["authority"] == "tool_only":
+                lanes[lane]["tool_only_models"].append(entry)
+            elif entry["authority"] == "blocked":
                 lanes[lane]["blocked_models"].append(entry)
             elif authority == "canary_only":
                 lanes[lane]["canary_models"].append(entry)
@@ -1419,6 +1538,8 @@ def _route_guardrail_matrix(evaluated: list[dict[str, Any]]) -> dict[str, Any]:
         lane["eligible_count"] = len(lane["eligible_models"])
         lane["blocked_count"] = len(lane["blocked_models"])
         lane["canary_count"] = len(lane["canary_models"])
+        lane["manual_only_count"] = len(lane["manual_only_models"])
+        lane["tool_only_count"] = len(lane["tool_only_models"])
         lane["status"] = (
             "ready"
             if lane["eligible_models"]
@@ -1592,6 +1713,8 @@ def _route_outcome_stats(
             "timeout": 0,
             "success_rate": 0.0,
             "avg_latency_ms": 0,
+            "p50_latency_ms": 0,
+            "p95_latency_ms": 0,
             "last_status": "",
             "last_worker_id": clean_worker,
         }
@@ -1605,6 +1728,9 @@ def _route_outcome_stats(
         for outcome in filtered
         if int(outcome.get("latency_ms") or 0) > 0
     ]
+    sorted_latencies = sorted(latencies)
+    p50_index = max(0, (len(sorted_latencies) - 1) // 2)
+    p95_index = max(0, (len(sorted_latencies) * 95 + 99) // 100 - 1)
     return {
         "schema": "norman.norllama.route-outcome-stats.v1",
         "count": len(filtered),
@@ -1613,6 +1739,8 @@ def _route_outcome_stats(
         "timeout": timeout,
         "success_rate": round(ok / len(filtered), 3),
         "avg_latency_ms": int(sum(latencies) / len(latencies)) if latencies else 0,
+        "p50_latency_ms": sorted_latencies[p50_index] if sorted_latencies else 0,
+        "p95_latency_ms": sorted_latencies[p95_index] if sorted_latencies else 0,
         "last_status": _clean(filtered[0].get("status")),
         "last_worker_id": _clean(filtered[0].get("worker_id")) or clean_worker,
     }
@@ -1630,6 +1758,7 @@ def _action_for_recommendation(
     cooldown_seconds: int = 900,
 ) -> dict[str, Any]:
     model = _clean(item.get("model"))
+    routing_policy = _recommendation_routing_policy(item)
     quality = _benchmark_quality(item)
     service_evidence, service_workers = _service_workers(
         item=item,
@@ -1712,7 +1841,19 @@ def _action_for_recommendation(
     pressure_state = _clean(target_pressure.get("state"))
     action_reason = ""
     action = "observe"
-    if not available:
+    if routing_policy["manual_only"]:
+        action = "observe"
+        residency_state = "manual_only"
+        action_reason = (
+            "model is explicit manual-only and excluded from automatic warming"
+        )
+    elif routing_policy["tool_only"]:
+        action = "observe"
+        residency_state = "tool_only"
+        action_reason = (
+            "model is a tool-only specialist and excluded from unified-chat warming"
+        )
+    elif not available:
         action = "skip_unavailable"
         residency_state = "unavailable"
         action_reason = "model is not advertised by the Norllama mesh"
@@ -1764,6 +1905,7 @@ def _action_for_recommendation(
         "benchmark_quality": quality,
         "cooldown": cooldown,
         "route_guardrail": _route_guardrail(item, quality, cooldown=cooldown),
+        "model_policy": routing_policy,
         "model_size_b": _model_size_b(model),
         "model_family": _model_family(model),
         "target_worker": target_worker_id,
@@ -1786,6 +1928,8 @@ def _residency_summary(evaluated: list[dict[str, Any]]) -> dict[str, Any]:
         "cold": 0,
         "degraded": 0,
         "unavailable": 0,
+        "manual_only": 0,
+        "tool_only": 0,
     }
     actions: dict[str, int] = {}
     for item in evaluated:
@@ -1814,9 +1958,17 @@ def _apply_model_reality(
     result: list[dict[str, Any]] = []
     for item in evaluated:
         model = _clean(item.get("model"))
+        routing_policy = (
+            item.get("model_policy")
+            if isinstance(item.get("model_policy"), dict)
+            else _recommendation_routing_policy(item)
+        )
         row = dict(by_model.get(model) or {})
         if row:
             item = {**item, "model_reality": row}
+        if routing_policy.get("manual_only") or routing_policy.get("tool_only"):
+            result.append(item)
+            continue
         if row and not row.get("route_eligible"):
             action = _clean(item.get("action"))
             if action not in {
@@ -1932,6 +2084,13 @@ def _prefetch_response_stale_warm_warning(
 
 
 def _prefetch_candidate_allowed(item: dict[str, Any]) -> bool:
+    routing_policy = (
+        item.get("model_policy")
+        if isinstance(item.get("model_policy"), dict)
+        else _recommendation_routing_policy(item)
+    )
+    if routing_policy.get("manual_only") or routing_policy.get("tool_only"):
+        return False
     if _clean(item.get("action")) != "prefetch":
         return False
     if not _clean(item.get("model")) or not _clean(item.get("target_worker")):
@@ -2047,6 +2206,13 @@ def build_warm_policy(
         worker_id = _clean(item.get("target_worker"))
         if not worker_id or worker_id not in worker_plan:
             continue
+        routing_policy = (
+            item.get("model_policy")
+            if isinstance(item.get("model_policy"), dict)
+            else _recommendation_routing_policy(item)
+        )
+        if routing_policy.get("manual_only") or routing_policy.get("tool_only"):
+            continue
         worker_plan[worker_id]["desired_models"].append(_clean(item.get("model")))
         if (_clean(item.get("model")), worker_id) in prefetch_keys:
             worker_plan[worker_id]["prefetch_models"].append(_clean(item.get("model")))
@@ -2056,7 +2222,7 @@ def build_warm_policy(
         for item in evaluated
         if item.get("priority") == "p0"
         and item.get("route_guardrail", {}).get("authority")
-        not in {"blocked", "canary_only"}
+        not in {"blocked", "canary_only", "manual_only", "tool_only"}
     ]
     p0_available = any(item.get("available") for item in p0_routable)
     p0_active = any(
@@ -2163,6 +2329,16 @@ def build_warm_policy(
             ),
             "skip_model_reality": sum(
                 1 for item in evaluated if item.get("action") == "skip_model_reality"
+            ),
+            "manual_only": sum(
+                1
+                for item in evaluated
+                if (item.get("model_policy") or {}).get("manual_only")
+            ),
+            "tool_only": sum(
+                1
+                for item in evaluated
+                if (item.get("model_policy") or {}).get("tool_only")
             ),
         },
         "checked_at": time.time(),
@@ -2336,6 +2512,48 @@ def _pool_candidate_entry(
         lane_index=lane_index,
         strategy=strategy,
     )
+    lane_policies = (
+        item.get("route_guardrail", {}).get("lane_policies")
+        if isinstance(item.get("route_guardrail"), dict)
+        else {}
+    )
+    lane_policy = (
+        lane_policies.get(lane)
+        if isinstance(lane_policies, dict) and isinstance(lane_policies.get(lane), dict)
+        else {}
+    )
+    route_outcome_stats = (
+        item.get("route_outcome_stats")
+        if isinstance(item.get("route_outcome_stats"), dict)
+        else {}
+    )
+    worker_pressure = (
+        item.get("worker_pressure")
+        if isinstance(item.get("worker_pressure"), dict)
+        else {}
+    )
+    capacity_state = "available"
+    if not item.get("target_worker_reachable"):
+        capacity_state = "unavailable"
+    elif _clean(worker_pressure.get("state")) == "high":
+        capacity_state = "constrained"
+    elif (
+        route_outcome_stats.get("count")
+        and float(route_outcome_stats.get("success_rate") or 0) < 0.7
+    ):
+        capacity_state = "degraded"
+    capacity_evidence = {
+        "schema": "norman.norllama.capacity-evidence.v1",
+        "state": capacity_state,
+        "target_worker": _clean(item.get("target_worker")),
+        "target_worker_reachable": bool(item.get("target_worker_reachable")),
+        "target_active": bool(item.get("target_active")),
+        "worker_pressure": worker_pressure,
+        "outcome_sample_count": int(route_outcome_stats.get("count") or 0),
+        "success_rate": float(route_outcome_stats.get("success_rate") or 0),
+        "p50_latency_ms": int(route_outcome_stats.get("p50_latency_ms") or 0),
+        "p95_latency_ms": int(route_outcome_stats.get("p95_latency_ms") or 0),
+    }
     return {
         "model": _clean(item.get("model")),
         "lane": lane,
@@ -2356,12 +2574,10 @@ def _pool_candidate_entry(
         "model_reality": item.get("model_reality")
         if isinstance(item.get("model_reality"), dict)
         else {},
-        "route_outcome_stats": item.get("route_outcome_stats")
-        if isinstance(item.get("route_outcome_stats"), dict)
-        else {},
-        "worker_pressure": item.get("worker_pressure")
-        if isinstance(item.get("worker_pressure"), dict)
-        else {},
+        "lane_policy": lane_policy,
+        "route_outcome_stats": route_outcome_stats,
+        "worker_pressure": worker_pressure,
+        "capacity_evidence": capacity_evidence,
     }
 
 
@@ -2395,6 +2611,7 @@ def select_model_for_task_kind(
     )
     strategy = _selection_strategy(policy)
     allow_canary = _selection_allows_canary(policy)
+    direct_tool_task = bool(lanes and lanes[0] in NARROW_SPECIALIST_LANES)
     if policy_authorization and not policy_authorization.get("allowed"):
         return {
             "schema": "norman.norllama.warm-policy-selection.v1",
@@ -2418,6 +2635,15 @@ def select_model_for_task_kind(
     for item in payload.get("recommendations") or []:
         if not isinstance(item, dict):
             continue
+        routing_policy = (
+            item.get("model_policy")
+            if isinstance(item.get("model_policy"), dict)
+            else _recommendation_routing_policy(item)
+        )
+        if routing_policy.get("manual_only") or (
+            routing_policy.get("tool_only") and not direct_tool_task
+        ):
+            continue
         guardrail = item.get("route_guardrail")
         if not isinstance(guardrail, dict):
             continue
@@ -2438,7 +2664,9 @@ def select_model_for_task_kind(
         if not item.get("available"):
             continue
         authority = _clean(guardrail.get("authority"))
-        if authority == "blocked":
+        if authority in {"blocked", "manual_only"} or (
+            authority == "tool_only" and not direct_tool_task
+        ):
             continue
         if authority == "canary_only" and not allow_canary:
             canary_candidates.append(
@@ -2534,6 +2762,8 @@ def select_model_for_task_kind(
         "route_guardrail": item.get("route_guardrail")
         if isinstance(item.get("route_guardrail"), dict)
         else {},
+        "lane_policy": selected_pool_entry.get("lane_policy") or {},
+        "capacity_evidence": selected_pool_entry.get("capacity_evidence") or {},
         "warm_policy_status": _clean(payload.get("status")),
         "route_posture": _clean(payload.get("route_posture")),
     }

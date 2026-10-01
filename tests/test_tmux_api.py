@@ -4,13 +4,35 @@ import pathlib
 import uuid
 from datetime import datetime, timezone
 
+import pytest
+
 from app import crud
 from app import models
-from app.api.api_v1.routers.tmux import _read_session_bootstrap_from_dir
+from app.api.api_v1.routers.tmux import (
+    _profile_path,
+    _read_session_bootstrap_from_dir,
+)
 from app.core.config import settings
 from app.models import Connector
 from app.schemas.connector import ConnectorCreate
 from app.schemas.user import UserCreate
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tmux_profile_storage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    profile_root = tmp_path / "tmux_profiles"
+
+    def profile_dir_for_user(user):
+        directory = profile_root / str(int(user.id))
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.tmux._profile_dir_for_user",
+        profile_dir_for_user,
+    )
 
 
 def test_tmux_sessions_endpoint(test_app, monkeypatch) -> None:
@@ -377,6 +399,14 @@ def test_tmux_control_credits_endpoint_returns_monitor_summary(
         usage_window_total_tokens = 1960
         usage_last_turn_at = 1234567890
         usage_last_turn_total_tokens = 220
+        codex_subscription_capacity_state = "available"
+        codex_subscription_capacity_fresh = True
+        codex_subscription_capacity_observed_at = 1234567800
+        codex_subscription_capacity_percent_left = 84
+        codex_subscription_capacity_reset_hint = "2h 10m"
+        codex_subscription_capacity_eligible = True
+        codex_subscription_capacity_tokens_per_hour = 4321
+        codex_subscription_capacity_projected_tokens_to_reset = 9362
 
     async def _items(connector_ids=None):
         return [Snapshot()]
@@ -401,6 +431,8 @@ def test_tmux_control_credits_endpoint_returns_monitor_summary(
             "usage_window_output_tokens": 160,
             "usage_window_total_tokens": 1960,
             "usage_last_turn_at": 1234567890,
+            "codex_subscription_capacity_available": 1,
+            "codex_subscription_capacity_eligible": 1,
         }
 
     monkeypatch.setattr(
@@ -421,6 +453,9 @@ def test_tmux_control_credits_endpoint_returns_monitor_summary(
     assert payload["usage_window_total_tokens"] == 1960
     assert payload["items"][0]["usage_total_tokens"] == 4580
     assert payload["items"][0]["usage_window_turns"] == 5
+    assert payload["codex_subscription_capacity_available"] == 1
+    assert payload["items"][0]["codex_subscription_capacity_percent_left"] == 84
+    assert payload["items"][0]["codex_subscription_capacity_eligible"] is True
 
 
 def test_tmux_send_endpoint_blocks_locked_connector(test_app, db, monkeypatch) -> None:
@@ -1354,7 +1389,7 @@ def test_tmux_control_lock_all_endpoint_locks_user_tmux_connectors(
     assert bool((second_refreshed.config or {}).get("locked")) is True
 
 
-def test_tmux_profile_save_and_load(test_app, db, monkeypatch) -> None:
+def test_tmux_profile_save_and_load(test_app, db, monkeypatch, tmp_path) -> None:
     session_name = f"profile-web-{uuid.uuid4().hex[:8]}"
     user = crud.user.get_user_by_email(db, "test@example.com")
     if not user:
@@ -1387,7 +1422,8 @@ def test_tmux_profile_save_and_load(test_app, db, monkeypatch) -> None:
     )
     assert save_resp.status_code == 200
     assert save_resp.json()["status"] == "saved"
-    profile_path = pathlib.Path("db/tmux_profiles") / str(user.id) / "default_pack.json"
+    profile_path = _profile_path(user, "default_pack")
+    assert profile_path.is_relative_to(tmp_path)
     saved = json.loads(profile_path.read_text(encoding="utf-8"))
     saved_item = next(
         item for item in saved["items"] if item.get("session") == session_name
@@ -1512,7 +1548,8 @@ def test_tmux_profile_save_running_only_snapshots_live_sessions(
     assert save_resp.json()["status"] == "saved"
     assert save_resp.json()["sessions"] == 2
 
-    profile_path = pathlib.Path("db/tmux_profiles") / str(user.id) / "running_now.json"
+    profile_path = _profile_path(user, "running_now")
+    assert profile_path.is_relative_to(tmp_path)
     saved = json.loads(profile_path.read_text(encoding="utf-8"))
     assert saved["snapshot_mode"] == "running"
 

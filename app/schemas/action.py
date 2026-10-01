@@ -1,5 +1,5 @@
 from typing import List
-from pydantic import BaseModel, Field, conint
+from pydantic import ConfigDict, BaseModel, Field, conint
 
 
 class ActionBase(BaseModel):
@@ -8,8 +8,7 @@ class ActionBase(BaseModel):
     reply_channel_id: conint(gt=0) = Field(..., alias="reply_to")
     execution_order: conint(gt=0)
 
-    class Config:
-        allow_population_by_field_name = True
+    model_config = ConfigDict(validate_by_name=True)
 
 
 class ActionCreate(ActionBase):
@@ -23,6 +22,4 @@ class ActionUpdate(ActionBase):
 class Action(ActionBase):
     id: int
 
-    class Config:
-        orm_mode = True
-        allow_population_by_field_name = True
+    model_config = ConfigDict(from_attributes=True, validate_by_name=True)

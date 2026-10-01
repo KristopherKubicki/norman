@@ -538,9 +538,10 @@ document.addEventListener('DOMContentLoaded', () => {
       || routeText.includes('pef')
       || routeText.includes('private')
     ) return 'Private';
-    if (PERSONAL_SERVICE_SLUGS.has(slug) || routeText.includes('toy-box') || routeText.includes('192.168.2.146')) return 'Personal';
-    if (WORK_SERVICE_SLUGS.has(slug) || routeText.includes('work-special') || routeText.includes('192.168.2.147')) return 'Work';
-    if (SHARED_SERVICE_SLUGS.has(slug) || routeText.includes('networking.tail94915.ts.net') || routeText.includes('192.168.2.242')) return 'Shared';
+    if (PERSONAL_SERVICE_SLUGS.has(slug) || routeText.includes('toy-box')) return 'Personal';
+    if (WORK_SERVICE_SLUGS.has(slug) || routeText.includes('work-special')) return 'Work';
+    if (SHARED_SERVICE_SLUGS.has(slug) || [service?.web_url, service?.web_url_tailnet, service?.console_url, service?.console_url_tailnet]
+      .some((value) => networkHostname(value) === 'networking.tail94915.ts.net')) return 'Shared';
     if (String(principal?.slug || '').trim().toLowerCase() === 'openbrand') return 'Work';
     return 'Shared';
   }
@@ -609,22 +610,33 @@ document.addEventListener('DOMContentLoaded', () => {
     return 'shared';
   }
 
+  function networkHostname(value) {
+    const text = String(value || '').trim();
+    if (!text || text.startsWith('/') || /[\\\s]/.test(text)) return '';
+    try {
+      const url = new URL(text.includes('://') ? text : `https://${text}`);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return '';
+      return url.hostname.toLowerCase().replace(/\.$/, '');
+    } catch (_) {
+      return '';
+    }
+  }
+
   function isTailnetHostLike(value) {
-    const text = String(value || '').trim().toLowerCase();
-    if (!text) return false;
-    if (text.includes('.ts.net') || text.includes('tailscale')) return true;
-    return /\b100\.(6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/.test(text);
+    const host = networkHostname(value);
+    if (!host) return false;
+    return host.endsWith('.ts.net')
+      || /^100\.(6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(host);
   }
 
   function isLanHostLike(value) {
-    const text = String(value || '').trim().toLowerCase();
-    if (!text) return false;
-    if (text.includes('127.0.0.1') || text.includes('localhost')) return true;
-    if (text.includes('.local') || text.endsWith('.lan') || text.endsWith('.arpa')) return true;
-    if (/\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/.test(text)) return true;
-    if (/\b192\.168\.\d{1,3}\.\d{1,3}\b/.test(text)) return true;
-    if (/\b172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b/.test(text)) return true;
-    return false;
+    const host = networkHostname(value);
+    if (!host) return false;
+    if (host === '127.0.0.1' || host === 'localhost') return true;
+    if (host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.arpa')) return true;
+    return /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+      || /^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)
+      || /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host);
   }
 
   function currentFleetRoutePreference() {
@@ -1407,14 +1419,26 @@ document.addEventListener('DOMContentLoaded', () => {
   function primeCreditTone(item) {
     if (item.issue_code === 'needs_billing') return 'danger';
     if (item.issue_code === 'needs_reauth') return 'warn';
+    if (item.codex_subscription_capacity_state === 'blocked') return 'warn';
     if (item.recommended_speed) return 'shared';
     if (Number(item.usage_window_total_tokens || 0) > 0) return 'ok';
     return 'idle';
   }
 
+  function primeSubscriptionCapacityLabel(item) {
+    const state = String(item.codex_subscription_capacity_state || 'unknown');
+    const percent = Number(item.codex_subscription_capacity_percent_left);
+    if (state === 'available' && item.codex_subscription_capacity_fresh && Number.isFinite(percent) && percent >= 0) {
+      return `Plan ${percent}% left`;
+    }
+    if (state === 'blocked') return 'Plan capped';
+    if (state === 'available') return 'Plan reading stale';
+    return 'Plan unavailable';
+  }
+
   function primeCreditItems(payload) {
     return [...(payload.items || [])]
-      .filter((item) => item.issue_code || item.recommended_speed || Number(item.usage_window_total_tokens || 0) > 0 || Number(item.usage_total_tokens || 0) > 0)
+      .filter((item) => item.issue_code || item.recommended_speed || item.codex_subscription_capacity_state === 'available' || item.codex_subscription_capacity_state === 'blocked' || Number(item.usage_window_total_tokens || 0) > 0 || Number(item.usage_total_tokens || 0) > 0)
       .sort((left, right) => {
         const leftPriority = left.issue_code === 'needs_billing' ? 0 : left.issue_code === 'needs_reauth' ? 1 : left.recommended_speed ? 2 : 3;
         const rightPriority = right.issue_code === 'needs_billing' ? 0 : right.issue_code === 'needs_reauth' ? 1 : right.recommended_speed ? 2 : 3;
@@ -1437,6 +1461,7 @@ document.addEventListener('DOMContentLoaded', () => {
       { label: 'Needs reauth', value: payload.needs_reauth || 0, tone: payload.needs_reauth ? 'warn' : 'idle' },
       { label: 'Fast to rebalance', value: payload.downgrade_candidates || 0, tone: payload.downgrade_candidates ? 'shared' : 'idle' },
       { label: '24h burn', value: formatPrimeTokenCompact(payload.usage_window_total_tokens || 0), tone: payload.usage_window_total_tokens ? 'ok' : 'idle' },
+      { label: 'Plan capacity', value: payload.codex_subscription_capacity_available || 0, tone: payload.codex_subscription_capacity_available ? 'ok' : 'idle' },
     ];
     homePrimeCreditsSummary.innerHTML = cards.map((card) => `
       <article class="prime-ops-summary-card prime-ops-summary-card--${escapeHtml(card.tone)}">
@@ -1460,6 +1485,8 @@ document.addEventListener('DOMContentLoaded', () => {
             <span>24h ${escapeHtml(formatPrimeTokenCompact(item.usage_window_total_tokens || 0))} tok</span>
             <span>Total ${escapeHtml(formatPrimeTokenCompact(item.usage_total_tokens || 0))} tok</span>
             <span>${escapeHtml(formatPrimeCount(item.usage_turns || 0))} turn${Number(item.usage_turns || 0) === 1 ? '' : 's'}</span>
+            <span>${escapeHtml(primeSubscriptionCapacityLabel(item))}</span>
+            ${Number(item.codex_subscription_capacity_tokens_per_hour || 0) > 0 ? `<span>Forecast ${escapeHtml(formatPrimeTokenCompact(item.codex_subscription_capacity_tokens_per_hour))} tok/h</span>` : ''}
           </div>
           <div class="prime-credit-card__actions">
             ${item.billing_url ? `<a class="btn btn-outline-secondary btn-sm" href="${escapeHtml(item.billing_url)}" target="_blank" rel="noreferrer">Billing</a>` : ''}
@@ -1944,7 +1971,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const lower = value.toLowerCase();
     if (!value) return '';
     if (isTailnetHostLike(lower)) return 'Tailnet';
-    if (lower.includes('127.0.0.1') || lower.includes('localhost')) return 'Local';
+    if (networkHostname(value) === '127.0.0.1' || networkHostname(value) === 'localhost') return 'Local';
     if (isLanHostLike(lower)) return 'LAN';
     return 'Web';
   }

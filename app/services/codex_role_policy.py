@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA = "norman.codex-role-policy.v1"
-SUPPORTED_VERSIONS = {"2026.07.15.role-v1"}
+SUPPORTED_VERSIONS = {"2026.08.09.terra-only-v1"}
 ENV_PATH = "NORMAN_CODEX_ROLE_POLICY_PATH"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = REPO_ROOT / "db" / "policies" / "codex_role_policy.json"

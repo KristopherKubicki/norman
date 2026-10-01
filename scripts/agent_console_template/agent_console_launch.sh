@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+LAUNCH_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SECRET_GUARD_SCRIPT="${LAUNCH_SCRIPT_DIR}/norman_codex_secret_guard.py"
+MANAGED_CODEX_REQUIREMENTS="${NORMAN_CODEX_REQUIREMENTS_PATH:-/etc/codex/requirements.toml}"
+MANAGED_SECRET_GUARD="${NORMAN_CODEX_MANAGED_SECRET_GUARD:-/usr/local/lib/norman-codex-route/norman_codex_secret_guard.py}"
+
 bridge_console_env_prefixes() {
     local name suffix alias
     for name in ${!NORMAN_CODEX_@}; do
@@ -20,6 +25,15 @@ bridge_console_env_prefixes() {
 }
 
 bridge_console_env_prefixes
+
+# pytest-xdist reads this only for `pytest -n auto`; preserve capacity for the
+# foreground TUI while allowing an explicit per-launcher capacity override.
+PYTEST_XDIST_AUTO_NUM_WORKERS="${NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS:-4}"
+if [[ ! "$PYTEST_XDIST_AUTO_NUM_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS must be a positive integer.\n' >&2
+    exit 2
+fi
+export PYTEST_XDIST_AUTO_NUM_WORKERS
 
 BASE_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 NODE_BIN_DIRS=()
@@ -69,7 +83,7 @@ export PATH
 
 # Legacy source checks:
 # CODEX_BIN="${HOUSEBOT_CODEX_BIN:-}"
-# MODEL="${HOUSEBOT_CODEX_MODEL:-gpt-5.5}"
+# MODEL="${HOUSEBOT_CODEX_MODEL:-openai.gpt-5.6-terra}"
 # /opt/node-v20.19.6/bin/codex
 # /home/kristopher/.nvm/versions/node/v20.19.6/bin/codex
 CODEX_BIN="${NORMAN_CODEX_BIN:-}"
@@ -89,14 +103,16 @@ if [[ -z "$CODEX_BIN" ]]; then
 fi
 
 WORKDIR="${NORMAN_CODEX_WORKDIR:-/opt/housebot}"
-CODEX_HOME="${CODEX_HOME:-/root/.codex-housebot}"
+CODEX_HOME="${NORMAN_CODEX_HOME:-${CODEX_HOME:-/root/.codex-housebot}}"
 PROMPT_FILE="${NORMAN_CODEX_PROMPT_FILE:-/etc/housebot/codex-system-prompt.txt}"
-MODEL="${NORMAN_CODEX_MODEL:-gpt-5.5}"
-REASONING_EFFORT="${NORMAN_CODEX_REASONING_EFFORT:-xhigh}"
+MODEL="${NORMAN_CODEX_MODEL:-openai.gpt-5.6-terra}"
+REASONING_EFFORT="${NORMAN_CODEX_REASONING_EFFORT:-high}"
 PROMPT_STATE_FILE="${CODEX_HOME}/.prompt_sha256"
 RUNTIME_SETTINGS_FILE="${NORMAN_CODEX_RUNTIME_SETTINGS_FILE:-${CODEX_HOME}/web-bridge/runtime_settings.json}"
+CODEX_PROVIDER="${NORMAN_CODEX_PROVIDER:-bedrock}"
 
 export CODEX_HOME
+export NORMAN_TUI_NO_DIRECT_VAULT=1
 
 cd "$WORKDIR"
 
@@ -130,13 +146,14 @@ STANDARD_AWS_PROFILE="${NORMAN_CODEX_STANDARD_AWS_PROFILE:-}"
 STANDARD_AWS_REGION="${NORMAN_CODEX_STANDARD_AWS_REGION:-}"
 CODEX_PROFILE_ARGS=()
 CODEX_SERVICE_TIER_ARGS=()
+CODEX_REASONING_ARGS=(-c "model_reasoning_effort=\"$REASONING_EFFORT\"")
 CODEX_PROFILE_FLAG="${NORMAN_CODEX_PROFILE_CONFIG_FLAG:-}"
 if [[ -z "$CODEX_PROFILE_FLAG" ]]; then
     CODEX_PROFILE_HELP="$("$CODEX_BIN" --help 2>&1 || true)"
     HAS_PROFILE=0
     HAS_PROFILE_V2=0
-    grep -q -- "--profile" <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE=1
-    grep -q -- "--profile-v2" <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE_V2=1
+    grep -Eq -- '(^|[[:space:],])--profile($|[[:space:],])' <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE=1
+    grep -Eq -- '(^|[[:space:],])--profile-v2($|[[:space:],])' <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE_V2=1
     if [[ "$HAS_PROFILE" == "1" && "$HAS_PROFILE_V2" == "1" ]]; then
         CODEX_VERSION="$("$CODEX_BIN" --version 2>/dev/null | awk '{print $2; exit}')"
         IFS=. read -r CODEX_VERSION_MAJOR CODEX_VERSION_MINOR _ <<<"$CODEX_VERSION"
@@ -156,37 +173,139 @@ if [[ -z "$CODEX_PROFILE_FLAG" ]]; then
     fi
 fi
 
-case "${SERVICE_TIER,,}" in
-auto)
-    if [[ -n "$STANDARD_PROFILE_V2" ]]; then
-        CODEX_PROFILE_ARGS=("$CODEX_PROFILE_FLAG" "$STANDARD_PROFILE_V2")
-        MODEL="${STANDARD_MODEL:-$MODEL}"
-        [[ -z "$STANDARD_AWS_PROFILE" ]] || export AWS_PROFILE="$STANDARD_AWS_PROFILE"
-        [[ -z "$STANDARD_AWS_REGION" ]] || export AWS_REGION="$STANDARD_AWS_REGION"
-    fi
+case "${CODEX_PROVIDER,,}" in
+bedrock | direct | "")
+    CODEX_PROVIDER="bedrock"
     ;;
-default | standard | "")
-    if [[ -n "$STANDARD_PROFILE_V2" ]]; then
-        CODEX_PROFILE_ARGS=("$CODEX_PROFILE_FLAG" "$STANDARD_PROFILE_V2")
-        MODEL="${STANDARD_MODEL:-$MODEL}"
-        [[ -z "$STANDARD_AWS_PROFILE" ]] || export AWS_PROFILE="$STANDARD_AWS_PROFILE"
-        [[ -z "$STANDARD_AWS_REGION" ]] || export AWS_REGION="$STANDARD_AWS_REGION"
-    else
-        CODEX_SERVICE_TIER_ARGS=(-c 'service_tier="default"')
-    fi
-    ;;
-flex)
-    MODEL="${FLEX_MODEL:-$MODEL}"
-    CODEX_SERVICE_TIER_ARGS=(-c 'service_tier="flex"')
-    ;;
-priority | fast)
-    MODEL="${PRIORITY_MODEL:-$MODEL}"
-    CODEX_SERVICE_TIER_ARGS=(-c 'service_tier="priority"')
+norman | gateway)
+    CODEX_PROVIDER="norman"
     ;;
 *)
-    CODEX_SERVICE_TIER_ARGS=(-c "service_tier=\"${SERVICE_TIER}\"")
+    printf 'Unknown NORMAN_CODEX_PROVIDER=%s; use bedrock or norman.\n' "$CODEX_PROVIDER" >&2
+    exit 2
     ;;
 esac
+
+if [[ "$CODEX_PROVIDER" == "norman" ]]; then
+    CODEX_GATEWAY_PROFILE="${NORMAN_CODEX_GATEWAY_PROFILE:-norman-gateway}"
+    if [[ ! "$CODEX_GATEWAY_PROFILE" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        printf 'NORMAN_CODEX_GATEWAY_PROFILE must contain only letters, numbers, _ and -.\n' >&2
+        exit 2
+    fi
+    CODEX_GATEWAY_BASE_URL="${NORMAN_CODEX_GATEWAY_BASE_URL:-https://norman.home.arpa/v1}"
+    CODEX_GATEWAY_MODEL="${NORMAN_CODEX_GATEWAY_MODEL:-openai.gpt-5.6-terra}"
+    CODEX_GATEWAY_TOKEN_SECRET="${NORMAN_CODEX_GATEWAY_TOKEN_SECRET:-norman/prompt-proxy-token}"
+    CODEX_GATEWAY_TOKEN_HELPER="${NORMAN_CODEX_GATEWAY_TOKEN_HELPER:-${LAUNCH_SCRIPT_DIR}/norman_codex_gateway_token.py}"
+    if [[ "$CODEX_GATEWAY_TOKEN_HELPER" != /* ]]; then
+        printf 'NORMAN_CODEX_GATEWAY_TOKEN_HELPER must be an absolute path.\n' >&2
+        exit 2
+    fi
+
+    MODEL="$CODEX_GATEWAY_MODEL"
+    CODEX_PROFILE_ARGS=("$CODEX_PROFILE_FLAG" "$CODEX_GATEWAY_PROFILE")
+    CODEX_SERVICE_TIER_ARGS=()
+    CODEX_REASONING_ARGS=()
+else
+    case "${SERVICE_TIER,,}" in
+    auto)
+        if [[ -n "$STANDARD_PROFILE_V2" ]]; then
+            CODEX_PROFILE_ARGS=("$CODEX_PROFILE_FLAG" "$STANDARD_PROFILE_V2")
+            MODEL="${STANDARD_MODEL:-$MODEL}"
+            [[ -z "$STANDARD_AWS_PROFILE" ]] || export AWS_PROFILE="$STANDARD_AWS_PROFILE"
+            [[ -z "$STANDARD_AWS_REGION" ]] || export AWS_REGION="$STANDARD_AWS_REGION"
+        fi
+        ;;
+    default | standard | "")
+        if [[ -n "$STANDARD_PROFILE_V2" ]]; then
+            CODEX_PROFILE_ARGS=("$CODEX_PROFILE_FLAG" "$STANDARD_PROFILE_V2")
+            MODEL="${STANDARD_MODEL:-$MODEL}"
+            [[ -z "$STANDARD_AWS_PROFILE" ]] || export AWS_PROFILE="$STANDARD_AWS_PROFILE"
+            [[ -z "$STANDARD_AWS_REGION" ]] || export AWS_REGION="$STANDARD_AWS_REGION"
+        else
+            CODEX_SERVICE_TIER_ARGS=(-c 'service_tier="default"')
+        fi
+        ;;
+    flex)
+        MODEL="${FLEX_MODEL:-$MODEL}"
+        CODEX_SERVICE_TIER_ARGS=(-c 'service_tier="flex"')
+        ;;
+    priority | fast)
+        MODEL="${PRIORITY_MODEL:-$MODEL}"
+        CODEX_SERVICE_TIER_ARGS=(-c 'service_tier="priority"')
+        ;;
+    *)
+        CODEX_SERVICE_TIER_ARGS=(-c "service_tier=\"${SERVICE_TIER}\"")
+        ;;
+    esac
+fi
+
+PREFLIGHT_MODE="${NORMAN_CODEX_PREFLIGHT_MODE:-required}"
+PREFLIGHT_SCRIPT="${NORMAN_CODEX_PREFLIGHT_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/tui_release_readiness.py}"
+PREFLIGHT_TIMEOUT_SECONDS="${NORMAN_CODEX_PREFLIGHT_TIMEOUT_SECONDS:-10}"
+PREFLIGHT_STATE_DIR="${NORMAN_CODEX_WEB_STATE_DIR:-${CODEX_HOME}/web-bridge}"
+
+run_release_preflight() {
+    case "${PREFLIGHT_MODE,,}" in
+    off | 0 | false | no)
+        return 0
+        ;;
+    required | observe)
+        ;;
+    *)
+        printf 'Unknown NORMAN_CODEX_PREFLIGHT_MODE=%s; using observe mode.\\n' "$PREFLIGHT_MODE" >&2
+        PREFLIGHT_MODE="observe"
+        ;;
+    esac
+
+    if [[ ! -r "$PREFLIGHT_SCRIPT" ]]; then
+        printf 'TUI preflight helper is unavailable at %s.\\n' "$PREFLIGHT_SCRIPT" >&2
+        [[ "${PREFLIGHT_MODE,,}" != "required" ]] && return 0
+        return 1
+    fi
+
+    local args=(
+        "$PREFLIGHT_SCRIPT"
+        --codex-bin "$CODEX_BIN"
+        --codex-home "$CODEX_HOME"
+        --service-tier "$SERVICE_TIER"
+        --timeout-seconds "$PREFLIGHT_TIMEOUT_SECONDS"
+        --json-output "${PREFLIGHT_STATE_DIR}/release_readiness.json"
+        --markdown-output "${PREFLIGHT_STATE_DIR}/release_readiness.md"
+        --summary
+    )
+    if [[ "${PREFLIGHT_MODE,,}" == "required" ]]; then
+        args+=(--fail-on-blocker)
+    fi
+
+    if python3 "${args[@]}"; then
+        return 0
+    fi
+
+    printf 'TUI preflight blocked this launch. Read %s/release_readiness.md for recovery.\\n' \
+        "$PREFLIGHT_STATE_DIR" >&2
+    return 1
+}
+
+run_release_preflight
+
+RUNTIME_BRIDGE_SCRIPT="${NORMAN_CODEX_RUNTIME_BRIDGE_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/norman_codex_runtime_bridge.py}"
+
+run_terminal_runtime_bridge() {
+    if [[ ! -r "$RUNTIME_BRIDGE_SCRIPT" ]]; then
+        printf 'Terminal runtime bridge helper is unavailable; native Codex retained.\n' >&2
+        [[ "${NORMAN_CODEX_RUNTIME_BRIDGE_STRICT:-0}" =~ ^(1|true|yes|on)$ ]] && return 1
+        return 0
+    fi
+    python3 "$RUNTIME_BRIDGE_SCRIPT" \
+        --codex-home "$CODEX_HOME" \
+        --session-id "${NORMAN_CODEX_SESSION:-${HOUSEBOT_CODEX_SESSION:-terminal}}" \
+        --agent-name "${NORMAN_CODEX_AGENT_NAME:-${HOUSEBOT_CODEX_AGENT_NAME:-terminal-codex}}" \
+        --service-tier "$SERVICE_TIER" \
+        --model "$MODEL" \
+        --summary
+}
+
+run_terminal_runtime_bridge
 
 run_codex() {
     "$CODEX_BIN" \
@@ -194,7 +313,7 @@ run_codex() {
         --dangerously-bypass-approvals-and-sandbox \
         "${CODEX_PROFILE_ARGS[@]}" \
         -m "$MODEL" \
-        -c "model_reasoning_effort=\"$REASONING_EFFORT\"" \
+        "${CODEX_REASONING_ARGS[@]}" \
         "${CODEX_SERVICE_TIER_ARGS[@]}" \
         "$@"
 }
@@ -220,6 +339,11 @@ Fleet coordination policy:
   - Do not send Scout implementation, deploys, credentials, privileged operations, or repo-local secrets.
   - Direct peer handoffs are only for clearly allowed low-risk relationships; otherwise route the request through Norman Prime / Subprime.
 - If you need credentials, passwords, secrets, or privileged access, ask Norman Prime to broker the request or use the configured secret/access path for your lane. Do not invent new ad hoc secret-sharing paths.
+- TUI secret execution policy:
+  - Read-only analysis, review, status checks, and recommendations never access secrets.
+  - Necessary credentialed work uses approved Norman Keys aliases and broker paths with the smallest available approval or lease.
+  - If the broker is unavailable, report the action blocked with the required logical alias or capability.
+  - Never invoke `cred`, create or migrate a vault, or ask for a vault passphrase.
 - Norman Keys / keyservice rules:
   - Treat Norman Keys as the control-plane service for secret aliases, policies, requests, leases, and audit. It is not a bot, BBS actor, or chat lane.
   - Prefer named aliases and brokered use over raw secret values. Ask for the alias or the capability you need, not for a token to be pasted into the transcript.
@@ -233,6 +357,10 @@ Fleet coordination policy:
   - Prefer Norman, Switchboard BBS, runbooks, logs, service APIs, and the actual target host over HAL desktop inspection.
   - HAL credentials are rotating; do not rely on them as durable automation material or copy them into prompts, BBS posts, SOUL.md files, runbooks, screenshots, or handoffs.
   - If HAL access appears necessary, ask for the smallest approved maintenance action and explain why lower-interference evidence is insufficient.
+- Shared-host resource discipline:
+  - Treat interactive TUI responsiveness as foreground work. Inspect the local host-pressure report before launching broad scans, browser automation, full test suites, or other sustained work.
+  - Do not run `pytest -n auto` on a shared interactive host. Use the normal test command or a bounded worker count; work-profile sessions cap xdist auto mode at four workers unless an operator deliberately overrides it.
+  - When pressure is elevated, defer background work and finish or interrupt disposable test workers before starting more work. Do not terminate active Codex sessions without an operator decision.
 - Direct bot-to-bot communication is deny-by-default unless your role prompt explicitly allows a low-risk peer relationship.
 - When uncertain, ask Norman Prime for the minimum scope you need: status, summary, file path, screenshot, structured handoff, or an approved raw artifact.
 - If a user asks you to "share this with Norman", "put this in Subprime", "use the Switchboard", or "let Norman coordinate", prefer a concise Norman/Subprime handoff instead of saying you lack a transport unless the UI truly offers no relay action.
@@ -338,6 +466,80 @@ if [[ -f "$PROMPT_STATE_FILE" ]]; then
 fi
 
 mkdir -p "$CODEX_HOME"
+
+verify_managed_secret_guard() {
+    if [[ ! -r "$SECRET_GUARD_SCRIPT" ]]; then
+        printf 'Norman TUI secret guard verifier is unavailable at %s.\n' \
+            "$SECRET_GUARD_SCRIPT" >&2
+        return 1
+    fi
+
+    if ! python3 "$SECRET_GUARD_SCRIPT" \
+        --verify-managed-policy \
+        --requirements-path "$MANAGED_CODEX_REQUIREMENTS" \
+        --managed-guard-path "$MANAGED_SECRET_GUARD"; then
+        printf 'Managed Norman credential policy is unavailable. Run sudo -n ~/code/norman/scripts/deploy_codex_tui_secret_guard.sh.\n' >&2
+        return 1
+    fi
+}
+
+verify_managed_secret_guard
+
+write_norman_gateway_profile() {
+    if [[ ! -x "$CODEX_GATEWAY_TOKEN_HELPER" ]]; then
+        printf 'Norman gateway token helper is unavailable at %s.\n' \
+            "$CODEX_GATEWAY_TOKEN_HELPER" >&2
+        return 1
+    fi
+
+    local profile_path="${CODEX_HOME}/${CODEX_GATEWAY_PROFILE}.config.toml"
+    local temporary_path
+    temporary_path="$(mktemp "${CODEX_HOME}/.${CODEX_GATEWAY_PROFILE}.XXXXXX")"
+    if ! python3 - \
+        "$temporary_path" \
+        "$CODEX_GATEWAY_BASE_URL" \
+        "$CODEX_GATEWAY_TOKEN_HELPER" \
+        "$CODEX_GATEWAY_TOKEN_SECRET" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+base_url, token_helper, token_secret = sys.argv[2:]
+path.write_text(
+    "\n".join(
+        [
+            'model_provider = "norman"',
+            "",
+            "[model_providers.norman]",
+            'name = "Norman model gateway"',
+            f"base_url = {json.dumps(base_url)}",
+            'wire_api = "responses"',
+            "stream_idle_timeout_ms = 1200000",
+            "",
+            "[model_providers.norman.auth]",
+            f"command = {json.dumps(token_helper)}",
+            f"args = [{json.dumps('--secret')}, {json.dumps(token_secret)}]",
+            "timeout_ms = 5000",
+            "refresh_interval_ms = 300000",
+            "",
+        ]
+    ),
+    encoding="utf-8",
+)
+PY
+    then
+        rm -f "$temporary_path"
+        printf 'Unable to write the Norman gateway Codex profile.\n' >&2
+        return 1
+    fi
+    chmod 600 "$temporary_path"
+    mv -f "$temporary_path" "$profile_path"
+}
+
+if [[ "$CODEX_PROVIDER" == "norman" ]]; then
+    write_norman_gateway_profile
+fi
 
 AUTH_FILE="${CODEX_HOME}/auth.json"
 if [[ -L "$AUTH_FILE" ]]; then

@@ -189,6 +189,30 @@ def test_console_link_token_paths_use_active_home_and_env_override(
     assert module.console_link_token_paths() == [override_a, override_b]
 
 
+def test_main_fails_explicitly_when_no_inventory(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _load_scorecard(monkeypatch)
+    output = tmp_path / "scorecard.json"
+    monkeypatch.setattr(module, "load_db_items", lambda _path: [])
+    monkeypatch.setattr(module, "load_registry_items", lambda _path: [])
+    monkeypatch.setattr(module, "console_link_token_paths", lambda: [])
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        ["tui_fleet_scorecard.py", "--json", "--output", str(output)],
+    )
+
+    result = module.main()
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    captured = capsys.readouterr()
+    assert result == 2
+    assert report["status"] == "inventory_unavailable"
+    assert report["items"] == []
+    assert "refusing to report a healthy empty fleet" in captured.err
+
+
 def test_load_tokens_from_console_links_indexes_all_console_url_shapes(
     tmp_path: Path, monkeypatch
 ) -> None:

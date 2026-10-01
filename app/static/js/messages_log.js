@@ -1954,11 +1954,23 @@ function normalizeKey(value) {
     .replace(/[^a-z0-9]+/g, '');
 }
 
+function networkHostname(value) {
+  const text = String(value || '').trim();
+  if (!text || text.startsWith('/') || /[\\\s]/.test(text)) return '';
+  try {
+    const url = new URL(text.includes('://') ? text : `https://${text}`);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return '';
+    return url.hostname.toLowerCase().replace(/\.$/, '');
+  } catch (_) {
+    return '';
+  }
+}
+
 function isTailnetHostLike(value) {
-  const text = String(value || '').trim().toLowerCase();
-  if (!text) return false;
-  if (text.includes('.tail') || text.includes('.ts.net')) return true;
-  return /\b100\.(6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/.test(text);
+  const host = networkHostname(value);
+  if (!host) return false;
+  return host.endsWith('.ts.net')
+    || /^100\.(6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(host);
 }
 
 function currentEditorRoutePreference() {
@@ -5826,7 +5838,7 @@ document.addEventListener('DOMContentLoaded', () => {
       setStatus('bots-status', 'Session name is required.', 'danger');
       return;
     }
-    const bot = await createBot({ name, description: descInput.value.trim(), gpt_model: 'gpt-5.5' });
+    const bot = await createBot({ name, description: descInput.value.trim() });
     if (!bot?.id) {
       setStatus('bots-status', 'Failed to create session.', 'danger');
       return;

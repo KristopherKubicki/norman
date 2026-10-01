@@ -5,14 +5,39 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import threading
+from urllib import request as urllib_request
 from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clean_agent_console_test_temp_dirs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remove every temporary directory this legacy integration module creates."""
+    created_dirs: list[Path] = []
+    original_mkdtemp = tempfile.mkdtemp
+
+    def tracked_mkdtemp(*args, **kwargs) -> str:
+        directory = Path(original_mkdtemp(*args, **kwargs))
+        created_dirs.append(directory)
+        return str(directory)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", tracked_mkdtemp)
+    yield
+
+    for directory in reversed(created_dirs):
+        shutil.rmtree(directory, ignore_errors=True)
+    leftovers = [str(directory) for directory in created_dirs if directory.exists()]
+    assert not leftovers, f"test temporary directories were not removed: {leftovers}"
 
 
 def _load_agent_console_web():
@@ -26,12 +51,17 @@ def _load_agent_console_web():
     env_snapshot = {
         key: value for key, value in os.environ.items() if key.startswith(env_prefixes)
     }
-    if "NORMAN_CODEX_WEB_STATE_DIR" not in os.environ:
-        os.environ["NORMAN_CODEX_WEB_STATE_DIR"] = tempfile.mkdtemp(
-            prefix="norman-agent-console-test-"
-        )
+    os.environ["NORMAN_CODEX_WEB_STATE_DIR"] = tempfile.mkdtemp(
+        prefix="norman-agent-console-test-"
+    )
+    if "NORMAN_CODEX_ALLOW_OPENAI_API_SPEND" not in env_snapshot:
+        # This integration fixture does not create an auth.json file for the
+        # synthetic Codex process exercised by legacy executor tests.
+        os.environ["NORMAN_CODEX_ALLOW_OPENAI_API_SPEND"] = "1"
     for key, value in list(os.environ.items()):
         if key.startswith("HOUSEBOT_CODEX_"):
+            if key == "HOUSEBOT_CODEX_WEB_STATE_DIR":
+                continue
             suffix = key.removeprefix("HOUSEBOT_CODEX_")
             os.environ[f"NORMAN_CODEX_{suffix}"] = value
     spec = importlib.util.spec_from_file_location("agent_console_web", script_path)
@@ -57,12 +87,151 @@ def _agent_console_web_source() -> str:
     ).read_text(encoding="utf-8")
 
 
+def test_agent_console_uses_shared_unfinished_work_contract() -> None:
+    module = _load_agent_console_web()
+
+    assert module.response_promises_unfinished_work(
+        "I need to connect to the Ops Portal MCP. Let me first check the launcher."
+    )
+    assert not module.response_promises_unfinished_work(
+        "I need your approval to deploy the repair. Please approve it first."
+    )
+
+
 def _agent_console_launch_source() -> str:
     return (
         Path(__file__).resolve().parents[1]
         / "scripts"
         / "agent_console_template"
         / "agent_console_launch.sh"
+    ).read_text(encoding="utf-8")
+
+
+def test_artmonster_latest_image_source_attaches_public_feed_image(monkeypatch) -> None:
+    module = _load_agent_console_web()
+    module.AGENT_NAME = "Artmonster"
+    created = {}
+
+    class _Response:
+        def __init__(self, body: bytes, content_type: str = "text/html"):
+            self._body = body
+            self.headers = {"Content-Type": content_type}
+
+        def read(self, _limit: int = -1) -> bytes:
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    image_url = "https://64.media.tumblr.com/example/s1280x1920/latest-art.jpg"
+    responses = iter(
+        [
+            _Response(f'<img src="{image_url}">'.encode("utf-8")),
+            _Response(b"image-bytes", "image/jpeg"),
+        ]
+    )
+    monkeypatch.setattr(
+        module.urllib_request, "urlopen", lambda *_args, **_kwargs: next(responses)
+    )
+    monkeypatch.setattr(
+        module,
+        "create_draft_attachment",
+        lambda **kwargs: created.setdefault("attachment", kwargs) or kwargs,
+    )
+
+    attachment = module.fetch_latest_source_attachment(
+        "Can you show the newest image we captured in the Artbot?"
+    )
+
+    assert attachment is created["attachment"]
+    assert created["attachment"]["url"] == image_url
+    assert created["attachment"]["kind"] == "image"
+    assert created["attachment"]["source"] == "drops-art-public"
+    assert (
+        module.build_attachment_origin_label(created["attachment"])
+        == "public Drops.art image"
+    )
+
+
+def test_media_request_never_uses_deterministic_status_handler(monkeypatch) -> None:
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+
+    assert (
+        module.deterministic_status_prompt_allowed(
+            "cna oyu show me hte images in the session here?", []
+        )
+        is False
+    )
+
+
+def test_session_media_request_restages_recent_images(monkeypatch, tmp_path) -> None:
+    module = _load_agent_console_web()
+    prior_image = tmp_path / "prior-art.jpg"
+    prior_image.write_bytes(b"prior-image")
+    created: list[dict] = []
+
+    monkeypatch.setattr(
+        module,
+        "load_history",
+        lambda **_kwargs: [
+            {
+                "attachments": [
+                    {
+                        "token": "image-2",
+                        "name": "prior-art-copy.jpg",
+                        "path": str(prior_image),
+                        "content_type": "image/jpeg",
+                        "kind": "image",
+                        "size": prior_image.stat().st_size,
+                        "source": "web-capture",
+                        "url": "https://example.test/prior-art.jpg",
+                    }
+                ]
+            },
+            {
+                "attachments": [
+                    {
+                        "token": "image-1",
+                        "name": "prior-art.jpg",
+                        "path": str(prior_image),
+                        "content_type": "image/jpeg",
+                        "kind": "image",
+                        "size": prior_image.stat().st_size,
+                        "source": "web-capture",
+                        "url": "https://example.test/prior-art.jpg",
+                    }
+                ]
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        module,
+        "create_draft_attachment",
+        lambda **kwargs: created.append(kwargs) or kwargs,
+    )
+
+    staged = module.stage_session_media_attachments(
+        "Can you show me the images in this session here?"
+    )
+
+    assert len(staged) == 1
+    assert created[0]["raw_bytes"] == b"prior-image"
+    assert created[0]["source"] == "session-history"
+    assert (
+        module.build_attachment_origin_label(
+            {**staged[0], "kind": "image", "source": "session-history"}
+        )
+        == "image from this session"
+    )
+
+
+def _norman_codex_launch_source() -> str:
+    return (
+        Path(__file__).resolve().parents[1] / "scripts" / "norman_codex_launch.sh"
     ).read_text(encoding="utf-8")
 
 
@@ -75,18 +244,224 @@ def _agent_console_supervisor_source() -> str:
     ).read_text(encoding="utf-8")
 
 
-def test_agent_console_templates_default_to_gpt_55() -> None:
+def _route_proof(
+    module,
+    *,
+    runtime: str = "",
+    model: str = "",
+    service_tier: str = "",
+) -> dict:
+    normalized_runtime = module.normalize_runtime(runtime)
+    normalized_model = module.normalize_runtime_model(normalized_runtime, model)
+    normalized_tier = module.normalize_service_tier(service_tier)
+    options = {
+        "requested_runtime": normalized_runtime,
+        "requested_model": normalized_model,
+        "requested_service_tier": normalized_tier,
+        "base_runtime": normalized_runtime,
+        "base_model": normalized_model,
+        "base_service_tier": normalized_tier,
+        "bedrock_runtime": "codex",
+        "bedrock_model": normalized_model,
+        "bedrock_service_tier": "bedrock-emergency",
+        "route_lock": True,
+        "subscription": {},
+        "norllama_available": False,
+        "norllama_safe_final": False,
+        "bedrock_available": False,
+    }
+    if normalized_tier == "flex":
+        options.update(
+            {
+                "route_lock": False,
+                "subscription": {
+                    "enabled": True,
+                    "selected": True,
+                    "state": "available",
+                    "fresh": True,
+                    "chatgpt_auth_verified": True,
+                },
+                "norllama_available": True,
+                "norllama_safe_final": True,
+                "bedrock_available": True,
+            }
+        )
+    elif normalized_runtime == "localllm":
+        options.update(
+            {
+                "route_lock": False,
+                "subscription": {
+                    "enabled": True,
+                    "selected": False,
+                    "state": "blocked",
+                    "fresh": True,
+                    "chatgpt_auth_verified": True,
+                },
+                "norllama_available": True,
+                "norllama_safe_final": True,
+            }
+        )
+    return module.build_tui_waterfall(**options)
+
+
+def test_agent_console_templates_default_to_gpt_56_terra() -> None:
     launch_source = _agent_console_launch_source()
 
-    assert 'MODEL="${HOUSEBOT_CODEX_MODEL:-gpt-5.5}"' in launch_source
+    assert 'MODEL="${HOUSEBOT_CODEX_MODEL:-openai.gpt-5.6-terra}"' in launch_source
     assert 'CODEX_BIN="${HOUSEBOT_CODEX_BIN:-}"' in launch_source
     assert "/opt/node-v20.19.6/bin/codex" in launch_source
     assert "/home/kristopher/.nvm/versions/node/v20.19.6/bin/codex" in launch_source
     assert '"$CODEX_BIN" \\' in launch_source
     assert (
-        'MODEL = os.environ.get("HOUSEBOT_CODEX_MODEL", "gpt-5.5")'
+        'MODEL = os.environ.get("HOUSEBOT_CODEX_MODEL", "gpt-5.6-terra")'
         in _agent_console_web_source()
     )
+
+
+def test_agent_console_kaizen_emitter_is_strict_and_never_retries_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NORMAN_KAIZEN_ENABLED", "1")
+    monkeypatch.setenv(
+        "NORMAN_CONSOLE_RUNTIME_API_BASE",
+        "http://norman.test/api/v1/console-runtime",
+    )
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "test-token")
+    module = _load_agent_console_web()
+    captured: dict[str, object] = {}
+    snapshot = {
+        "kpis": {
+            "observed_at": 1_786_000_000,
+            "state": "idle",
+            "activity_state": "idle",
+            "health_state": "ok",
+            "prompt_visible": False,
+            "waiting_visible": False,
+            "state_entered_at": 1_785_999_000,
+            "metrics": {key: 0 for key in module._KAIZEN_METRIC_LIMITS},
+        }
+    }
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def _urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(module.urllib_request, "urlopen", _urlopen)
+
+    assert module.emit_kaizen_tui_snapshot(snapshot) is True
+    request = captured["request"]
+    assert request.full_url == "http://norman.test/api/v1/kaizen/tui-snapshots"
+    assert request.get_header("Authorization") == "Bearer test-token"
+    payload = json.loads(request.data.decode("utf-8"))
+    assert set(payload) == {
+        "schema",
+        "realm",
+        "source_tui",
+        "observed_at",
+        "state",
+        "activity_state",
+        "health_state",
+        "prompt_visible",
+        "waiting_visible",
+        "state_entered_at",
+        "metrics",
+    }
+    assert set(payload["metrics"]) == set(module._KAIZEN_METRIC_LIMITS)
+    assert captured["timeout"] == module._kaizen_emit_timeout_seconds()
+
+    monkeypatch.setattr(
+        module.urllib_request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
+    )
+    assert module.emit_kaizen_tui_snapshot(snapshot) is False
+
+
+def test_agent_console_full_reply_endpoint_and_controls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_agent_console_web()
+    full_reply = "template durable reply\n" + (
+        "x" * module.STATUS_TRANSPORT_STRING_LIMIT
+    )
+    module.write_text(module.LAST_RESPONSE_PATH, full_reply)
+
+    transport_reply = module._transport_snapshot_value(full_reply)
+    assert transport_reply != full_reply
+    assert "characters omitted from live transport" in transport_reply
+
+    server = module.ThreadingHTTPServer(("127.0.0.1", 0), module.Handler)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        with urllib_request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/api/last-response",
+            timeout=5,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert payload == {
+        "ok": True,
+        "text": full_reply,
+        "character_count": len(full_reply),
+    }
+    source = _agent_console_web_source()
+    assert 'id="view-full-response-button"' in source
+    assert "function loadFullLastResponse(button = null)" in source
+    assert "applyLoadedFullLastResponse(snapshot)" in source
+
+
+def test_agent_console_connector_access_panel_reports_config_only(
+    tmp_path: Path,
+) -> None:
+    module = _load_agent_console_web()
+    codex_home = tmp_path / ".codex-work"
+    codex_home.mkdir()
+    module.CODEX_HOME = str(codex_home)
+    module.AGENT_GROUP = ""
+    (codex_home / "config.toml").write_text(
+        """
+[plugins."gmail@openai-curated"]
+enabled = true
+
+[plugins."slack@openai-curated"]
+enabled = true
+
+[plugins."google-drive@openai-curated"]
+enabled = false
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = module.connector_access_snapshot()
+    apps = {item["key"]: item for item in snapshot["apps"]}
+    source = _agent_console_web_source()
+
+    assert snapshot["profile_label"] == "Work connector set"
+    assert snapshot["source"] == ".codex-work/config.toml"
+    assert snapshot["config_available"] is True
+    assert snapshot["configured_count"] == 2
+    assert apps["gmail@openai-curated"]["status"] == "Configured"
+    assert apps["slack@openai-curated"]["status"] == "Configured"
+    assert apps["google-drive@openai-curated"]["status"] == "Not configured"
+    assert 'id="connector-access"' in source
+    assert "function renderConnectorAccess(snapshot)" in source
+    assert "Configuration only; access is checked when used." in source
 
 
 def test_agent_console_promotes_stale_codex_model_setting_to_floor() -> None:
@@ -122,15 +497,15 @@ def test_agent_console_promotes_stale_codex_model_setting_to_floor() -> None:
     )
 
 
-def test_agent_console_can_explicitly_enable_legacy_codex_compat_model(
+def test_agent_console_cannot_reenable_legacy_codex_compat_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("NORMAN_CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE", "1")
     module = _load_agent_console_web()
 
-    assert module.normalize_runtime_model("codex", "openai.gpt-5.4") == "openai.gpt-5.4"
-    assert any(
-        item["key"] == "codex-bedrock-5-4"
+    assert module.normalize_runtime_model("codex", "openai.gpt-5.4") == module.MODEL
+    assert all(
+        item["key"] not in {"codex-openai-5-4", "codex-bedrock-5-4"}
         for item in module.model_route_presets_payload()
     )
 
@@ -140,6 +515,85 @@ def test_route_receipt_default_path_uses_tui_state_dir() -> None:
 
     assert 'str(STATE_DIR / "route_receipts")' in source
     assert '"/var/lib/norman/route_receipts"' not in source
+
+
+def test_template_local_receipt_uses_generic_pool_fast_lane_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED", "1")
+    monkeypatch.setenv(
+        "NORMAN_CODEX_ROUTE_RECEIPT_PATH",
+        str(tmp_path / "receipts" / "template.jsonl"),
+    )
+    module = _load_agent_console_web()
+
+    receipt = module.append_route_receipt(
+        prompt="Status and what's next?",
+        visible_response="Ready for the next read-only task.",
+        error_text="",
+        started_at=1_786_000_100,
+        finished_at=1_786_000_102,
+        thread_id="thread-template",
+        speed="normal",
+        detail=2,
+        service_tier="default",
+        job_budget="normal",
+        optimization_mode="auto",
+        success=True,
+        runtime="localllm",
+        model="qwen3.6:35b-a3b-q4_K_M",
+        usage={"input_tokens": 200_000, "output_tokens": 20_000},
+        outcome="done",
+        cost_route=_route_proof(
+            module,
+            runtime="localllm",
+            model="norllama",
+            service_tier="default",
+        ),
+    )
+
+    assert receipt is not None
+    assert module.local_llm_provider_tags()["provider_surface"] == "norllama"
+    assert receipt["requested_provider"] == "norllama"
+    assert receipt["effective_provider"] == "norllama"
+    outcome = receipt["fast_lane_outcome"]
+    assert outcome["schema"] == "norman.fast-lane-outcome.v1"
+    assert outcome["lane"]["kind"] == "local"
+    assert outcome["state"] != "verified"
+    snapshot = module.route_receipt_status_snapshot()
+    assert snapshot["latest_fast_lane_outcome"] == outcome
+    assert snapshot["fast_lane"]["states"]["candidate"] == 1
+    assert snapshot["fast_lane"]["calibration"]["auto_selection_enabled"] is False
+
+
+def test_template_norllama_proof_binds_to_a_concrete_pool_model() -> None:
+    module = _load_agent_console_web()
+    model = "qwen3.6:35b-a3b-q4_K_M"
+    proof = _route_proof(
+        module,
+        runtime="localllm",
+        model=model,
+        service_tier="default",
+    )
+
+    accepted = module.validate_cost_route_proof(
+        proof,
+        "localllm",
+        model,
+        "default",
+    )
+
+    assert accepted["waterfall_stage"] == "norllama_pool"
+    assert accepted["selected_model"] == "norllama"
+    assert (
+        module.validate_cost_route_proof(
+            proof,
+            "localllm",
+            "norllama",
+            "default",
+        )
+        == {}
+    )
 
 
 def test_route_receipt_write_permission_failure_is_nonfatal(tmp_path) -> None:
@@ -171,6 +625,12 @@ def test_route_receipt_write_permission_failure_is_nonfatal(tmp_path) -> None:
             runtime="codex",
             model="gpt-5.5",
             usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+            cost_route=_route_proof(
+                module,
+                runtime="codex",
+                model="gpt-5.5",
+                service_tier="default",
+            ),
         )
         snapshot = module.route_receipt_status_snapshot()
     finally:
@@ -237,6 +697,12 @@ def test_route_receipt_status_prefers_state_db_over_jsonl(tmp_path) -> None:
             runtime="codex",
             model="gpt-5.5",
             usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+            cost_route=_route_proof(
+                module,
+                runtime="codex",
+                model="gpt-5.5",
+                service_tier="default",
+            ),
         )
         receipt_path.write_text("{not-json}\n", encoding="utf-8")
 
@@ -492,6 +958,7 @@ def test_template_exposes_browser_console_shortcuts() -> None:
     assert "jumpToLatestConversation();" in source
     assert "<kbd>/</kbd><span>Prompt</span>" in source
     assert "<kbd>Mod+K</kbd><span>Switch</span>" in source
+    assert "<kbd>Mod+J</kbd><span>Actions</span>" in source
     assert "<kbd>End</kbd><span>Latest</span>" in source
     assert "<kbd>Esc</kbd><span>Close</span>" in source
     assert "<kbd>?</kbd><span>Help</span>" in source
@@ -501,8 +968,33 @@ def test_template_exposes_browser_console_shortcuts() -> None:
     assert 'title="Jump to latest (End)"' in source
     assert "if (handleGlobalConsoleShortcut(event)) {{" in source
     assert "function maybeFocusPromptFromEscape(event) {" in source
+    assert "function webReplyActive(snapshot = state.snapshot) {" in source
+    assert "snapshot?.model_process_alive" in source
+    assert "snapshot?.web_worker_alive" in source
+    assert "Stop requested. Cancelling the current web reply…" in source
     assert "if (maybeInterruptFromEscape(event)) {{" in source
     assert "maybeFocusPromptFromEscape(event);" in source
+    assert 'id="operator-focus-rail"' in source
+    assert 'id="operator-action-palette"' in source
+    assert 'id="operator-action-search"' in source
+    assert 'data-operator-metric="queue"' in source
+    assert 'data-operator-metric="children"' in source
+    assert 'operatorActionQuery: ""' in source
+    assert "function operatorFocusDescriptor(snapshot = state.snapshot)" in source
+    assert "function renderOperatorFocus(snapshot = state.snapshot)" in source
+    assert "function renderOperatorActionPalette()" in source
+    assert "function focusOperatorActionPaletteButton(direction = 1)" in source
+    assert "function runOperatorMetricAction(metric)" in source
+    assert "function runOperatorAction(action)" in source
+    assert 'lowerKey === "j"' in source
+    assert 'event.key === "ArrowDown" || event.key === "ArrowUp"' in source
+    assert "setOperatorActionPaletteOpen(false, {{ restoreFocus: true }});" in source
+    assert "Save/compact request added to the draft. It has not been sent." in source
+    assert "Child-agent handoff draft added. It has not been sent." in source
+    assert "async function refreshChildAgents(options = {{}})" in source
+    assert "void refreshChildAgents({{ background: true }});" in source
+    assert "@media (max-width: 760px)" in source
+    assert "@media (prefers-reduced-motion: reduce)" in source
 
 
 def test_supervisor_always_clears_visible_update_interstitials() -> None:
@@ -536,6 +1028,18 @@ def test_mobile_composer_tracks_visual_viewport_and_keyboard_state() -> None:
     assert "--viewport-height: 100dvh;" in source
     assert "--keyboard-inset: 0px;" in source
     assert "body.mobile-keyboard-open" in source
+    assert ".chat-summary-bar > * {" in source
+    assert "scroll-snap-type: x proximity;" in source
+    assert (
+        "-webkit-mask-image: linear-gradient(90deg, #000 0 calc(100% - 18px), transparent);"
+        in source
+    )
+    assert "body.mobile-compose-mode .norman-command-rail {" in source
+    assert "grid-template-rows: auto auto auto minmax(54px, auto) auto;" in source
+    assert "grid-column: 1 / -1;" in source
+    assert "#interrupt-submit-button:disabled {" in source
+    assert 'body[data-layout-mode="tile"] .composer-inline-action,' in source
+    assert "width: 44px;" in source
 
 
 def test_template_exposes_structured_audit_feed_for_central_collection() -> None:
@@ -586,7 +1090,10 @@ def test_chat_file_links_surface_inline_previews_without_clickthrough() -> None:
     assert "if (results.length >= maxTargets) {{" in source
     assert "function buildFileDownloadHref(value) {" in source
     assert "function compactInlineFilePath(value) {" in source
-    assert r"text.matchAll(/\[([^\]]+)\]\s*\(\s*(<[^>\\n]+>|[^\s)]+)\s*\)/g)" in source
+    assert (
+        r"text.matchAll(/\\[([^\\]]+)\\]\\s*\\(\\s*(<[^>\\n]+>|[^\\s)]+)\\s*\\)/g)"
+        in source
+    )
     assert "function rememberInlineFilePreview(cacheKey, payload)" in source
     assert "function loadInlineFilePreview(entry)" in source
     assert (
@@ -598,17 +1105,37 @@ def test_chat_file_links_surface_inline_previews_without_clickthrough() -> None:
         "const truncated = normalized.length > INLINE_TEXT_PREVIEW_MAX_CHARS" in source
     )
     assert "const visibleLines = lines.slice(0, 8);" in source
-    assert "const totalMatch = contentRange.match(/\\/(\\d+)$/);" in source
-    assert 'const lines = normalized.split("\\\\n");' in source
+    assert r"const totalMatch = contentRange.match(/\\/(\\d+)$/);" in source
+    assert (
+        "const previewText = normalized.slice(0, INLINE_TEXT_PREVIEW_MAX_CHARS);"
+        in source
+    )
+    assert 'const lines = previewText.split("\\\\n");' in source
+    assert "text: previewText.trimEnd()," in source
     assert "function buildInlineImagePreviewTile(entry)" in source
     assert "function renderInlineImagePreviewGallery(items)" in source
     assert "function renderInlineFilePreviews(container, targets)" in source
     assert ".message-file-previews {" in source
     assert "grid-template-columns: minmax(0, 1fr);" in source
     assert ".message-file-preview-gallery {" in source
-    assert "grid-template-columns: repeat(6, minmax(0, 1fr));" in source
+    assert (
+        "grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));"
+        in source
+    )
     assert ".inline-image-preview-tile {" in source
     assert ".inline-image-preview-caption {" in source
+    assert ".inline-file-preview.inline-image-showcase {" in source
+    assert 'card.classList.add("inline-image-showcase");' in source
+    assert "icon|favicon|logo|avatar|emoji|sprite|cursor|badge" in source
+    assert 'tile.setAttribute("aria-label", `Open image:' in source
+    assert "function ensureInlineImageLightbox()" in source
+    assert "function openInlineImageLightbox(entry, opener = null)" in source
+    assert "function closeInlineImageLightbox()" in source
+    assert 'imageButton.className = "inline-image-preview-open";' in source
+    assert "openInlineImageLightbox(entry, tile);" in source
+    assert "buildFileRawHref(path)" in source
+    assert "buildFileViewHref(path)" in source
+    assert "buildFileDownloadHref(path)" in source
     assert ".inline-file-preview-summary {" in source
     assert ".inline-file-preview .inline-action {" in source
     assert "justify-content: space-between;" in source
@@ -636,6 +1163,82 @@ def test_chat_file_links_surface_inline_previews_without_clickthrough() -> None:
     assert "renderInlineFilePreviews(previews, previewTargets);" in source
 
 
+def test_chat_renderer_polishes_external_links_and_rich_tables() -> None:
+    source = _agent_console_web_source()
+
+    assert 'class="external-link"' in source
+    assert 'class="external-link" href="${{escapeHtml(url)}}"' in source
+    assert ".message-body a.external-link::after," in source
+    assert ".message-body a:focus-visible," in source
+    assert ".table-wrap:focus-visible {" in source
+    assert 'tabindex="0" role="region" aria-label="${{escapeHtml(tableLabel' in source
+    assert '<th scope="col" style="text-align:${{alignments[index]}}">' in source
+    assert "position: sticky;" in source
+    assert (
+        'text = text.replace(/~~([^~\\\\n][\\\\s\\\\S]*?[^~\\\\n])~~/g, "<del>$1</del>");'
+        in source
+    )
+    assert 'r"~~([^~\\n][\\s\\S]*?[^~\\n])~~"' in source
+
+
+def test_chat_link_provenance_and_structured_document_previews() -> None:
+    source = _agent_console_web_source()
+
+    assert "function linkProvenance(url)" in source
+    assert 'hostname.endsWith(".home.arpa")' in source
+    assert 'hostname.endsWith(".ts.net")' in source
+    assert 'const label = origin === "console"' in source
+    assert (
+        "function linkDisplayLabel(url, label, provenance = linkProvenance(url))"
+        in source
+    )
+    assert "link.dataset.linkOrigin = provenance.origin;" in source
+    assert 'origin.className = "link-chip-origin";' in source
+    assert 'copy.className = "link-chip-copy";' in source
+    assert 'domain.className = "link-chip-domain";' in source
+    assert '.link-chip[data-link-origin="external"]' in source
+    assert ".link-chip-origin {" in source
+    assert "const INLINE_DATA_TABLE_ROW_LIMIT = 12;" in source
+    assert "const INLINE_DATA_TABLE_COLUMN_LIMIT = 8;" in source
+    assert "function textPreviewFormatForPath(value)" in source
+    assert 'if (clean.endsWith(".json"))' in source
+    assert 'if (clean.endsWith(".csv"))' in source
+    assert 'if (clean.endsWith(".tsv"))' in source
+    assert "function parseDelimitedPreview(value, delimiter)" in source
+    assert "if (text[index + 1] === '\"')" in source
+    assert "function buildDelimitedDocumentPreview(payload, delimiter)" in source
+    assert "function buildJsonDocumentPreview(payload)" in source
+    assert 'const value = JSON.parse(String(payload.text || ""));' in source
+    assert "function buildTextDocumentPreview(entry, payload)" in source
+    assert "shell.innerHTML = renderRichText(payload.text);" in source
+    assert (
+        'shell.className = "inline-document-viewer inline-document-viewer-markdown";'
+        in source
+    )
+    assert 'table.className = "inline-data-table";' in source
+    assert 'card.dataset.previewFormat = previewFormat || "file";' in source
+    assert 'previewFormat === "markdown"' in source
+    assert "const preview = buildTextDocumentPreview(entry, payload);" in source
+    assert 'if (kind === "pdf") {{' in source
+    assert 'return ["markdown", "json", "csv", "tsv"].includes(' in source
+    assert ".inline-document-viewer-markdown {" in source
+    assert ".inline-document-viewer-structured {" in source
+    assert ".inline-data-table {" in source
+
+
+def test_render_initial_inline_markup_formats_strikethrough() -> None:
+    module = _load_agent_console_web()
+
+    rendered = module._render_initial_inline_markup(
+        "This is ~~superseded~~.",
+        token="open-sesame",
+        profile="personal-2",
+        route="host",
+    )
+
+    assert "<del>superseded</del>" in rendered
+
+
 def test_chat_renderer_lazily_collapses_heavy_messages() -> None:
     source = _agent_console_web_source()
 
@@ -660,10 +1263,7 @@ def test_file_raw_endpoint_supports_byte_ranges_for_lightweight_previews() -> No
     assert 're.fullmatch(r"bytes=(\\d*)-(\\d*)", range_header)' in source
     assert "HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE" in source
     assert 'self.send_header("Accept-Ranges", "bytes")' in source
-    assert (
-        'self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")'
-        in source
-    )
+    assert 'safe_header_value(f"bytes {start}-{end}/{file_size}")' in source
     assert "handle.seek(start)" in source
     assert "handle.read(min(64 * 1024, remaining))" in source
 
@@ -846,7 +1446,7 @@ def test_browser_signin_skips_blank_popup_when_lane_is_already_ready() -> None:
     source = _agent_console_web_source()
 
     assert 'if (!auth.required && snapshotState === "ok") {{' in source
-    assert 'el.statusMessage.textContent = "Already signed in.";' in source
+    assert 'setOperatorReceipt("Already signed in.", "success");' in source
     assert "const bridgeAllowed = Boolean(BROWSER_AUTH_BRIDGE_ALLOWED);" in source
     assert "el.authBrowserButton.disabled = !required;" in source
     assert "el.authDeviceButton.disabled = !required;" in source
@@ -854,11 +1454,12 @@ def test_browser_signin_skips_blank_popup_when_lane_is_already_ready() -> None:
         'el.authHelperLink.hidden = !required || mode !== "browser_signin";' in source
     )
     assert '? "Already signed in."' in source
+    assert "setOperatorReceipt(\n              auth.required" in source
     assert (
-        "el.statusMessage.textContent = auth.required\n"
-        '              ? "Browser sign-in was prepared, but no auth URL was returned. Refresh and retry."\n'
-        '              : "No browser sign-in was needed.";' in source
+        '"Browser sign-in was prepared, but no auth URL was returned. Refresh and retry."'
+        in source
     )
+    assert '"No browser sign-in was needed."' in source
 
 
 def test_browser_signin_callback_runs_post_auth_self_check() -> None:
@@ -959,18 +1560,18 @@ def test_current_snapshot_clears_stale_auth_error_when_session_is_ready() -> Non
         module.recover_stale_prompt_state = lambda: None
         module.load_status_meta = lambda: module.default_status_meta()
         module.load_history = lambda: []
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
-        module.capture_pane = (
-            lambda: "OpenAI Codex (v0.118.0)\nmodel: gpt-5.4 xhigh\ndirectory: ~/code/autocamera"
+        module.capture_pane = lambda: (
+            "OpenAI Codex (v0.118.0)\nmodel: gpt-5.4 xhigh\ndirectory: ~/code/autocamera"
         )
         module.service_status = lambda names: [(name, "active") for name in names]
         module.usage_snapshot = lambda thread_id="": {
@@ -1003,18 +1604,18 @@ def test_current_snapshot_treats_modern_inline_codex_prompt_as_ready() -> None:
             "status_message": "Web prompt failed.",
         }
         module.load_history = lambda: []
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
-        module.capture_pane = (
-            lambda: "› Summarize recent commits\n\n  gpt-5.4 xhigh fast · 84% left · ~/code/d.ace"
+        module.capture_pane = lambda: (
+            "› Summarize recent commits\n\n  gpt-5.4 xhigh fast · 84% left · ~/code/d.ace"
         )
         module.service_status = lambda names: [(name, "active") for name in names]
         module.usage_snapshot = lambda thread_id="": {
@@ -1052,13 +1653,13 @@ def test_current_snapshot_ready_prompt_overrides_stale_error_meta_with_mcp_auth_
             "pending": False,
         }
         module.load_history = lambda: []
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -1103,13 +1704,13 @@ def test_current_snapshot_clears_stale_auth_error_when_snapshot_state_is_ok() ->
             "status_message": "Web prompt completed.",
         }
         module.load_history = lambda: []
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -1145,13 +1746,13 @@ def test_current_snapshot_clears_stale_auth_error_at_signin_prompt() -> None:
         module.recover_stale_prompt_state = lambda: None
         module.load_status_meta = lambda: module.default_status_meta()
         module.load_history = lambda: []
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -1360,13 +1961,13 @@ def test_current_snapshot_sanitizes_stale_history_auth_errors_at_update_intersti
                 "usage": {},
             }
         ]
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -1421,13 +2022,13 @@ def test_current_snapshot_sanitizes_stale_history_auth_errors_when_lane_is_ok() 
                 "usage": {},
             }
         ]
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -2103,13 +2704,13 @@ def test_current_snapshot_requires_reauth_when_latest_web_turn_failed_with_zero_
                 },
             }
         ]
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -2175,13 +2776,13 @@ def test_current_snapshot_ready_prompt_beats_stale_reauth_history() -> None:
                 },
             }
         ]
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -2244,13 +2845,13 @@ def test_current_snapshot_preserves_device_code_prompt_over_latest_reauth_histor
                 },
             }
         ]
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -2418,6 +3019,29 @@ def test_template_polishes_reading_lane_and_composer_shell() -> None:
     assert "border-radius: 999px;" in source
 
 
+def test_template_uses_operational_density_polish_across_viewports() -> None:
+    source = _agent_console_web_source()
+
+    assert "Operational-density pass" in source
+    assert 'body[data-microtexture-state="idle"] .microtexture-thread-field' in source
+    assert "animation: none !important;" in source
+    assert ".topbar-actions .prime-home-button," in source
+    assert ".topbar-actions .directory-home-button {{" in source
+    assert "body:not(.low-ui-mode) #ask-button {{" in source
+    assert "body:not(.low-ui-mode) #ask-button .composer-send-label {{" in source
+
+
+def test_template_uses_shared_responsive_surface_contract() -> None:
+    source = _agent_console_web_source()
+
+    assert "Responsive surface contract" in source
+    assert "--mobile-sheet-gutter: 8px;" in source
+    assert "border-radius: 18px 18px 0 0 !important;" in source
+    assert "font-size: 16px;" in source
+    assert "padding-bottom: calc(18px + env(safe-area-inset-bottom));" in source
+    assert "@media (hover: none), (pointer: coarse)" in source
+
+
 def test_template_uses_single_motion_source_for_live_worker_state() -> None:
     source = _agent_console_web_source()
 
@@ -2512,8 +3136,6 @@ def test_template_animates_microtextures_with_worker_state() -> None:
     assert "const gradient = context.createLinearGradient(" in source
     assert 'thread.axis === "h" && glintStrength > 0.01' in source
     assert "radial-gradient(circle at var(--microtexture-pulse-x)" not in source
-    assert "radial-gradient(ellipse at 12%" not in source
-    assert "radial-gradient(ellipse at 74%" not in source
     assert 'body[data-microtexture-state="flow"]::before {{' in source
     assert "--microtexture-drift-duration: 4.8s;" in source
     assert "--microtexture-drift-x: 230px;" in source
@@ -2578,9 +3200,17 @@ def test_template_adds_dense_menu_tooltips_and_icon_choices() -> None:
     assert 'data-tooltip="Console controls"' in source
     assert 'data-tooltip="Add file, screenshot, or context"' in source
     assert 'data-tooltip-side="left"' in source
+    assert "const CONTROL_TOOLTIP_SELECTOR = [" in source
+    assert "\"[role='tab']\"," in source
+    assert '"[data-notice-action]",' in source
     assert "function hydrateControlTooltips(root = document) {" in source
-    assert 'control.dataset.tooltipFromTitle = "true";' in source
-    assert "hydrateControlTooltips();" in source
+    assert 'control.dataset.tooltipFromControl = "true";' in source
+    assert "function observeControlTooltips() {" in source
+    assert "observeControlTooltips();" in source
+    assert "scope.matches(CONTROL_TOOLTIP_SELECTOR)" in source
+    assert '[role="button"]:focus-visible,' in source
+    assert '[data-notice-action]:not([aria-disabled="true"]) {' in source
+    assert "scheduleControlTooltipHydration();" in source
     assert ".topbar-menu::before {" in source
     assert ".topbar-menu-links--context {" in source
     assert ".composer-upload-item[data-icon]::before," in source
@@ -2634,6 +3264,67 @@ def test_launch_template_includes_norman_broker_policy() -> None:
     assert "treat the current conversation as the live party line" in source
 
 
+def test_all_tui_launchers_enforce_norman_secret_guard_policy() -> None:
+    networking_prompt = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "agent_console_template"
+        / "prompts"
+        / "networking.txt"
+    ).read_text(encoding="utf-8")
+    uplink_prompt = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "agent_console_template"
+        / "prompts"
+        / "uplink.txt"
+    ).read_text(encoding="utf-8")
+
+    for source in (_agent_console_launch_source(), _norman_codex_launch_source()):
+        assert (
+            'SECRET_GUARD_SCRIPT="${LAUNCH_SCRIPT_DIR}/norman_codex_secret_guard.py"'
+            in source
+        )
+        assert "verify_managed_secret_guard" in source
+        assert "--verify-managed-policy" in source
+        assert "NORMAN_TUI_NO_DIRECT_VAULT=1" in source
+        assert '"$CODEX_HOME/hooks.json"' not in source
+        assert "--dangerously-bypass-hook-trust" not in source
+        assert (
+            "Read-only analysis, review, status checks, and recommendations never access secrets."
+            in source
+        )
+        assert (
+            "Never invoke `cred`, create or migrate a vault, or ask for a vault passphrase."
+            in source
+        )
+
+    for prompt in (networking_prompt, uplink_prompt):
+        assert "machine-local `cred` vault" not in prompt
+        assert (
+            "Read-only analysis, review, status checks, and recommendations never access secrets."
+            in prompt
+        )
+        assert "Never invoke `cred`, initialize or migrate a vault" in prompt
+
+
+def test_all_tui_launchers_cap_pytest_xdist_auto_workers() -> None:
+    for source in (_agent_console_launch_source(), _norman_codex_launch_source()):
+        assert (
+            'PYTEST_XDIST_AUTO_NUM_WORKERS="${NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS:-4}"'
+            in source
+        )
+        assert (
+            'if [[ ! "$PYTEST_XDIST_AUTO_NUM_WORKERS" =~ ^[1-9][0-9]*$ ]]; then'
+            in source
+        )
+        assert (
+            "NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS must be a positive integer."
+            in source
+        )
+        assert "export PYTEST_XDIST_AUTO_NUM_WORKERS" in source
+
+
 def test_launch_template_quarantines_external_auth_symlinks() -> None:
     source = _agent_console_launch_source()
 
@@ -2651,6 +3342,11 @@ def test_completion_bell_settings_and_reply_hook_are_present() -> None:
 
     assert 'data-setting="completionBell"' in source
     assert 'id="completion-bell-test-button"' in source
+    assert 'data-setting="feedbackSounds"' in source
+    assert 'id="feedback-sound-test-button"' in source
+    assert 'data-value="signals">Signals</button>' in source
+    assert 'data-value="full">Full</button>' in source
+    assert 'data-value="off">Off</button>' in source
     assert "const COMPLETION_BELL_PROFILES = {{" in source
     assert "voices: [" in source
     assert "answer: {{" in source
@@ -2665,6 +3361,53 @@ def test_completion_bell_settings_and_reply_hook_are_present() -> None:
         in source
     )
     assert "function playCompletionBell(options = {{}})" in source
+    assert "playCompletionBell();" in source
+
+
+def test_audio_feedback_uses_semantic_cues_without_tactile_double_chimes() -> None:
+    source = _agent_console_web_source()
+
+    assert "const FEEDBACK_TONE_COOLDOWNS = Object.freeze({{" in source
+    assert "const SIGNAL_TONE_KINDS = new Set([" in source
+    assert "queued: 180," in source
+    assert "blocked: 420," in source
+    assert "error: 750," in source
+    assert "press: {{ frequency: 148," in source
+    assert "queued: {{ frequency: 174," in source
+    assert "blocked: {{ frequency: 166," in source
+    assert "error: {{ frequency: 184," in source
+    assert "feedbackToneAt: {{}},\n" in source
+    assert "audioResumePromise: null," in source
+    assert "function normalizeFeedbackSounds(value) {{" in source
+    assert 'feedbackSounds: "signals",' in source
+    assert "function interactionToneAllowed(kind, options = {{}})" in source
+    assert "SIGNAL_TONE_KINDS.has(kind)" in source
+    assert 'function playFeedbackTone(kind = "action", options = {{}})' in source
+    assert (
+        "triggerMicrotexturePulse(toneByFeedback[cleanKind], {{ throttleMs: 120 }});"
+        in source
+    )
+    assert 'queued: "queued",' in source
+    assert 'blocked: "blocked",' in source
+    assert 'error: "error",' in source
+    assert "const previous = Number(state.feedbackToneAt?.[cleanKind] || 0);" in source
+    assert "if (!options.force && nowMs - previous < cooldownMs) {{" in source
+    assert "const played = playInteractionTone(toneByFeedback[cleanKind], {{" in source
+    assert "if (played) {{" in source
+    assert "state.feedbackToneAt[cleanKind] = nowMs;" in source
+    assert "function scheduleInteractionTone(ctx, profile) {{" in source
+    assert "const limiter = ctx.createDynamicsCompressor();" in source
+    assert "const resume = state.audioResumePromise;" in source
+    assert "resume.then(() => {{" in source
+    assert (
+        'if (id === "ask-button" || id === "interrupt-submit-button" || id === "composer-safety-confirm") return "press";'
+        in source
+    )
+    assert 'playFeedbackTone("send");' in source
+    assert 'playFeedbackTone(queuedPrompt ? "queued" : "accepted");' in source
+    assert 'playFeedbackTone("blocked");' in source
+    assert 'playFeedbackTone("error");' in source
+    assert "const endedWithError = Boolean(" in source
     assert "playCompletionBell();" in source
 
 
@@ -2815,9 +3558,11 @@ def test_template_exposes_context_save_affordance() -> None:
     assert "function buildContextSavePrompt(context) {" in source
     assert "function handleContextSaveAction(button) {" in source
     assert (
-        'const saveLabel = context.tone === "danger" ? "Save now" : "Save";' in source
+        'const handoffLabel = context.tone === "danger" ? "Create handoff now" : "Create handoff";'
+        in source
     )
-    assert "button.dataset.suggestion = savePrompt;" in source
+    assert "fresh-thread handoff" in source
+    assert "button.dataset.suggestion = handoffPrompt;" in source
     assert 'el.contextSaveButton.addEventListener("click"' in source
     assert 'el.contextSaveMenuButton.addEventListener("click"' in source
 
@@ -2853,6 +3598,13 @@ def test_template_exposes_status_capsule_strip() -> None:
     assert 'id: "background"' in source
     assert "function buildStatusCapsules(snapshot) {" in source
     assert "function renderStatusCapsules(snapshot) {" in source
+    assert "function normalizeTopKpiMeters(snapshot) {" in source
+    assert (
+        'const processorMeta = processorStatus === "ranked" ? "DGX ranked" : "local fallback";'
+        in source
+    )
+    assert '"cloud_fallback": False' in source
+    assert 'work_source="tui-kpi-ranker"' in source
     assert "function renderSystemRuntimeMetrics(snapshot) {" in source
     assert 'button.dataset.kpiAction = String(item.action || "system");' in source
     assert 'const action = String(capsule.dataset.kpiAction || "system");' in source
@@ -2861,6 +3613,35 @@ def test_template_exposes_status_capsule_strip() -> None:
     assert "function backgroundMonitorNotice(snapshot = state.snapshot) {" in source
     assert "const background = backgroundMonitorNotice(snapshot);" in source
     assert "const backgroundItems = background && !background.intervention" in source
+
+
+def test_template_surfaces_turn_spend_feedback() -> None:
+    source = _agent_console_web_source()
+
+    assert (
+        "function turnCostFeedbackDescriptor(usage, snapshot = state.snapshot)"
+        in source
+    )
+    assert "function spendFeedbackCapsuleState(snapshot)" in source
+    assert 'className = "message-value-chip"' in source
+    assert "Big save" in source
+    assert "no cloud bill" in source
+    assert "Plan credits" in source
+
+
+def test_template_exposes_dynamic_working_on_recap_panel() -> None:
+    source = _agent_console_web_source()
+
+    assert "NORMAN_CODEX_WORKING_RECAP_REFRESH_SECONDS" in source
+    assert "def working_recap_local_llm(" in source
+    assert "Use only this sanitized status packet." in source
+    assert '"working_recap": working_recap' in source
+    assert "function workingRecapForSnapshot(" in source
+    assert "function buildWorkingOnPanel(" in source
+    assert 'panel.setAttribute("aria-label", "Working on");' in source
+    assert "working-on-timeline" in source
+    assert "Local recap" in source
+    assert "working-recap-pulse" in source
 
 
 def test_template_exposes_lightweight_version_endpoint() -> None:
@@ -2933,6 +3714,98 @@ def test_tui_uses_render_caches_and_background_transport_backoff() -> None:
     assert "renderSystemRuntimeMetrics(state.snapshot);" in source
     assert "normalizeTransportLabel(" in source
     assert "syncLiveTransport();" in source
+
+
+def test_bot_proxy_compresses_large_console_responses() -> None:
+    module = _load_bot_proxy_renderer()
+
+    rendered = module.render_hosts()
+
+    assert "    encode zstd gzip {" in rendered
+    assert "header Content-Type application/json*" in rendered
+    assert "header Content-Type text/html*" in rendered
+    assert "header Content-Type text/event-stream*" not in rendered
+
+
+def test_tui_submission_receipts_reconcile_and_surface_worker_progress() -> None:
+    source = _agent_console_web_source()
+
+    assert "def normalize_submission_id(value: Any) -> str:" in source
+    assert '"running_submission_id": ""' in source
+    assert "function createPromptSubmissionId() {{" in source
+    assert "function snapshotIncludesSubmissionId(snapshot, submissionId) {{" in source
+    assert "function clearSubmittedComposer() {{" in source
+    assert "function restoreRejectedPrompt(draftValue) {{" in source
+    assert "clearSubmittedComposer();\n      render(state.snapshot);" in source
+    assert "restoreRejectedPrompt(draftValue);" in source
+    assert "else if (busy) {{" in source
+    assert ".composer-send.pending:disabled" in source
+    assert "PROMPT_SUBMISSION_RESTORE_GRACE_MS" not in source
+    assert (
+        'el.statusMessage.textContent = "Restored a prompt that left the composer'
+        not in source
+    )
+    assert (
+        "function provisionalPromptSubmission(snapshot = state.snapshot) {{" in source
+    )
+    assert "? sendingPromptPhase(receipt)" in source
+    assert "Waiting for the server to confirm it was accepted." in source
+    assert "Waiting for the worker's first signal…" in source
+    assert 'appendMessage(\n          "user provisional",' in source
+    assert 'appendMessage(\n          "assistant pending provisional",' in source
+    assert "function activeWorkEvidence(snapshot = state.snapshot) {{" in source
+    assert "function activeSubmissionLabel(snapshot = state.snapshot) {{" in source
+    assert "submission_id: submissionId," in source
+    assert 'state: "reconciling",' in source
+    assert "const PROMPT_SUBMISSION_RECONCILE_GRACE_MS = 1000 * 30;" in source
+    assert "reconcileAgeMs >= PROMPT_SUBMISSION_RECONCILE_GRACE_MS" in source
+    assert "Delivery is still unconfirmed. Your draft is restored" in source
+    assert "error.httpStatus = res.status;" in source
+    assert "error.responseData = data;" in source
+    assert "const knownRejection = Number(err?.httpStatus || 0) >= 400" in source
+    assert (
+        "clearPromptSubmission();\n          restoreRejectedPrompt(draftValue);"
+        in source
+    )
+    assert (
+        "Delivery is unconfirmed. Your draft is saved. Check delivery retries the same submission safely."
+        in source
+    )
+    assert "no worker progress for" in source
+    assert "awaiting first worker receipt" in source
+    assert (
+        'function setOperatorReceipt(message, tone = "info", options = {{}})' in source
+    )
+    assert "function terminalOperatorReceipt(previousSnapshot, snapshot)" in source
+    assert "const operatorReceipt = currentOperatorReceipt();" in source
+    assert "function routeBootstrapState(snapshot = state.snapshot)" in source
+    assert (
+        "function routePreparationReceipt(runtime, model, serviceTier, queued = false)"
+        in source
+    )
+    assert "function acceptedRouteReceipt(snapshot, options = {{}})" in source
+    assert "Sending your message. Waiting for confirmation." in source
+    assert "Detailed local health and service state is loading." in source
+    assert "if (!currentOperatorReceipt()) {{" in source
+    assert "if (INITIAL_SNAPSHOT.snapshot_cached !== false) {{" in source
+    assert "Reply complete. Result is below." in source
+    assert "Reply cancelled. The worker has stopped" in source
+    assert "Opening live console…" in source
+    assert "Live updates connected. Console state is current." in source
+    assert "Direct status checks connected." in source
+    assert (
+        "Submit is still being acknowledged. Your prompt has not been sent again."
+        in source
+    )
+    assert (
+        "function fetchWithDeadline(url, options = {{}}, timeoutMs = ACTION_REQUEST_TIMEOUT_MS)"
+        in source
+    )
+    assert "const STATUS_REQUEST_TIMEOUT_MS = 9000;" in source
+    assert "const ACTION_REQUEST_TIMEOUT_MS = 15000;" in source
+    assert "const UPLOAD_REQUEST_TIMEOUT_MS = 45000;" in source
+    assert "AbortController" in source
+    assert "request timed out after" in source
 
 
 def test_home_prime_uses_adaptive_poll_loops() -> None:
@@ -3019,6 +3892,7 @@ def test_usage_snapshot_tracks_recent_burn() -> None:
         detail=1,
         success=False,
         usage={"input_tokens": 50, "cached_input_tokens": 10, "output_tokens": 5},
+        cost_route=_route_proof(module),
     )
     module.append_usage_entry(
         started_at=now - 90,
@@ -3041,6 +3915,7 @@ def test_usage_snapshot_tracks_recent_burn() -> None:
             "cloud_context_gate_active": True,
             "cloud_context_gate_status": "preflighted",
         },
+        cost_route=_route_proof(module),
     )
 
     snapshot = module.usage_snapshot(thread_id="recent")
@@ -3061,6 +3936,49 @@ def test_usage_snapshot_tracks_recent_burn() -> None:
     assert snapshot["last_turn"]["thread_id"] == "recent"
     assert snapshot["last_turn"]["total_tokens"] == 138
     assert snapshot["last_turn"]["cloud_preflight_net_token_delta_estimate"] == 1_975
+
+
+def test_agent_console_route_details_are_durable_and_rendered() -> None:
+    module = _load_agent_console_web()
+    usage = module.normalize_usage_entry(
+        {
+            "runtime": "codex",
+            "model": module.MODEL,
+            "route_source": "cost_router",
+            "route_reason": "Cloud execution was required for the workspace change.",
+            "route_requested_runtime": "localllm",
+            "route_requested_model": "qwen3.6:35b-a3b-q4_K_M",
+            "route_requested_service_tier": "default",
+            "route_fallback_reason": "Local planner was advisory only.",
+            "memory_ref_count": 3,
+            "memory_rerank_used": True,
+            "memory_rerank_status": "ok",
+            "memory_rerank_model": "BAAI/bge-reranker-v2-m3",
+            "memory_rerank_candidate_count": 8,
+            "memory_rerank_selected_count": 3,
+            "memory_rerank_receipt": {
+                "status": "ok",
+                "model": "BAAI/bge-reranker-v2-m3",
+                "candidate_count": 8,
+                "selected_count": 3,
+            },
+            "local_preflight_used": True,
+            "local_preflight_status": "ok",
+            "local_preflight_model": "qwen3.6:35b-a3b-q4_K_M",
+        }
+    )
+    source = _agent_console_web_source()
+
+    assert usage["route_reason"] == (
+        "Cloud execution was required for the workspace change."
+    )
+    assert usage["route_requested_runtime"] == "localllm"
+    assert usage["route_fallback_reason"] == "Local planner was advisory only."
+    assert usage["memory_rerank_used"] is True
+    assert usage["memory_rerank_receipt"]["status"] == "ok"
+    assert "function turnRouteExplanationDescriptor(" in source
+    assert "message-route-details-toggle" in source
+    assert "Spark rerank" in source
 
 
 def test_usage_snapshot_reports_route_utilization() -> None:
@@ -3187,6 +4105,11 @@ def test_usage_api_payload_defaults_to_compact_route_utilization() -> None:
             "local_specialist_tokens": 17,
             "cloud_tokens_avoided_estimate": 2000,
         },
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="gpt-5",
+        ),
     )
 
     payload = module.usage_api_payload(thread_id="recent")
@@ -3209,32 +4132,70 @@ def test_usage_api_payload_defaults_to_compact_route_utilization() -> None:
     assert "billing" in verbose["usage"]
 
 
-def test_initial_context_meter_flags_save_soon_for_heavy_sessions() -> None:
+def test_initial_context_meter_flags_handoff_now_at_eighty_percent() -> None:
     module = _load_agent_console_web()
 
     meter = module._initial_context_meter(
         {
-            "history": [{} for _ in range(24)],
             "usage": {
-                "totals": {
+                "current_thread": {
                     "turns": 24,
-                    "total_tokens": 94_200,
-                },
-                "last_24h": {
-                    "total_tokens": 64_000,
+                    "total_tokens": 128_000,
                 },
             },
-            "queue_depth": 1,
-            "pending": False,
-            "running_prompt": "",
+            "session_budget": {
+                "checkpoint_tokens": 160_000,
+                "reauthorization_tokens": 200_000,
+            },
         }
     )
 
     assert meter["hidden"] is False
     assert meter["tone"] == "danger"
-    assert meter["label"] == "Save soon"
-    assert meter["fill_pct"] >= 92
-    assert "94,200 tracked tokens" in meter["title"]
+    assert meter["label"] == "Handoff now"
+    assert meter["value"] == "128k / 160k · 80%"
+    assert meter["fill_pct"] == 80
+    assert "128,000 tracked thread tokens of 160,000" in meter["title"]
+    assert "Tracked thread-token budget" in meter["title"]
+
+
+def test_initial_context_meter_requires_handoff_at_hard_limit() -> None:
+    module = _load_agent_console_web()
+
+    meter = module._initial_context_meter(
+        {
+            "usage": {"current_thread": {"total_tokens": 200_000}},
+            "session_budget": {
+                "checkpoint_tokens": 160_000,
+                "reauthorization_tokens": 200_000,
+            },
+        }
+    )
+
+    assert meter["label"] == "Handoff required"
+    assert meter["fill_pct"] == 100
+
+
+def test_initial_context_meter_prioritizes_runaway_stop() -> None:
+    module = _load_agent_console_web()
+
+    meter = module._initial_context_meter(
+        {
+            "usage": {"current_thread": {"turns": 3, "total_tokens": 12_000}},
+            "session_budget": {
+                "checkpoint_tokens": 160_000,
+                "reauthorization_tokens": 200_000,
+                "run_health": {
+                    "state": "stop",
+                    "signals": [{"code": "compaction_loop"}],
+                },
+            },
+        }
+    )
+
+    assert meter["tone"] == "danger"
+    assert meter["label"] == "Run stopped"
+    assert "compaction_loop" in meter["title"]
 
 
 def test_prime_credits_ui_surfaces_usage_burn() -> None:
@@ -3338,15 +4299,17 @@ def test_base_nav_splits_chat_and_dashboard_routes() -> None:
     template = _base_template_source()
     styles = _styles_source()
 
+    assert 'href="/bridge"' in template
+    assert ">Bridge</a>" in template
     assert 'href="/bot/norman/"' in template
-    assert ">Chat</a>" in template
+    assert ">Focused console</a>" in template
     assert 'href="/dashboard.html?view=switchboard"' in template
     assert ">Switchboard</a>" in template
     assert 'id="normanShellMenu"' in template
     assert "norman-shell-menu__sheet" in template
     assert "Control Plane" in template
     assert ">Subprime lane</a>" in template
-    assert ">Directory</a>" in template
+    assert ">Applications &amp; Systems</a>" in template
     assert ">Settings</a>" in template
     assert ">Connectors</a>" in template
     assert ">Sources</a>" in template
@@ -3355,7 +4318,7 @@ def test_base_nav_splits_chat_and_dashboard_routes() -> None:
     assert "site-banner--norman-shell" in template
     assert "container-fluid lower-deck-main my-3" in template
     assert (
-        "brand-sub\">{% if active_page == 'home' %}Switchboard{% elif active_page == 'messages' %}Super TUI{% elif active_page == 'login' %}Sign In{% else %}Control Plane{% endif %}"
+        "brand-sub\">{% if active_page == 'bridge' %}Bridge{% elif active_page == 'home' %}Switchboard{% elif active_page == 'messages' %}Super TUI{% elif active_page == 'login' %}Login{% else %}Control Plane{% endif %}"
         in template
     )
     assert "body.page-systems," in styles
@@ -3365,10 +4328,7 @@ def test_base_nav_splits_chat_and_dashboard_routes() -> None:
     assert '@app_routes.get("/dashboard.html")' in routes
     assert '@app_routes.get("/switchboard")' in routes
     assert '@app_routes.get("/switchboard.html")' in routes
-    assert (
-        "return RedirectResponse(url=_norman_chat_redirect_url(request), status_code=307)"
-        in routes
-    )
+    assert "return await bridge(request)" in routes
     assert (
         'return f"/bot/norman/?{urlencode(params)}" if params else "/bot/norman/"'
         in routes
@@ -3483,8 +4443,8 @@ def test_norman_login_uses_gold_super_tui_shell() -> None:
     styles = _styles_source()
 
     assert "norman-auth-shell" in template
-    assert "Control Plane Sign In" in template
-    assert "Enter Norman" in template
+    assert "Norman Bridge" in template
+    assert "Log in to Norman" in template
     assert ".norman-auth-shell {" in styles
     assert ".norman-auth-card {" in styles
     assert "body.page-login," in styles
@@ -3525,15 +4485,33 @@ def test_legacy_norman_subpages_share_tui_shell_actions() -> None:
     assert ".site-banner--norman-shell .norman-shell-menu__sheet {" in styles
 
 
-def test_template_exposes_context_meter_save_hint() -> None:
+def test_template_exposes_tracked_thread_budget_handoff_control() -> None:
     source = _agent_console_web_source()
 
     assert 'id="context-meter-chip"' in source
     assert 'id="context-meter-status"' in source
     assert "function contextMeterState(snapshot)" in source
     assert "function renderContextMeter(snapshot)" in source
-    assert "Save soon" in source
-    assert "Heuristic only; use it as a save/compact hint" in source
+    assert "checkpoint_tokens" in source
+    assert "Handoff now" in source
+    assert "Run stopped" in source
+    assert "Checkpoint now" in source
+    assert "Create handoff" in source
+    assert "Tracked thread-token budget" in source
+
+
+def test_template_uses_a_full_command_surface_on_standard_desktops() -> None:
+    source = _agent_console_web_source()
+
+    assert "width < 980" in source
+    assert "height <= 620" in source
+    assert "(width <= 1180 && height <= 700)" in source
+    assert 'body[data-layout-mode="full"] .chat-shell {' in source
+    assert "--reading-lane: 100%;" in source
+    assert 'body[data-layout-mode="full"] .message.assistant {' in source
+    assert "--assistant-message-max-width: 100%;" in source
+    assert "max-width: min(84ch, 88vw);" in source
+    assert 'body[data-layout-mode="full"] .chat-shell > .composer-wrap {' in source
 
 
 def test_composer_upload_icon_uses_composer_inline_action_selector() -> None:
@@ -3749,9 +4727,7 @@ def test_profile_alias_paths_redirect_to_query_profile() -> None:
 def test_render_index_exposes_visible_enter_shortcut_hint() -> None:
     source = _agent_console_web_source()
 
-    assert (
-        "Queue prompt. Press Enter to queue and Shift+Enter for a new line." in source
-    )
+    assert "Send message. Press Enter to send and Shift+Enter for a new line." in source
 
 
 def test_build_console_and_file_href_support_prefixes() -> None:
@@ -4116,12 +5092,11 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
 
     rendered = module.render_caddy()
 
+    assert ("{\n    acme_ca https://ca.home.arpa/acme/acme/directory\n}") in rendered
     assert (
         "(norman_internal_tls) {\n"
         "    tls {\n"
-        "        issuer internal {\n"
-        "            lifetime 6d\n"
-        "        }\n"
+        "        ca https://ca.home.arpa/acme/acme/directory\n"
         "    }\n"
         "}"
     ) in rendered
@@ -4137,24 +5112,8 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
         "}"
     ) in rendered
     assert (
-        "http://norman.tail94915.ts.net {\n" "    redir https://{host}{uri} 308\n" "}"
+        "http://norman.tail94915.ts.net {\n    redir https://{host}{uri} 308\n}"
     ) in rendered
-    assert (
-        "norman.tail94915.ts.net {\n"
-        "    import norman_internal_tls\n"
-        "    import norman_frontdoor\n"
-        "}"
-    ) in rendered
-
-
-def test_norman_frontdoor_caddy_allows_explicit_canonical_cert_paths() -> None:
-    module = _load_frontdoor_renderer()
-
-    rendered = module.render_caddy(
-        canonical_cert="/etc/caddy/certs/norman.tail94915.ts.net.crt",
-        canonical_key="/etc/caddy/certs/norman.tail94915.ts.net.key",
-    )
-
     assert (
         "norman.tail94915.ts.net {\n"
         "    tls /etc/caddy/certs/norman.tail94915.ts.net.crt "
@@ -4162,6 +5121,53 @@ def test_norman_frontdoor_caddy_allows_explicit_canonical_cert_paths() -> None:
         "    import norman_frontdoor\n"
         "}"
     ) in rendered
+    assert (
+        "@norman_root path /\n"
+        "    handle @norman_root {\n"
+        "        redir * /bridge 302\n"
+        "    }"
+    ) in rendered
+    assert "tls /etc/caddy/certs/norman-lollie.crt" not in rendered
+    responses_position = rendered.index("handle /v1/responses {")
+
+    assert (
+        "@bridge_document path /bridge /bridge.html\n"
+        '    header @bridge_document Cache-Control "no-store, max-age=0"'
+    ) in rendered
+    assert (
+        "@bridge_live_assets path /static/css/bridge.css /static/js/bridge.js\n"
+        "    handle @bridge_live_assets {\n"
+        "        reverse_proxy 127.0.0.1:8000 {\n"
+        '            header_down Cache-Control "no-store, max-age=0"\n'
+        "        }\n"
+        "    }"
+    ) in rendered
+    assert (
+        "handle_path /static/* {\n"
+        "        root * /var/www/norman-static\n"
+        '        header Cache-Control "public, max-age=300, '
+        'stale-while-revalidate=86400"\n'
+        "        file_server\n"
+        "    }"
+    ) in rendered
+    gateway_position = rendered.index("handle /v1/* {")
+    root_redirect_position = rendered.index("@norman_root path /")
+    fallback_position = rendered.index("handle {\n        reverse_proxy 127.0.0.1:8000")
+    assert (
+        responses_position
+        < gateway_position
+        < root_redirect_position
+        < fallback_position
+    )
+    assert (
+        "handle /v1/responses {\n"
+        "        reverse_proxy 127.0.0.1:8000 {\n"
+        "            flush_interval -1\n"
+        "            header_up X-Norman-Gateway-Route norman\n"
+        "            header_up X-Forwarded-For 127.0.0.2"
+    ) in rendered
+    assert "header_up X-Norman-Gateway-Route norman" in rendered
+    assert "header_up X-Forwarded-For 127.0.0.2" in rendered
 
 
 def test_bot_proxy_caddy_routes_forward_original_prefix() -> None:
@@ -4198,7 +5204,16 @@ def test_bot_proxy_caddy_uses_internal_tls_for_pending_public_work_aliases() -> 
     rendered = module.render_hosts()
 
     assert "# compere" in rendered
-    assert "keystone.kris.openbrand.com {\n    import norman_internal_tls" in rendered
+    assert (
+        "keystone.kris.openbrand.com {\n"
+        "    import norman_internal_tls\n"
+        "    encode zstd gzip {\n"
+        "        match {\n"
+        "            header Content-Type application/json*\n"
+        "            header Content-Type text/html*\n"
+        "        }\n"
+        "    }"
+    ) in rendered
     assert "infra.kris.openbrand.com {\n    import norman_internal_tls" in rendered
     assert "kpis.kris.openbrand.com {\n    import norman_internal_tls" in rendered
     assert "leadership.kris.openbrand.com {\n    import norman_internal_tls" in rendered
@@ -4231,17 +5246,74 @@ def test_bot_proxy_caddy_ip_gates_knox_local_work_aliases() -> None:
     assert (
         "keystone.kris.openbrand.com {\n"
         "    import norman_internal_tls\n"
+        "    encode zstd gzip {\n"
+        "        match {\n"
+        "            header Content-Type application/json*\n"
+        "            header Content-Type text/html*\n"
+        "        }\n"
+        "    }\n"
         "    @knox_allowed remote_ip"
     ) in rendered
     assert (
         "infra.kris.openbrand.com {\n"
         "    import norman_internal_tls\n"
+        "    encode zstd gzip {\n"
+        "        match {\n"
+        "            header Content-Type application/json*\n"
+        "            header Content-Type text/html*\n"
+        "        }\n"
+        "    }\n"
         "    @knox_allowed remote_ip"
     ) in rendered
     assert "control.kris.openbrand.com {\n    @knox_allowed remote_ip" not in rendered
     assert "cp.kris.openbrand.com {\n    @knox_allowed remote_ip" not in rendered
     assert "goldbook.kris.openbrand.com {\n    @knox_allowed remote_ip" not in rendered
     assert "platinum.kris.openbrand.com {\n    @knox_allowed remote_ip" not in rendered
+
+
+def test_bot_proxy_caddy_routes_canonical_codex_hosts_to_gateway_before_console() -> (
+    None
+):
+    from scripts.codex_route import ROUTES
+
+    module = _load_bot_proxy_renderer()
+    rendered = module.render_hosts()
+    route_keys = {route.key for route in ROUTES}
+
+    assert module.GATEWAY_ROUTES == route_keys - {"norman"}
+    for route_key in sorted(module.GATEWAY_ROUTES):
+        assert f"header_up X-Norman-Gateway-Route {route_key}" in rendered
+    assert rendered.count("header_up X-Forwarded-For 127.0.0.2") == (
+        len(module.GATEWAY_ROUTES) * 2
+    )
+
+    def host_block(host: str) -> str:
+        start = rendered.index(f"{host} {{")
+        end = rendered.find("\n\n# ", start)
+        return rendered[start:] if end == -1 else rendered[start:end]
+
+    gold_book = host_block("goldbook.kris.openbrand.com")
+    assert "handle /v1/responses {" in gold_book
+    assert "handle /v1/* {" in gold_book
+    assert "flush_interval -1" in gold_book
+    assert "header_up X-Norman-Gateway-Route gold-book" in gold_book
+    assert (
+        gold_book.index("handle /v1/responses {")
+        < gold_book.index("handle /v1/* {")
+        < gold_book.index("handle {\n        reverse_proxy")
+    )
+
+    infra = host_block("infra.kris.openbrand.com")
+    assert "@knox_allowed remote_ip" in infra
+    assert "handle /v1/responses {" in infra
+    assert "handle /v1/* {" in infra
+    assert "flush_interval -1" in infra
+    assert "header_up X-Norman-Gateway-Route infra" in infra
+    assert (
+        infra.index("handle /v1/responses {")
+        < infra.index("handle /v1/* {")
+        < infra.index("handle {\n            reverse_proxy")
+    )
 
 
 def test_bot_proxy_caddy_redirects_work_shortcuts_to_canonical_hosts() -> None:
@@ -4256,11 +5328,10 @@ def test_bot_proxy_caddy_redirects_work_shortcuts_to_canonical_hosts() -> None:
     ) in rendered
     assert "redir https://keystone.kris.openbrand.com{uri} 308" in rendered
     assert (
-        "control.kris.openbrand.com {\n"
-        "    redir https://cp.kris.openbrand.com{uri} 308"
+        "control.kris.openbrand.com {\n    redir https://cp.kris.openbrand.com{uri} 308"
     ) in rendered
     assert (
-        "leadership.kris.openbrand.com {\n" "    import norman_internal_tls"
+        "leadership.kris.openbrand.com {\n    import norman_internal_tls"
     ) in rendered
     assert "redir https://kpis.kris.openbrand.com{uri} 308" in rendered
 
@@ -4335,21 +5406,62 @@ def test_bot_proxy_caddy_exposes_local_llm_frontdoor() -> None:
     assert (
         "llm.home.arpa, llm.knox.lollie.org {\n"
         "    import norman_internal_tls\n"
-        "    reverse_proxy 192.168.2.133:18151 192.168.2.150:18151 "
-        "192.168.2.151:18151 {\n"
-        "        lb_policy first\n"
-        "        lb_try_duration 15s\n"
-        "        lb_try_interval 250ms\n"
-        "        fail_duration 20s\n"
-        "        max_fails 1\n"
-        "        health_uri /healthz\n"
-        "        health_interval 3s\n"
-        "        health_timeout 2s\n"
+        "    encode zstd gzip {\n"
+        "        match {\n"
+        "            header Content-Type application/json*\n"
+        "            header Content-Type text/html*\n"
+        "        }\n"
+        "    }\n"
+        "    redir /resident /resident/ 308\n"
+        "    handle_path /resident/* {\n"
+        "        reverse_proxy 192.168.2.151:18161 192.168.2.150:18161 {\n"
+        "            lb_policy first\n"
+        "            lb_try_duration 15s\n"
+        "            lb_try_interval 250ms\n"
+        "            fail_duration 20s\n"
+        "            max_fails 1\n"
+        "            health_uri /healthz\n"
+        "            health_interval 3s\n"
+        "            health_timeout 2s\n"
+        "        }\n"
+        "    }\n"
+        "    @asr path /transcribe /v1/audio/transcriptions\n"
+        "    handle @asr {\n"
+        "        request_body {\n"
+        "            max_size 512MB\n"
+        "        }\n"
+        "        reverse_proxy 192.168.2.151:18151\n"
+        "    }\n"
+        "    handle {\n"
+        "        reverse_proxy 192.168.2.133:18151 192.168.2.151:18151 "
+        "192.168.2.150:18151 {\n"
+        "            lb_policy first\n"
+        "            lb_try_duration 15s\n"
+        "            lb_try_interval 250ms\n"
+        "            fail_duration 20s\n"
+        "            max_fails 1\n"
+        "            health_uri /healthz\n"
+        "            health_interval 3s\n"
+        "            health_timeout 2s\n"
+        "        }\n"
         "    }\n"
         "}"
     ) in rendered_hosts
     assert '"llm.knox.lollie.org": "192.168.2.241"' in rendered_dns
     assert '"llm.home.arpa": "192.168.2.241"' in rendered_dns
+
+
+def test_bot_proxy_caddy_uses_asr_readiness_for_a_multi_worker_pool() -> None:
+    module = _load_bot_proxy_renderer()
+
+    rendered = "\n".join(
+        module._asr_proxy_lines(("192.168.2.150:18151", "192.168.2.151:18151"))
+    )
+
+    assert "request_body {" in rendered
+    assert "max_size 512MB" in rendered
+    assert "health_uri /asr-readyz" in rendered
+    assert "health_interval 3s" in rendered
 
 
 def test_bot_proxy_caddy_exposes_subprime_lane_aliases() -> None:
@@ -4591,20 +5703,34 @@ def test_sync_template_rolls_runtime_bridge_through_norman_keys() -> None:
     assert "def sync_instance_runtime_bridge_settings(" in source
     assert 'RUNTIME_BRIDGE_SECRET_LANE = "shared_infra"' in source
     assert 'RUNTIME_BRIDGE_JOB_CREATE_TIMEOUT_SECONDS = "15"' in source
-    assert 'RUNTIME_BRIDGE_TOKEN_RETRY_SECONDS = "30"' in source
-    assert 'RUNTIME_BRIDGE_PROOF_TTL_SECONDS = "120"' in source
+    assert 'RUNTIME_BRIDGE_TOKEN_RETRY_SECONDS = "300"' in source
+    assert 'RUNTIME_BRIDGE_TOKEN_AUTH_RETRY_SECONDS = "3600"' in source
+    assert 'RUNTIME_BRIDGE_SNAPSHOT_TTL_SECONDS = "60"' in source
+    assert 'RUNTIME_BRIDGE_ACTIVE_SNAPSHOT_TTL_SECONDS = "5"' in source
+    assert 'RUNTIME_BRIDGE_PROOF_TTL_SECONDS = "900"' in source
+    assert 'RUNTIME_BRIDGE_PROOF_BACKOFF_SECONDS = "300"' in source
     assert 'RUNTIME_BRIDGE_STARTUP_JITTER_SECONDS = "45"' in source
-    assert 'RUNTIME_BRIDGE_ROUTE_OUTCOME_LIMIT = "200"' in source
-    assert 'RUNTIME_BRIDGE_LOCAL_FIRST_PROOF_LIMIT = "250"' in source
+    assert 'RUNTIME_BRIDGE_ROUTE_OUTCOME_TTL_SECONDS = "300"' in source
+    assert 'RUNTIME_BRIDGE_ROUTE_OUTCOME_LIMIT = "50"' in source
+    assert 'RUNTIME_BRIDGE_RECENT_ITEMS = "6"' in source
+    assert 'RUNTIME_BRIDGE_LOCAL_FIRST_PROOF_LIMIT = "50"' in source
+    assert 'RUNTIME_BRIDGE_LOCAL_FIRST_SESSION_LIMIT = "10"' in source
+    assert 'RUNTIME_BRIDGE_WORKSTREAM_RETRY_SECONDS = "21600"' in source
     assert '"NORMAN_CONSOLE_RUNTIME_API_BASE": api_base' in source
     assert '"NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET": token_secret' in source
     assert '"NORMAN_KEYS_URL": keys_url' in source
     assert '"NORMAN_KEYS_TOKEN": keys_token' in source
-    assert '"NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS": (' in source
+    assert (
+        '"NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS": RUNTIME_BRIDGE_PROOF_TTL_SECONDS'
+        in source
+    )
     assert '"NORMAN_CONSOLE_RUNTIME_JOB_CREATE_TIMEOUT_SECONDS": (' in source
     assert '"NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS": (' in source
+    assert '"NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS": (' in source
+    assert '"NORMAN_CONSOLE_RUNTIME_ACTIVE_SNAPSHOT_TTL_SECONDS": (' in source
     assert '"NORMAN_CONSOLE_RUNTIME_STARTUP_JITTER_SECONDS": (' in source
     assert '"NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LIMIT": (' in source
+    assert '"NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS": (' in source
     assert '"NORMAN_CONSOLE_RUNTIME_TOKEN":' not in source
     assert '"NORMAN_API_TOKEN":' not in source
 
@@ -4633,6 +5759,9 @@ def test_sync_template_rolls_kernel_primary_to_canary_instances() -> None:
     assert '"NORMAN_LOCAL_LLM_SHORT_NUM_CTX": "4096"' in source
     assert '"NORMAN_LOCAL_LLM_FALLBACK_MODELS": ""' in source
     assert '"NORMAN_LOCAL_LLM_ALLOW_TINY_FOREGROUND_FALLBACK": "0"' in source
+    assert "LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL = (" in source
+    assert '"NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL": (' in source
+    assert '"NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS": "192"' in source
 
     housebot = module.ConsoleInstance(
         name="housebot",
@@ -4676,8 +5805,9 @@ def test_sync_template_rolls_kernel_primary_to_canary_instances() -> None:
     assert canary_settings["NORMAN_TUI_BACKEND"] == "kernel"
     assert canary_settings["NORMAN_TUI_KERNEL_EXECUTION"] == "1"
     assert canary_settings["NORMAN_TUI_KERNEL_PRIMARY"] == "1"
-    assert canary_settings["NORMAN_TUI_KERNEL_OWNED_TURN"] == "1"
+    assert canary_settings["NORMAN_TUI_KERNEL_OWNED_TURN"] == "0"
     assert canary_settings["NORMAN_TUI_KERNEL_PRIMARY_STRICT"] == "0"
+    assert canary_settings["NORMAN_TUI_KERNEL_STRICT_SHADOW"] == "0"
     assert canary_settings["NORMAN_TUI_KERNEL_CLOUD_FALLBACK"] == "1"
     assert canary_settings["NORMAN_TUI_KERNEL_WORKSPACE_PREFLIGHT"] == "1"
     assert canary_settings["NORMAN_TUI_KERNEL_PRIMARY_MAX_STEPS"] == "5"
@@ -4711,8 +5841,9 @@ def test_sync_template_rolls_kernel_primary_to_canary_instances() -> None:
         settings = module.kernel_rollout_settings_for_instance(promoted)
         assert settings["NORMAN_TUI_BACKEND"] == "kernel"
         assert settings["NORMAN_TUI_KERNEL_EXECUTION"] == "1"
-        assert settings["NORMAN_TUI_KERNEL_OWNED_TURN"] == "1"
+        assert settings["NORMAN_TUI_KERNEL_OWNED_TURN"] == "0"
         assert settings["NORMAN_TUI_KERNEL_PRIMARY_STRICT"] == "0"
+        assert settings["NORMAN_TUI_KERNEL_STRICT_SHADOW"] == "0"
         assert settings["NORMAN_TUI_KERNEL_CLOUD_FALLBACK"] == "1"
 
 
@@ -4762,11 +5893,19 @@ def test_runtime_bridge_settings_prefers_broker_reference(monkeypatch) -> None:
     assert settings["NORMAN_CONSOLE_RUNTIME_ENABLED"] == "1"
     assert settings["NORMAN_CONSOLE_RUNTIME_LANE"] == "shared_infra"
     assert settings["NORMAN_CONSOLE_RUNTIME_JOB_CREATE_TIMEOUT_SECONDS"] == "15"
-    assert settings["NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS"] == "30"
-    assert settings["NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS"] == "120"
+    assert settings["NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS"] == "300"
+    assert settings["NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS"] == "3600"
+    assert settings["NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS"] == "60"
+    assert settings["NORMAN_CONSOLE_RUNTIME_ACTIVE_SNAPSHOT_TTL_SECONDS"] == "5"
+    assert settings["NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS"] == "900"
+    assert settings["NORMAN_CONSOLE_RUNTIME_PROOF_BACKOFF_SECONDS"] == "300"
     assert settings["NORMAN_CONSOLE_RUNTIME_STARTUP_JITTER_SECONDS"] == "45"
-    assert settings["NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_LIMIT"] == "200"
-    assert settings["NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LIMIT"] == "250"
+    assert settings["NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_TTL_SECONDS"] == "300"
+    assert settings["NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_LIMIT"] == "50"
+    assert settings["NORMAN_CONSOLE_RUNTIME_RECENT_ITEMS"] == "6"
+    assert settings["NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LIMIT"] == "50"
+    assert settings["NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_SESSION_LIMIT"] == "10"
+    assert settings["NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS"] == "21600"
     assert "NORMAN_CONSOLE_RUNTIME_TOKEN" not in settings
     assert "NORMAN_API_TOKEN" not in settings
 
@@ -4791,13 +5930,14 @@ def test_runtime_bridge_sync_writes_broker_env_without_direct_token(
         prompt_file="/etc/scout/codex-system-prompt.txt",
         codex_home="/home/kristopher/.codex-scout",
     )
-    captured: list[list[str]] = []
+    captured: dict[str, object] = {}
 
-    def fake_capture(cmd):
-        captured.append(cmd)
+    def fake_capture_with_stdin(cmd, stdin):
+        captured["cmd"] = cmd
+        captured["stdin"] = stdin
         return "changed"
 
-    monkeypatch.setattr(module, "capture", fake_capture)
+    monkeypatch.setattr(module, "capture_with_stdin", fake_capture_with_stdin)
 
     changed = module.sync_instance_runtime_bridge_settings(
         module.HOSTS["work-special"],
@@ -4814,11 +5954,124 @@ def test_runtime_bridge_sync_writes_broker_env_without_direct_token(
     )
 
     assert changed is True
-    rendered_command = " ".join(captured[0])
-    assert "NORMAN_KEYS_TOKEN" in rendered_command
-    assert "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET" in rendered_command
-    assert '"NORMAN_CONSOLE_RUNTIME_TOKEN":' not in rendered_command
-    assert '"NORMAN_API_TOKEN":' not in rendered_command
+    rendered_command = " ".join(captured["cmd"])
+    payload = json.loads(captured["stdin"])
+    assert "keys-token" not in rendered_command
+    assert "NORMAN_KEYS_TOKEN" not in rendered_command
+    assert "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET" not in rendered_command
+    assert "json.load(sys.stdin)" in rendered_command
+    assert "for key in remove_keys" in rendered_command
+    assert payload["updates"]["NORMAN_KEYS_TOKEN"] == "keys-token"
+    assert (
+        payload["updates"]["NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET"]
+        == "norman/console-runtime-token"
+    )
+    for key in module.RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS:
+        assert key in payload["remove_keys"]
+        assert key not in rendered_command
+
+
+def test_runtime_bridge_stdin_sync_deduplicates_env_entries(tmp_path: Path) -> None:
+    module = _load_sync_agent_console_template()
+    env_file = tmp_path / "codex-web.env"
+    env_file.write_text(
+        (
+            "KEEP=one\n"
+            "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=120\n"
+            "UNCHANGED=value\n"
+            "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=999\n"
+            "NORMAN_CONSOLE_RUNTIME_TOKEN=legacy-token\n"
+            "NORMAN_API_TOKEN=legacy-api-token\n"
+            "TRAILING=without-newline"
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            module.RUNTIME_BRIDGE_SETTINGS_STDIN_SCRIPT,
+            str(env_file),
+        ],
+        input=json.dumps(
+            {
+                "updates": {
+                    "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS": "60",
+                },
+                "remove_keys": list(module.RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS),
+            }
+        ),
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    updated = env_file.read_text(encoding="utf-8")
+    assert completed.stdout == "changed\n"
+    assert updated.count("NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=") == 1
+    assert "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=60\n" in updated
+    assert "NORMAN_CONSOLE_RUNTIME_TOKEN=" not in updated
+    assert "NORMAN_API_TOKEN=" not in updated
+    assert updated == (
+        "KEEP=one\n"
+        "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=60\n"
+        "UNCHANGED=value\n"
+        "TRAILING=without-newline"
+    )
+
+
+def test_runtime_bridge_sync_applies_polling_guards_without_broker_reference(
+    monkeypatch,
+) -> None:
+    module = _load_sync_agent_console_template()
+    instance = module.ConsoleInstance(
+        name="autocamera",
+        host_name="hal",
+        ssh_target=module.HOSTS["hal"].ssh_target,
+        use_sudo=module.HOSTS["hal"].use_sudo,
+        env_file="/etc/autocamera/codex-web.env",
+        web_path="/opt/autocamera/codex_web.py",
+        launch_path="/opt/autocamera/codex_launch.sh",
+        supervisor_path="/opt/autocamera/codex_supervisor.sh",
+        restart_units=("autocamera-codex.service", "autocamera-codex-web.service"),
+        agent_label="Autocamera",
+        web_port="8789",
+        web_token="demo-token",
+        prompt_file="/etc/autocamera/codex-system-prompt.txt",
+        codex_home="/home/kristopher/.codex-autocamera",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_capture_with_stdin(cmd, stdin):
+        captured["cmd"] = cmd
+        captured["stdin"] = stdin
+        return "changed"
+
+    monkeypatch.setattr(module, "capture_with_stdin", fake_capture_with_stdin)
+
+    changed = module.sync_instance_runtime_bridge_settings(
+        module.HOSTS["hal"],
+        instance,
+        {},
+    )
+
+    assert changed is True
+    rendered_command = " ".join(captured["cmd"])
+    payload = json.loads(captured["stdin"])
+    assert payload["updates"]["NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS"] == "60"
+    assert (
+        payload["updates"]["NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS"] == "3600"
+    )
+    assert (
+        payload["updates"]["NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS"] == "21600"
+    )
+    assert "NORMAN_KEYS_TOKEN" not in rendered_command
+    assert "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET" not in rendered_command
+    assert "json.load(sys.stdin)" in rendered_command
+    assert payload["remove_keys"] == []
+    assert "NORMAN_CONSOLE_RUNTIME_TOKEN" not in rendered_command
+    assert "NORMAN_API_TOKEN" not in rendered_command
 
 
 def test_kernel_rollout_sync_writes_backend_env(monkeypatch) -> None:
@@ -4859,16 +6112,39 @@ def test_kernel_rollout_sync_writes_backend_env(monkeypatch) -> None:
     assert "NORMAN_TUI_KERNEL_PRIMARY" in rendered_command
 
 
-def test_local_sync_systemd_units_target_hal() -> None:
+def test_local_sync_systemd_units_target_the_local_host() -> None:
     service = _systemd_unit_source("norman-agent-console-sync-local.service")
+    user_service = _systemd_unit_source("norman-agent-console-sync.service")
+    bedrock_dropin = _systemd_unit_source(
+        "norman-agent-console-sync-personal-bedrock.conf"
+    )
     path = _systemd_unit_source("norman-agent-console-sync-local.path")
     timer = _systemd_unit_source("norman-agent-console-sync-local.timer")
 
-    assert "sync_agent_console_template.py --targets hal" in service
+    assert "sync_agent_console_template.py --targets %H --restart-web-only" in service
+    assert "User=root" in service
+    assert "Group=root" in service
+    assert "RuntimeDirectory=norman-agent-console-sync" in service
+    assert "/run/norman-agent-console-sync/sync-local.lock" in service
+    assert "PYTHONPATH=/home/kristopher/code/norman" in service
+    assert "NORMAN_SYNC_EXECUTION_HOST=%H" in service
+    assert "/home/kristopher/code/norman/.venv/bin/python" in service
+    assert "PYTHONPATH=%h/code/norman" in user_service
+    assert "%h/code/norman/.venv/bin/python" in user_service
+    profile_source = (
+        "NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE="
+        "/home/kristopher/.codex-nonwork/personal-bedrock.config.toml"
+    )
+    assert profile_source in service
+    assert profile_source in bedrock_dropin
+    assert "NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE=%h/.codex-nonwork/" in (
+        user_service
+    )
     assert (
         "/home/kristopher/code/norman/scripts/agent_console_template/agent_console_web.py"
         in path
     )
+    assert "/home/kristopher/code/norman/scripts/agent_console_child_agents.py" in path
     assert "Unit=norman-agent-console-sync-local.service" in path
     assert "Unit=norman-agent-console-sync-local.service" in timer
 
@@ -5129,3 +6405,694 @@ def test_render_console_link_url_keeps_sibling_service_hostnames() -> None:
 
     assert same_service.startswith("http://dj.home.arpa:8793/")
     assert sibling_service.startswith("http://toy-box.home.arpa:8787/")
+
+
+def test_codex_account_capacity_parser_and_forecast_are_aggregate_only() -> None:
+    module = _load_agent_console_web()
+    observed_at = 1_789_000_000
+
+    parsed = module.parse_codex_account_capacity_pane(
+        """
+        5h limit: 84% left · resets in 2h 30m
+        Weekly limit: 63% remaining · resets in 6d 4h
+        """,
+        observed_at=observed_at,
+        auth_mode="chatgpt",
+    )
+    forecast = module.codex_account_capacity_forecast(
+        [
+            module.normalize_usage_entry(
+                {
+                    "started_at": observed_at - 7200,
+                    "finished_at": observed_at - 3600,
+                    "success": True,
+                    "runtime": "codex",
+                    "provider_surface": "openai-direct",
+                    "codex_auth_mode": "chatgpt",
+                    "total_tokens": 1200,
+                }
+            )
+        ],
+        now=observed_at,
+        windows=parsed["windows"],
+    )
+
+    assert parsed["source"] == "interactive_usage"
+    assert parsed["state"] == "available"
+    assert parsed["minimum_window_percent_left"] == 63
+    assert parsed["windows"][0]["label"] == "Short window"
+    assert parsed["windows"][0]["reset_seconds"] == 9000
+    assert parsed["windows"][1]["label"] == "Weekly"
+    assert forecast["tokens_per_hour"] > 0
+    assert forecast["earliest_reset_seconds"] == 9000
+    assert forecast["capacity_credit_equivalent_unknown"] is True
+    assert "limit:" not in json.dumps(parsed)
+
+
+def test_codex_status_capacity_parser_records_credit_metadata_without_resetting() -> (
+    None
+):
+    module = _load_agent_console_web()
+    observed_at = int(time.mktime((2026, 7, 16, 12, 0, 0, 0, 0, -1)))
+
+    parsed = module.parse_codex_account_capacity_pane(
+        """
+        You have 4 usage limit resets available. Run /usage to use one.
+        Weekly limit: 100% left
+        (resets 12:12 on 23 Jul)
+        Context window: 92% left
+        Credits: 6,907 credits
+        """,
+        observed_at=observed_at,
+        auth_mode="chatgpt",
+    )
+
+    assert parsed["state"] == "available"
+    assert parsed["minimum_window_percent_left"] == 100
+    assert [window["label"] for window in parsed["windows"]] == ["Weekly"]
+    assert parsed["windows"][0]["reset_seconds"] > 6 * 24 * 60 * 60
+    assert parsed["credits_available"] == 6907
+    assert parsed["usage_limit_resets_available"] == 4
+    assert "/usage" not in json.dumps(parsed)
+
+
+def test_codex_account_capacity_forecast_excludes_api_and_bedrock_usage() -> None:
+    module = _load_agent_console_web()
+    observed_at = 1_789_000_000
+    entries = [
+        module.normalize_usage_entry(
+            {
+                "started_at": observed_at - 3600,
+                "finished_at": observed_at - 1800,
+                "success": True,
+                "runtime": "codex",
+                "provider_surface": "openai-direct",
+                "codex_auth_mode": "chatgpt",
+                "total_tokens": 1200,
+            }
+        ),
+        module.normalize_usage_entry(
+            {
+                "started_at": observed_at - 3600,
+                "finished_at": observed_at - 1800,
+                "success": True,
+                "runtime": "codex",
+                "provider_surface": "openai-direct",
+                "codex_auth_mode": "api_key",
+                "total_tokens": 34_000,
+            }
+        ),
+        module.normalize_usage_entry(
+            {
+                "started_at": observed_at - 3600,
+                "finished_at": observed_at - 1800,
+                "success": True,
+                "runtime": "codex",
+                "provider_surface": "aws-bedrock",
+                "total_tokens": 56_000,
+            }
+        ),
+    ]
+
+    forecast = module.codex_account_capacity_forecast(
+        entries,
+        now=observed_at,
+        windows=[{"reset_seconds": 7200}],
+    )
+
+    assert entries[0]["charge_ledger_kind"] == "chatgpt_codex_credit_estimate"
+    assert entries[1]["charge_ledger_kind"] == "api_rate_card_estimate"
+    assert forecast["sample_count"] == 1
+    assert forecast["usage_window_tokens"] == 1200
+    assert forecast["subscription_usage_window_tokens"] == 1200
+    assert forecast["projected_tokens_to_earliest_reset"] == 4800
+
+
+def test_codex_account_capacity_invalidates_on_auth_mode_change(
+    tmp_path: Path,
+) -> None:
+    module = _load_agent_console_web()
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    observed_at = module.now_ts()
+    module._persist_codex_account_capacity(
+        {
+            **module.default_codex_account_capacity(),
+            "source": "interactive_usage",
+            "observed_at": observed_at,
+            "last_probe_at": observed_at,
+            "auth_mode": "api_key",
+            "state": "available",
+            "windows": [{"label": "Current", "percent_left": 84}],
+        }
+    )
+
+    snapshot = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+
+    assert snapshot["auth_mode"] == "chatgpt"
+    assert snapshot["state"] == "unknown"
+    assert snapshot["fresh"] is False
+    assert snapshot["eligible_for_subscription_route"] is False
+
+
+def test_codex_account_capacity_parser_marks_limit_and_unknown_safely() -> None:
+    module = _load_agent_console_web()
+
+    blocked = module.parse_codex_account_capacity_pane(
+        "You've hit your usage limit. Try again at 5:28 PM.",
+        observed_at=1_789_000_000,
+        auth_mode="chatgpt",
+    )
+
+    assert blocked["state"] == "blocked"
+    assert blocked["windows"] == []
+    fresh = module.parse_codex_account_capacity_pane(
+        """
+        You've hit your usage limit. Try again at 5:28 PM.
+        5h limit: 84% left · resets in 2h
+        """,
+        observed_at=1_789_000_000,
+        auth_mode="chatgpt",
+    )
+    assert fresh["state"] == "available"
+    assert fresh["minimum_window_percent_left"] == 84
+    assert module.parse_codex_account_capacity_pane("normal terminal output") == {}
+
+
+def test_codex_account_capacity_parser_normalizes_percent_used_without_pane_text() -> (
+    None
+):
+    module = _load_agent_console_web()
+
+    parsed = module.parse_codex_account_capacity_pane(
+        """
+        5h limit: 16% used · resets in 2h
+        Weekly limit: 40% consumed · resets in 6d
+        """
+    )
+
+    assert parsed["state"] == "available"
+    assert [item["percent_left"] for item in parsed["windows"]] == [84, 60]
+    assert "used" not in json.dumps(parsed)
+    assert "consumed" not in json.dumps(parsed)
+
+
+def test_codex_account_capacity_probe_requires_changed_pane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_agent_console_web()
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = 0.01
+    prompt_pane = "OpenAI Codex (v0.144.5)\n\n› "
+    panes = iter(
+        [
+            prompt_pane,
+            "5h limit: 84% left · resets in 2h\n\n› ",
+        ]
+    )
+    sent: list[str] = []
+    monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
+    monkeypatch.setattr(
+        module, "send_codex_status_probe", lambda: sent.append("/status")
+    )
+
+    payload = module._capture_codex_account_capacity_command(
+        "/status",
+        observed_at=1_789_000_000,
+        auth_mode="chatgpt",
+        baseline_pane=prompt_pane,
+    )
+
+    assert sent == ["/status"]
+    assert payload["state"] == "available"
+    assert payload["minimum_window_percent_left"] == 84
+
+
+def test_codex_subscription_capacity_prefers_flex_only_for_fresh_personal_bedrock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("NORMAN_CODEX_STANDARD_PROFILE_V2", "personal-bedrock")
+    monkeypatch.setenv("NORMAN_CODEX_STANDARD_AWS_PROFILE", "norman-bedrock")
+    monkeypatch.setenv("NORMAN_CODEX_AGENT_GROUP", "personal")
+    monkeypatch.setenv("NORMAN_CODEX_BILLING_OWNER", "kristopher")
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    observed_at = module.now_ts()
+    capacity = module.default_codex_account_capacity()
+    capacity.update(
+        {
+            "source": "interactive_usage",
+            "observed_at": observed_at,
+            "last_probe_at": observed_at,
+            "auth_mode": "chatgpt",
+            "state": "available",
+            "windows": [
+                {
+                    "label": "Short window",
+                    "percent_left": 84,
+                    "reset_hint": "2h",
+                    "reset_seconds": 7200,
+                }
+            ],
+        }
+    )
+    module._persist_codex_account_capacity(capacity)
+    snapshot = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+
+    decision = module.codex_subscription_capacity_route_decision(
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        capacity=snapshot,
+    )
+
+    assert snapshot["eligible_for_subscription_route"] is True
+    assert decision["selected"] is True
+    assert decision["selected_service_tier"] == "flex"
+    assert (
+        module.codex_subscription_capacity_route_decision(
+            runtime="codex",
+            model=module.MODEL,
+            service_tier="default",
+            route_lock=True,
+            capacity=snapshot,
+        )["selected"]
+        is False
+    )
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "api_key")
+    assert (
+        module.codex_subscription_capacity_route_decision(
+            runtime="codex",
+            model=module.MODEL,
+            service_tier="default",
+            capacity=snapshot,
+        )["selected"]
+        is False
+    )
+    assert (
+        module.codex_subscription_capacity_route_decision(
+            runtime="codex",
+            model=module.MODEL,
+            service_tier="default",
+            service_tier_recovery={"service_tier": "default"},
+            capacity=snapshot,
+        )["selected"]
+        is False
+    )
+
+
+def test_codex_subscription_route_stays_on_bedrock_without_a_reset_forecast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NORMAN_CODEX_STANDARD_PROFILE_V2", "personal-bedrock")
+    monkeypatch.setenv("NORMAN_CODEX_STANDARD_AWS_PROFILE", "norman-bedrock")
+    monkeypatch.setenv("NORMAN_CODEX_AGENT_GROUP", "personal")
+    monkeypatch.setenv("NORMAN_CODEX_BILLING_OWNER", "kristopher")
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    observed_at = module.now_ts()
+    capacity = {
+        **module.default_codex_account_capacity(),
+        "source": "interactive_usage",
+        "observed_at": observed_at,
+        "last_probe_at": observed_at,
+        "auth_mode": "chatgpt",
+        "state": "available",
+        "credits_available": 6907,
+        "windows": [
+            {
+                "label": "Weekly",
+                "percent_left": 84,
+                "reset_hint": "",
+                "reset_seconds": 0,
+            }
+        ],
+    }
+
+    decision = module.codex_subscription_capacity_route_decision(
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        prompt="Implement the focused fix and verify it.",
+        job_budget="normal",
+        detail=2,
+        capacity=capacity,
+    )
+
+    assert decision["selected"] is False
+    assert "reset window" in decision["reason"]
+    assert decision["capacity"]["forecast"]["credits_available_informational"] == 6907
+
+
+def test_chatgpt_direct_credit_extension_guard_requires_fresh_plan_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+
+    guarded = module.codex_openai_direct_execution_decision("flex")
+
+    assert guarded["allowed"] is False
+    assert guarded["reason_code"] == "chatgpt_credit_extension_guard"
+
+    monkeypatch.setattr(
+        module,
+        "codex_account_capacity_snapshot",
+        lambda **_kwargs: {
+            "fresh": True,
+            "state": "available",
+            "minimum_window_percent_left": 25,
+            "windows": [{"reset_seconds": 7200}],
+        },
+    )
+
+    allowed = module.codex_openai_direct_execution_decision("flex")
+
+    assert allowed["allowed"] is True
+    assert allowed["reason_code"] == "chatgpt_plan_capacity_verified"
+
+
+def test_template_subscription_capacity_probe_never_uses_api_key_spend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NORMAN_CODEX_ALLOW_OPENAI_API_SPEND", "1")
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+
+    allowed = module.codex_openai_direct_execution_decision(
+        "flex",
+        subscription_probe=True,
+    )
+
+    assert allowed["allowed"] is True
+    assert allowed["api_spend_override"] is True
+    assert allowed["reason_code"] == "subscription_capacity_probe_allowed"
+
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "api_key")
+    blocked = module.codex_openai_direct_execution_decision(
+        "flex",
+        subscription_probe=True,
+    )
+
+    assert blocked["allowed"] is False
+    assert blocked["reason_code"] == "subscription_capacity_probe_auth_required"
+
+
+def test_template_direct_chatgpt_launch_requires_turn_to_fit_reset_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(
+        module,
+        "codex_account_capacity_snapshot",
+        lambda **_kwargs: {
+            "fresh": True,
+            "state": "available",
+            "minimum_window_percent_left": 75,
+            "windows": [{"reset_seconds": 300}],
+        },
+    )
+
+    decision = module.codex_openai_direct_execution_decision(
+        "flex",
+        prompt="Implement the focused fix and verify it.",
+        job_budget="normal",
+        detail=3,
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason_code"] == "chatgpt_credit_extension_guard"
+    assert decision["capacity"]["forecast"]["turn_fits_reset"] is False
+
+
+def test_codex_account_capacity_probe_only_runs_at_idle_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_agent_console_web()
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = 0.01
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD = None
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    prompt_pane = "OpenAI Codex (v0.118.0)\n\n› "
+    panes = iter(
+        [
+            prompt_pane,
+            "5h limit: 84% left · resets in 2h\n\n› ",
+        ]
+    )
+    sent: list[str] = []
+    keys: list[tuple[str, ...]] = []
+    monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
+    monkeypatch.setattr(
+        module, "send_codex_status_probe", lambda: sent.append("/status")
+    )
+    monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
+
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is True
+    )
+    worker = module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD
+    assert worker is not None
+    worker.join(timeout=1)
+
+    persisted = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+    history_text = module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
+        encoding="utf-8"
+    )
+    assert sent == ["/status"]
+    assert keys == [("Escape",), ("C-u",), ("C-a", "C-k"), ("C-l",)]
+    assert persisted["state"] == "available"
+    assert persisted["minimum_window_percent_left"] == 84
+    assert "OpenAI Codex" not in history_text
+    assert "5h limit" not in history_text
+
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: True)
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is False
+    )
+
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane="OpenAI Codex (v0.118.0)\n\n› unfinished draft",
+            auth_mode="chatgpt",
+        )
+        is False
+    )
+
+
+def test_codex_account_capacity_probe_rejects_unsafe_configured_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_agent_console_web()
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_TIMEOUT_SECONDS = 0.001
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = 0.01
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD = None
+    module.CODEX_ACCOUNT_CAPACITY_COMMAND = "/usage"
+    module.CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND = "/status"
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    prompt_pane = "OpenAI Codex (v0.118.0)\n\n› "
+    sent: list[str] = []
+    keys: list[tuple[str, ...]] = []
+    monkeypatch.setattr(module, "capture_pane", lambda: prompt_pane)
+    monkeypatch.setattr(
+        module, "send_codex_status_probe", lambda: sent.append("/status")
+    )
+    monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
+
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is True
+    )
+    worker = module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD
+    assert worker is not None
+    worker.join(timeout=1)
+
+    persisted = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+    history_text = module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
+        encoding="utf-8"
+    )
+    assert sent == []
+    assert keys == []
+    assert persisted["source"] == "probe_command_rejected"
+    assert persisted["state"] == "unknown"
+    assert "/usage can consume an account limit reset" in history_text
+
+
+def test_codex_account_capacity_probe_never_sends_usage_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_agent_console_web()
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_TIMEOUT_SECONDS = 0.001
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = 0.01
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD = None
+    module.CODEX_ACCOUNT_CAPACITY_COMMAND = "/usage"
+    module.CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND = ""
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    prompt_pane = "OpenAI Codex (v0.144.4)\n\n› "
+    sent: list[str] = []
+    keys: list[tuple[str, ...]] = []
+    monkeypatch.setattr(module, "capture_pane", lambda: prompt_pane)
+    monkeypatch.setattr(
+        module, "send_codex_status_probe", lambda: sent.append("/status")
+    )
+    monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
+
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is True
+    )
+    worker = module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD
+    assert worker is not None
+    worker.join(timeout=1)
+
+    persisted = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+    history_text = module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
+        encoding="utf-8"
+    )
+    assert sent == []
+    assert keys == []
+    assert persisted["source"] == "probe_command_rejected"
+    assert persisted["state"] == "unknown"
+    assert persisted["eligible_for_subscription_route"] is False
+    assert "Unrecognized command" not in history_text
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is False
+    )
+
+
+def test_recovered_errors_and_routes_are_marked_historical() -> None:
+    root = Path(__file__).resolve().parents[1]
+    sources = (
+        root / "scripts" / "agent_console_template" / "agent_console_web.py",
+        root / "scripts" / "norman_codex_web.py",
+    )
+
+    for path in sources:
+        source = path.read_text(encoding="utf-8")
+        assert "latestSuccessfulAt" in source
+        assert "historical_error: true" in source
+        assert "historicalError: Boolean(item.historical_error)" in source
+        assert "Historical route for this turn." in source
+        assert "historical error" in source
+
+
+def test_sentinel_alert_does_not_keep_itself_waiting_for_operator() -> None:
+    module = _load_agent_console_web()
+    snapshot = {
+        "human_intervention_count": 1,
+        "human_intervention_ask_now_count": 1,
+        "human_interventions": [
+            {
+                "kind": "sentinel_wedged",
+                "severity": "ask_now",
+                "status": "open",
+            }
+        ],
+        "auth": {"required": False},
+        "pending": False,
+        "queue_depth": 0,
+        "bbs": {},
+    }
+    kpis = {
+        "state": "idle",
+        "diagnosis": "The TUI is idle and ready.",
+        "signals": [],
+    }
+
+    sentinel = module.build_sentinel_state(snapshot, kpis)
+
+    assert sentinel["state"] == "healthy_idle"
+    assert sentinel["severity"] == "quiet_log"
+    assert sentinel["evidence"]["human_intervention_count"] == 0
+
+
+def test_sentinel_reconciliation_closes_alert_after_condition_clears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_agent_console_web()
+    closed: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        module,
+        "load_human_interventions",
+        lambda: [
+            {
+                "id": "hi_stale",
+                "fingerprint": "sentinel:Infra:wedged:kpi_wedged",
+                "kind": "sentinel_wedged",
+                "severity": "ask_now",
+                "status": "open",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        module,
+        "update_human_intervention_status",
+        lambda item_id, action, *, note="", actor_ip="": (
+            closed.append((item_id, action, note))
+            or {"id": item_id, "status": "canceled"}
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "upsert_human_intervention",
+        lambda _item: pytest.fail("a healthy sentinel must not raise an alert"),
+    )
+
+    changed = module.maybe_raise_sentinel_intervention(
+        {
+            "state": "healthy_idle",
+            "severity": "quiet_log",
+            "reason_codes": [],
+        }
+    )
+
+    assert changed == {"id": "hi_stale", "status": "canceled"}
+    assert closed == [
+        ("hi_stale", "not_actionable", "Sentinel condition cleared or changed.")
+    ]
+
+
+def test_human_intervention_upsert_serializes_status_updates() -> None:
+    source = _agent_console_web_source()
+
+    assert 'conn.execute("BEGIN IMMEDIATE")' in source
+
+
+def test_frontdoor_codex_alias_preserves_api_path_prefix() -> None:
+    config = _load_frontdoor_renderer().render_frontdoor_snippet()
+    assert (
+        "handle_path /codex/* {\n        reverse_proxy 127.0.0.1:8788 {\n            header_up X-Forwarded-Prefix /codex\n        }"
+        in config
+    )

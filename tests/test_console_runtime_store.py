@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from app import crud
 from app.schemas.user import UserCreate
-from app.services.console_runtime import ConsoleJobContract, ConsoleJobStatus
+from app.services.console_runtime import (
+    ConsoleJobContract,
+    ConsoleJobStatus,
+    ConsoleSubtaskContract,
+    ConsoleTaskResult,
+    InvalidTransitionError,
+)
 from app.services.console_runtime.store import DbConsoleRuntimeStore
 from app.services.norllama.specialist_lanes import specialist_cascade_template
 
@@ -65,6 +73,175 @@ def test_db_console_runtime_store_persists_jobs_and_events(db):
     assert event.sequence == events[1].sequence
     assert snapshot["category_counts"] == {"job": 1, "model": 1}
     assert snapshot["latest_event"]["summary"] == "Norllama completed"
+
+
+def test_db_console_runtime_store_requires_verification_for_durable_workstream(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    job_id = f"job-store-durable-verification-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Complete only after durable verification",
+            durable_workstream=True,
+        ),
+    )
+
+    with pytest.raises(InvalidTransitionError, match="verification receipt"):
+        store.complete_job(
+            db,
+            user_id=user.id,
+            job_id=job_id,
+            summary="Premature durable completion",
+        )
+
+    store.record_verification(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        receipt={
+            "verifier": "contract-checker",
+            "status": "pass",
+            "evidence_refs": ["artifacts/verification.json"],
+        },
+    )
+    completed = store.complete_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        summary="Durable verification completed",
+    )
+
+    assert completed.status == ConsoleJobStatus.DONE
+
+
+def test_db_console_runtime_store_coordinates_dependent_subtasks_and_results(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    coordinator = store.create_job(
+        db,
+        user_id=user.id,
+        job_id=f"job-coordinator-{uuid.uuid4().hex}",
+        contract=ConsoleJobContract(
+            objective="Coordinate independent work without losing session context"
+        ),
+    )
+    workstream = store.create_workstream(
+        db,
+        user_id=user.id,
+        coordinator_job_id=coordinator.job_id,
+        title="Coordinator workstream",
+        max_concurrency=10,
+    )
+    first_id = f"job-subtask-first-{uuid.uuid4().hex}"
+    second_id = f"job-subtask-second-{uuid.uuid4().hex}"
+    first, second = store.delegate_subtasks(
+        db,
+        user_id=user.id,
+        workstream_id=workstream.workstream_id,
+        subtasks=[
+            ConsoleSubtaskContract(
+                job_id=first_id,
+                title="Collect evidence",
+                objective="Collect the implementation evidence",
+                required_artifacts=["evidence.md"],
+            ),
+            ConsoleSubtaskContract(
+                job_id=second_id,
+                title="Review evidence",
+                objective="Review the evidence after collection",
+                depends_on=[first_id],
+            ),
+        ],
+    )
+
+    assert first.workstream_id == workstream.workstream_id
+    assert first.parent_job_id == coordinator.job_id
+    assert first.contract.route_policy["provider"] == "norllama"
+    assert first.contract.route_policy["preferred_provider"] == "norllama"
+    assert first.contract.route_policy["norllama_pool"] == "default"
+    assert first.contract.route_policy["local_first"] is True
+    assert first.contract.route_policy["allow_cloud_proxy"] is False
+    assert "preferred_worker_id" not in first.contract.route_policy
+    runnable_before_completion = {
+        job.job_id for _, job in store.list_runnable_jobs(db, limit=100)
+    }
+    assert first_id in runnable_before_completion
+    assert second_id not in runnable_before_completion
+
+    first = store.record_task_result(
+        db,
+        user_id=user.id,
+        job_id=first.job_id,
+        result=ConsoleTaskResult(
+            status="done",
+            summary="Evidence collected",
+            artifacts=["evidence.md"],
+        ),
+    )
+    assert first.artifacts == ["evidence.md"]
+    store.complete_job(
+        db,
+        user_id=user.id,
+        job_id=first.job_id,
+        summary="Evidence collection complete",
+    )
+    runnable_after_completion = {
+        job.job_id for _, job in store.list_runnable_jobs(db, limit=100)
+    }
+    assert second_id in runnable_after_completion
+
+    canceled = store.request_cancel_job(
+        db,
+        user_id=user.id,
+        job_id=second.job_id,
+        reason="Restart with a narrower review",
+    )
+    assert canceled.status == ConsoleJobStatus.CANCELED
+    assert canceled.result["status"] == "canceled"
+    retried = store.retry_job(db, user_id=user.id, job_id=second.job_id)
+    assert retried.status == ConsoleJobStatus.QUEUED
+    assert retried.result == {}
+
+    snapshot = store.cancel_workstream(
+        db,
+        user_id=user.id,
+        workstream_id=workstream.workstream_id,
+        reason="Coordinator closed the workstream",
+    )
+
+    assert snapshot["workstream"]["status"] == "canceled"
+    assert snapshot["dependencies"] == [
+        {"job_id": second_id, "depends_on_job_id": first_id}
+    ]
+    assert snapshot["result_cards"] == [
+        {
+            "job_id": first_id,
+            "status": "done",
+            "summary": "Evidence collected",
+            "detail": "",
+            "artifacts": ["evidence.md"],
+            "metadata": {},
+            "recorded_at": first.result["recorded_at"],
+        },
+        {
+            "job_id": second_id,
+            "status": "canceled",
+            "summary": "Job canceled",
+            "detail": "Coordinator closed the workstream",
+            "artifacts": [],
+            "metadata": {
+                "workstream_id": workstream.workstream_id,
+                "parent_job_id": coordinator.job_id,
+                "synthesized": True,
+            },
+            "recorded_at": snapshot["result_cards"][1]["recorded_at"],
+        },
+    ]
+    assert snapshot["artifacts"] == ["evidence.md"]
+    assert snapshot["status_counts"] == {"done": 1, "canceled": 1}
 
 
 def test_db_console_runtime_store_retries_event_sequence_collision(db, monkeypatch):
@@ -290,6 +467,14 @@ def test_db_console_runtime_store_summarizes_route_offload_evidence(db):
                 "promotion_authoritative": True,
                 "benchmark_score": 0.91,
                 "coverage_ratio": 0.88,
+                "capacity_evidence": {
+                    "schema": "norman.norllama.capacity-evidence.v1",
+                    "state": "available",
+                    "target_worker": "spark-150",
+                    "p95_latency_ms": 1500,
+                },
+                "expected_p95_latency_ms": 1500,
+                "completion_ms": 1200,
                 "input_tokens": 10,
                 "output_tokens": 5,
                 "total_tokens": 15,
@@ -345,6 +530,9 @@ def test_db_console_runtime_store_summarizes_route_offload_evidence(db):
     assert summary["model"]["local"] == 1
     assert summary["model"]["tokens"] == 15
     assert summary["model"]["by_worker"] == {"spark-150": 1}
+    assert summary["model"]["latest"]["capacity_state"] == "available"
+    assert summary["model"]["latest"]["expected_p95_latency_ms"] == 1500
+    assert summary["model"]["latest"]["observed_completion_ms"] == 1200
     assert summary["usage_ledger"]["schema"] == (
         "norman.console-runtime.usage-ledger.v1"
     )
@@ -972,11 +1160,13 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
         contract=ConsoleJobContract(
             objective="Execute a safe local-first TUI turn through the kernel",
             question_budget=0,
+            durable_workstream=True,
             authority_flags={
                 "source": "agent_console_web",
                 "kind": "tui_turn_shadow",
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
+                "durable_workstream": True,
             },
             route_policy={
                 "provider": "norllama",
@@ -985,6 +1175,7 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
                 "turn_shadow": True,
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
+                "durable_workstream": True,
                 "continuous_goal_candidate": True,
             },
             metadata={
@@ -992,6 +1183,7 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
                 "kind": "tui_turn_shadow",
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
+                "durable_workstream": True,
                 "continuous_goal_candidate": True,
             },
         ),
@@ -1000,6 +1192,7 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
             "kind": "tui_turn_shadow",
             "kernel_execution_enabled": True,
             "kernel_execution_candidate": True,
+            "durable_workstream": True,
             "continuous_goal_candidate": True,
         },
     )

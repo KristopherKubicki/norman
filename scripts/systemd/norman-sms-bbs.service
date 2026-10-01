@@ -1,0 +1,28 @@
+[Unit]
+Description=Norman isolated SMS BBS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kristopher
+Group=kristopher
+WorkingDirectory=/home/kristopher/code/norman
+Environment=PYTHONUNBUFFERED=1
+Environment=NORMAN_SMS_BBS_BIND=127.0.0.1
+Environment=NORMAN_SMS_BBS_PORT=8798
+Environment=NORMAN_SMS_BBS_STATE_DIR=/var/lib/norman-sms-bbs
+Environment=NORMAN_SMS_BBS_WORKDIR=/home/kristopher/code/norman
+Environment=NORMAN_CODEX_BIN=/home/kristopher/code/norman/scripts/systemd/norman-sms-codex
+LoadCredentialEncrypted=sms-callback-token:/etc/norman/credentials/sms-callback-token.cred
+StateDirectory=norman-sms-bbs
+StateDirectoryMode=0700
+ExecStartPre=/usr/bin/test -x /home/kristopher/code/norman/scripts/systemd/norman-sms-codex
+ExecStart=/home/kristopher/code/norman/.venv/bin/python /home/kristopher/code/norman/scripts/norman_sms_bbs.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
