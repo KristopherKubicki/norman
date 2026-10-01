@@ -12429,9 +12429,20 @@ def normalize_capture_url(raw: str) -> str:
     value = str(raw or "").strip()
     if not value:
         raise ValueError("capture URL is required")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value) or "\\" in value:
+        raise ValueError("capture URL contains invalid characters")
     parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("capture URL must be a valid http(s) address")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError(
+            "capture URL must be a valid http(s) address without credentials"
+        )
+    # Accessing port also rejects malformed and out-of-range port numbers.
+    parsed.port
     return value
 
 
@@ -12489,7 +12500,7 @@ def capture_web_attachment(*, url: str, label: str = "") -> dict[str, Any]:
             base_cmd.append("--no-sandbox")
         last_error = ""
         for headless_flag in ("--headless=new", "--headless"):
-            cmd = [*base_cmd, headless_flag, clean_url]
+            cmd = [*base_cmd, headless_flag, "--", clean_url]
             try:
                 proc = subprocess.run(
                     cmd,
@@ -36739,6 +36750,14 @@ def _initial_conversation_html(
 
 
 class Handler(BaseHTTPRequestHandler):
+    def send_header(self, keyword: str, value: str) -> None:
+        """Keep untrusted metadata inside a single HTTP response header."""
+        if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", keyword):
+            raise ValueError("invalid HTTP response header name")
+        # Upstreams and filenames can contain line breaks; never emit a new header.
+        clean_value = str(value).replace("\r", "").replace("\n", "")
+        super().send_header(keyword, clean_value)
+
     def render_browser_auth_callback_result(
         self,
         *,
