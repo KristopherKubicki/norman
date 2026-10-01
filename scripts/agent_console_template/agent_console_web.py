@@ -6516,7 +6516,7 @@ AUTO_TURN_CONTROL_HOUR_RE = re.compile(
 AUTO_TURN_CONTROL_REPORTED_DURATION_RE = re.compile(
     r"(?:comes?\s+back|came\s+back|returns?|returned|timed?\s+out|timeout|"
     r"stops?|stopped|set|set\s+for|configured|configured\s+for)\s+"
-    r"(?:in|after|at|for|under|within)?\s*$",
+    r"(?:(?:in|after|at|for|under|within)\s*)?$",
     re.IGNORECASE,
 )
 AUTO_TURN_CONTROL_TARGET_DURATION_RE = re.compile(
@@ -42559,7 +42559,7 @@ def prompt_is_route_status_diagnostic(prompt: Any) -> bool:
     asks_status = bool(
         "?" in str(prompt or "")
         or re.match(
-            r"^\s*(?:(?:please|hey|hi)\s*[,:\-]?\s*)?"
+            r"^\s*(?:(?:please|hey|hi)\s*(?:[,:\-]\s*)?)?"
             r"(?:are|can|could|did|does|do|how|is|should|was|were|what|which|why)\b",
             lower,
         )
@@ -46817,7 +46817,7 @@ def _render_initial_inline_code_markup(
     return f"<code>{html.escape(raw)}</code>"
 
 
-INITIAL_HTML_TAG_RE = re.compile(r"(<[^>]+>)")
+INITIAL_HTML_TAG_RE = re.compile(r"(<[^<>]+>)")
 INITIAL_DYNAMIC_HOST_ENTITY_RE = re.compile(
     r"(^|[\s([{\"'“‘])"
     r"((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
@@ -46827,7 +46827,7 @@ INITIAL_DYNAMIC_HOST_ENTITY_RE = re.compile(
     re.IGNORECASE,
 )
 INITIAL_OUTCOME_SIGIL_RE = re.compile(
-    r"(^|\n)(\s*)(DONE|BLOCKED|CHECKPOINT)(?=$|[\s.:,;!?\-])"
+    r"(^|\n)([^\S\n]*)(DONE|BLOCKED|CHECKPOINT)(?=$|[\s.:,;!?\-])"
 )
 INITIAL_BBS_REF_RE = re.compile(
     r"(^|[\s([{\"'“‘])"
@@ -47183,7 +47183,7 @@ def _render_initial_inline_markup(
         r"\*\*([^*\n][\s\S]*?[^*\n])\*\*", r"<strong>\1</strong>", rendered
     )
     rendered = re.sub(
-        r"(^|[^\w*])\*([^*\n][\s\S]*?[^*\n])\*(?!\*)", r"\1<em>\2</em>", rendered
+        r"(^|[^\w*])\*([^*\n](?:[^*]*[^*\n])?)\*(?!\*)", r"\1<em>\2</em>", rendered
     )
     rendered = _highlight_initial_bbs_refs(rendered, token=token, prefix=prefix)
     rendered = _highlight_initial_outcome_sigils(rendered)
