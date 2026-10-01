@@ -1410,7 +1410,13 @@ def target_bases_from_payload(
         if isinstance(values, list):
             requested.extend(str(item) for item in values if str(item).strip())
     normalized = unique_items([normalize_base_url(item) for item in requested])
-    accepted = [base for base in normalized if base in allowed]
+    # Select the configured value itself, never forward the request's URL text.
+    accepted = [
+        configured
+        for requested_base in normalized
+        for configured in allowed
+        if requested_base == configured
+    ]
     rejected = [base for base in normalized if base not in allowed]
     return accepted, rejected
 
@@ -1551,6 +1557,37 @@ def infer_model_summary(model_id: str, provider: str, capabilities: list[str]) -
     return "Specialized local model."
 
 
+def same_origin_url(base_url: str, target: str) -> str:
+    """Resolve a peer URL without allowing it to select another service."""
+    if any(ord(char) < 32 or ord(char) == 127 for char in target) or "\\" in target:
+        raise ValueError("upstream URL contains invalid characters")
+    base = urllib.parse.urlsplit(base_url)
+    resolved = urllib.parse.urlsplit(urllib.parse.urljoin(base_url, target))
+    if (
+        base.scheme not in {"http", "https"}
+        or not base.hostname
+        or resolved.scheme != base.scheme
+        or resolved.hostname != base.hostname
+        or (resolved.port or (443 if resolved.scheme == "https" else 80))
+        != (base.port or (443 if base.scheme == "https" else 80))
+        or resolved.username is not None
+        or resolved.password is not None
+    ):
+        raise ValueError("upstream URL must stay on the configured service origin")
+    # Rebuild with the trusted authority, retaining only the peer's path and query.
+    return urllib.parse.urlunsplit(
+        (base.scheme, base.netloc, resolved.path, resolved.query, "")
+    )
+
+
+class SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Allow service redirects without following them to another origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        safe_url = same_origin_url(req.full_url, newurl)
+        return super().redirect_request(req, fp, code, msg, headers, safe_url)
+
+
 def fetch_url(
     url: str,
     *,
@@ -1564,7 +1601,9 @@ def fetch_url(
         request_headers.update(headers)
     req = urllib.request.Request(url, data=body, method=method, headers=request_headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        with urllib.request.build_opener(SameOriginRedirectHandler()).open(
+            req, timeout=timeout_s
+        ) as resp:
             return int(resp.status), dict(resp.headers.items()), resp.read()
     except urllib.error.HTTPError as exc:
         return int(exc.code), dict(exc.headers.items()), exc.read()
@@ -4733,8 +4772,8 @@ class App:
             ):
                 status_url = str(response_doc.get("status_url") or "").strip()
                 if status_url:
-                    poll_url = urllib.parse.urljoin(
-                        normalize_base_url(base_url) + "/", status_url.lstrip("/")
+                    poll_url = same_origin_url(
+                        normalize_base_url(base_url) + "/", status_url
                     )
                     poll_deadline = time.time() + max(
                         5.0, min(self.timeout_s, float(timeout_s or 30.0))
@@ -5525,6 +5564,14 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def send_header(self, keyword: str, value: str) -> None:
+        """Keep untrusted metadata inside a single HTTP response header."""
+        if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", keyword):
+            raise ValueError("invalid HTTP response header name")
+        # Upstreams and filenames can contain line breaks; never emit a new header.
+        clean_value = str(value).replace("\r", "").replace("\n", "")
+        super().send_header(keyword, clean_value)
+
     protocol_version = "HTTP/1.1"
     server_version = "Norllama/0.1"
 
