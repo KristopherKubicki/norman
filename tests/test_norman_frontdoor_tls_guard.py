@@ -214,3 +214,29 @@ def test_tailnet_renewal_uses_tailscale_cert_and_reloads_caddy() -> None:
     assert "Requires=caddy.service" in service
     assert "OnCalendar=*-*-* 03:15:00" in timer
     assert "Persistent=true" in timer
+
+
+def test_probe_requires_tls12_and_certificate_validation(monkeypatch):
+    import ssl
+
+    module = _load_guard()
+    context = ssl.create_default_context()
+    monkeypatch.setattr(module.ssl, "create_default_context", lambda: context)
+
+    def connection(*args, **kwargs):
+        assert context.minimum_version >= ssl.TLSVersion.TLSv1_2
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
+        raise OSError("synthetic connection failure")
+
+    monkeypatch.setattr(module.socket, "create_connection", connection)
+    result = module.probe_host(
+        "example.invalid",
+        connect_host="127.0.0.1",
+        port=443,
+        timeout=1,
+        warn_days=14,
+        min_days=7,
+    )
+    assert result["status"] == "fail"
+    assert "synthetic connection failure" in result["detail"]

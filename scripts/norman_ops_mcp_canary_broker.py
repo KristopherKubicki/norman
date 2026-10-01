@@ -126,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         if args.command == "get":
+            if sys.stdout.isatty():
+                raise BrokerError(
+                    "credential output requires a non-interactive consumer"
+                )
             print(_read_secret())
         else:
             _provision_secret()

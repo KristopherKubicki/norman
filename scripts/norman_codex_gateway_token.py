@@ -189,6 +189,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    if sys.stdout.isatty():
+        print("Credential output requires a non-interactive consumer.", file=sys.stderr)
+        return 1
+
     token, errors = resolve_token(secret_name)
     if token:
         print(token)

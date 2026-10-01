@@ -241,6 +241,8 @@ def _audit(action: str, secret_name: str = "") -> None:
 
 
 def get_networking_secret(secret_name: str) -> int:
+    if sys.stdout.isatty():
+        raise BrokerError("credential output requires a non-interactive consumer")
     secret = _read_secret(secret_name)
     _audit("issued", secret_name)
     print(secret)

@@ -119,6 +119,7 @@ def probe_host(
     min_days: float,
 ) -> dict[str, Any]:
     context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     try:
         with socket.create_connection((connect_host, port), timeout=timeout) as raw:
             with context.wrap_socket(raw, server_hostname=host) as tls_socket:
