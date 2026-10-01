@@ -2209,7 +2209,9 @@ def test_sync_host_managed_secret_policy_installs_and_verifies_guard(
 def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     module = _load_sync_script(monkeypatch)
 
-    assert module.validate_web_source_versions() == "2026.08.04.1"
+    expected_version = module.source_ui_version(module.SOURCE_FILES["web"])
+    assert expected_version
+    assert module.validate_web_source_versions() == expected_version
 
     stale_switchboard = tmp_path / "norman_codex_web.py"
     stale_switchboard.write_text(
@@ -2223,7 +2225,7 @@ def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     except RuntimeError as exc:
         assert str(exc) == (
             "Web UI source versions must match: "
-            "norman-switchboard=v2026.07.16.06, web=v2026.08.04.1"
+            f"norman-switchboard=v2026.07.16.06, web=v{expected_version}"
         )
     else:
         raise AssertionError("expected mismatched web sources to be rejected")

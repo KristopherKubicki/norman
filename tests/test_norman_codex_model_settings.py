@@ -7364,7 +7364,7 @@ def test_console_source_mentions_manual_model_controls() -> None:
 def test_launch_script_reads_runtime_model_override() -> None:
     source = LAUNCH_SCRIPT_PATH.read_text(encoding="utf-8")
 
-    assert "NORMAN_CODEX_MODEL:-openai.gpt-5.6-sol" in source
+    assert "NORMAN_CODEX_MODEL:-openai.gpt-5.6-terra" in source
     assert "runtime_settings.json" in source
     assert 'MODEL="$RUNTIME_MODEL"' in source
 

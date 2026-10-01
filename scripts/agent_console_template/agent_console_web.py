@@ -848,7 +848,7 @@ body[data-console-design="quiet"] .message :is(.message-usage-chip, .message-cos
 body[data-console-design="quiet"]:not(.console-details-open) .message :is(.message-usage-chip, .message-cost-feedback-chip, .message-estimate-chip, .message-route-chip) { display: none; }
 """
 
-DEFAULT_UI_VERSION = "2026.09.26.1"
+DEFAULT_UI_VERSION = "2026.09.30.1"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
