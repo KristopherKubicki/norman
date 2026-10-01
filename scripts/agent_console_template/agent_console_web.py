@@ -17620,9 +17620,18 @@ def create_draft_attachment(
             str(content_type or "").split(";", 1)[0].strip().lower()
         )
         suffix = guessed or (".txt" if normalized_kind == "text" else "")
-    safe_name = slugify_filename(Path(name).stem or token)
-    target = ATTACHMENTS_DIR / f"{int(time.time() * 1000)}-{token}-{safe_name}{suffix}"
-    target.write_bytes(raw_bytes)
+    # Pick a trusted extension and let the OS create a unique file atomically.
+    # The original display name remains in metadata, never in the storage path.
+    suffix = next((known for known in mimetypes.types_map if known == suffix), "")
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        prefix="attachment-",
+        suffix=suffix,
+        dir=ATTACHMENTS_DIR,
+        delete=False,
+    ) as handle:
+        target = Path(handle.name)
+        handle.write(raw_bytes)
     content_type_value = content_type.strip() or guess_file_content_type(target)
     line_count = 0
     char_count = 0
@@ -45054,7 +45063,7 @@ def token_ok(
     authorization: str = "",
 ) -> bool:
     if not TOKEN:
-        return True
+        return False
     candidates = [str(value or "") for value in params.get("token", [])]
     candidates.append(str(cookie_token or ""))
     bearer = str(authorization or "").strip()
@@ -47372,6 +47381,19 @@ def safe_header_name(value: str) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def deny_access(self, *, api_path: bool) -> None:
+        """Explain missing access configuration without granting remote access."""
+        status = HTTPStatus.FORBIDDEN if TOKEN else HTTPStatus.SERVICE_UNAVAILABLE
+        message = (
+            "missing or invalid token"
+            if TOKEN
+            else "Remote access is not configured. Set this console's access token from a trusted local session."
+        )
+        if api_path:
+            self.json_response({"error": message}, status=status)
+        else:
+            self.send_error(status, message)
+
     def send_header(self, keyword: str, value: str) -> None:
         """Keep untrusted metadata inside a single HTTP response header."""
         super().send_header(safe_header_name(keyword), safe_header_value(value))
@@ -47826,12 +47848,7 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/":
                 self.render_token_gate(params)
                 return
-            if api_path:
-                self.json_response(
-                    {"error": "missing or invalid token"}, status=HTTPStatus.FORBIDDEN
-                )
-                return
-            self.send_error(HTTPStatus.FORBIDDEN, "missing or invalid token")
+            self.deny_access(api_path=api_path)
             return
 
         if parsed.path == "/healthz":
@@ -48132,12 +48149,7 @@ class Handler(BaseHTTPRequestHandler):
             or token_ok(params, cookie_token, self.headers.get("Authorization", ""))
             or long_job_notify_receiver_token_ok(parsed.path, params, self.headers)
         ):
-            if api_path:
-                self.json_response(
-                    {"error": "missing or invalid token"}, status=HTTPStatus.FORBIDDEN
-                )
-                return
-            self.send_error(HTTPStatus.FORBIDDEN, "missing or invalid token")
+            self.deny_access(api_path=api_path)
             return
 
         if parsed.path == "/api/children":
@@ -49683,6 +49695,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
 
     def serve_file_target(self, params: dict[str, list[str]]) -> None:
+        """Browse files with the authenticated operator's console-account privileges.
+
+        Absolute paths are intentional: this is the same privileged operator
+        console that runs local commands, not a multi-user file sandbox. do_GET
+        authenticates the caller (or explicitly trusts its source) before entry.
+        """
         raw_path = (params.get("path") or [""])[0]
         target = resolve_file_target(raw_path)
         if target is None:
@@ -89665,6 +89683,11 @@ body[data-agent-slug] :is(button, a, textarea):focus-visible {{ outline: 2px sol
             if active_route != "auto"
             else ""
         )
+        access_message = (
+            "This console is token-protected. Paste its access token below."
+            if TOKEN
+            else "Remote access is not configured. Set this console's access token from a trusted local session."
+        )
         body = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -89771,8 +89794,8 @@ body[data-agent-slug] :is(button, a, textarea):focus-visible {{ outline: 2px sol
 <body>
   <div class="box">
     <h1>{html.escape(CONSOLE_TITLE)}</h1>
-    <p>This console is token-protected. Open it with the `?token=` query value, or paste the token below.</p>
-    <form method="get" action="{html.escape(prefixed_path("/", path_prefix))}">
+    <p role="status">{html.escape(access_message)}</p>
+    <form method="get" action="{html.escape(prefixed_path("/", path_prefix))}" {"hidden" if not TOKEN else ""}>
       {profile_field}
       {route_field}
       <label for="token">Token</label>
@@ -89800,7 +89823,7 @@ body[data-agent-slug] :is(button, a, textarea):focus-visible {{ outline: 2px sol
 </html>
 """
         encoded = body.encode("utf-8")
-        self.send_response(HTTPStatus.OK)
+        self.send_response(HTTPStatus.OK if TOKEN else HTTPStatus.SERVICE_UNAVAILABLE)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", safe_header_value(str(len(encoded))))
         self.send_header("Cache-Control", "no-store")
