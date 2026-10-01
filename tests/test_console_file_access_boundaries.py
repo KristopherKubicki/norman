@@ -72,6 +72,64 @@ def test_configured_access_preserves_operator_file_browsing(
     assert paths == ["/synthetic/log.txt"]
 
 
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize(
+    "path", ["/auth/browser/callback", "/api/auth/browser/callback"]
+)
+@pytest.mark.parametrize("token,expected", [("", 503), ("synthetic-access-only", 403)])
+def test_browser_callback_requires_console_access(
+    console, monkeypatch, method, path, token, expected
+):
+    monkeypatch.setattr(console, "TOKEN", token)
+    handler = request_handler(console, path + "?code=synthetic&state=synthetic")
+    results = []
+    handler.json_response = lambda payload, status: results.append((status, payload))
+    handler.send_error = lambda status, message: results.append((status, message))
+    handler._read_request_body = lambda: b"{}"
+    monkeypatch.setattr(
+        console,
+        "complete_browser_auth_callback",
+        lambda **kwargs: pytest.fail("unauthorized callback forwarding"),
+    )
+    monkeypatch.setattr(
+        console, "current_snapshot", lambda: pytest.fail("unauthorized status access")
+    )
+    handler.render_browser_auth_callback_result = lambda **kwargs: pytest.fail(
+        "unauthorized callback page could disclose the console token"
+    )
+    getattr(handler, f"do_{method}")()
+    assert len(results) == 1
+    assert int(results[0][0]) == expected
+    assert "synthetic-access-only" not in str(results)
+
+
+@pytest.mark.parametrize(
+    "path", ["/auth/browser/callback", "/api/auth/browser/callback"]
+)
+@pytest.mark.parametrize("trusted", [False, True])
+def test_browser_callback_preserves_authenticated_handoff(
+    console, monkeypatch, path, trusted
+):
+    handler = request_handler(console, path + "?code=synthetic&state=synthetic")
+    handler.is_trusted_client = lambda: trusted
+    handler.auth_cookie_token = lambda: "" if trusted else "synthetic-access-only"
+    callbacks = []
+
+    def complete(**kwargs):
+        callbacks.append(kwargs)
+        return {"state": "idle"}
+
+    monkeypatch.setattr(console, "complete_browser_auth_callback", complete)
+    results = []
+    handler.json_response = lambda payload, status: results.append((payload, status))
+    handler.render_browser_auth_callback_result = lambda **kwargs: results.append(
+        kwargs
+    )
+    handler.do_GET()
+    assert len(callbacks) == len(results) == 1
+    assert callbacks[0]["query_params"]["code"] == ["synthetic"]
+
+
 def test_unconfigured_login_explains_configuration_and_hides_unusable_form(
     console, monkeypatch
 ):
