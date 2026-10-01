@@ -44,6 +44,9 @@ def _load_norman_codex_web(monkeypatch, tmp_path, **overrides):
         "openai.gpt-5.6-terra,gpt-5.6-terra",
     )
     monkeypatch.setenv("NORMAN_CODEX_BBS_SUMMARY_ENABLED", "0")
+    # Most tests exercise console state, not optional background inference.
+    # Recap tests opt in explicitly with their own synthetic transport.
+    monkeypatch.setenv("NORMAN_CODEX_WORKING_RECAP_ENABLED", "0")
     if "NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH" not in overrides:
         monkeypatch.setenv(
             "NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH",
@@ -80,6 +83,10 @@ def _load_norman_codex_web(monkeypatch, tmp_path, **overrides):
         for key in tuple(os.environ):
             if key.startswith("HOUSEBOT_CODEX_") and key not in existing_legacy_keys:
                 os.environ.pop(key, None)
+    # These stdlib modules are process-wide singletons. Give each test console
+    # its own references so HTTP/clock mocks cannot affect other workers.
+    module.urllib_request = SimpleNamespace(**vars(module.urllib_request))
+    module.time = SimpleNamespace(**vars(module.time))
     return module
 
 
@@ -700,6 +707,7 @@ def test_switchboard_working_recap_uses_sanitized_norllama_packet(
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
+        NORMAN_CODEX_WORKING_RECAP_ENABLED="1",
         NORMAN_CODEX_WORKING_RECAP_MODEL="norllama-test",
         NORMAN_CODEX_WORKING_RECAP_ENDPOINTS="http://norllama.invalid",
     )
@@ -6488,11 +6496,7 @@ def test_prompt_worker_does_not_handoff_locked_terra_after_side_effects(
 
 
 def test_bbs_relay_prompt_starts_when_console_is_idle(monkeypatch, tmp_path) -> None:
-    # Recap generation has its own tests and HTTP traffic. Keep this mock
-    # exclusively about the relay's running/closed callback contract.
-    module = _load_norman_codex_web(
-        monkeypatch, tmp_path, NORMAN_CODEX_WORKING_RECAP_ENABLED="0"
-    )
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
     requests = []
 
     class FakeResponse:
@@ -6523,13 +6527,7 @@ def test_bbs_relay_prompt_starts_when_console_is_idle(monkeypatch, tmp_path) -> 
     ):
         return "Relay work completed.", "", "thread-relay", module.default_usage_entry()
 
-    # urllib.request is shared by every imported console module. A background
-    # recap from another test must not enter this relay's callback recorder.
-    monkeypatch.setattr(
-        module,
-        "urllib_request",
-        SimpleNamespace(Request=urllib.request.Request, urlopen=fake_urlopen),
-    )
+    monkeypatch.setattr(module.urllib_request, "urlopen", fake_urlopen)
     monkeypatch.setattr(module, "_execute_codex_prompt", fake_execute)
 
     accepted, snapshot = module.start_web_prompt(
@@ -6570,9 +6568,7 @@ def test_bbs_relay_prompt_starts_when_console_is_idle(monkeypatch, tmp_path) -> 
 
 
 def test_bbs_relay_prompt_queues_when_console_is_busy(monkeypatch, tmp_path) -> None:
-    module = _load_norman_codex_web(
-        monkeypatch, tmp_path, NORMAN_CODEX_WORKING_RECAP_ENABLED="0"
-    )
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
     requests = []
 
     class FakeResponse:
@@ -6591,11 +6587,7 @@ def test_bbs_relay_prompt_queues_when_console_is_busy(monkeypatch, tmp_path) -> 
         requests.append((request, timeout))
         return FakeResponse()
 
-    monkeypatch.setattr(
-        module,
-        "urllib_request",
-        SimpleNamespace(Request=urllib.request.Request, urlopen=fake_urlopen),
-    )
+    monkeypatch.setattr(module.urllib_request, "urlopen", fake_urlopen)
     module.ensure_state_dir()
     module.update_status_meta(
         pending=True,
