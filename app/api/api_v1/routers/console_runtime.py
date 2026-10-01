@@ -10,6 +10,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import ConfigDict, BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_console_runtime_user, get_db
@@ -571,7 +572,8 @@ async def list_console_runtime_jobs(
         ]
         return {"items": jobs, "count": len(jobs)}
 
-    return _cached_read(
+    return await run_in_threadpool(
+        _cached_read,
         ("jobs", current_user.id, int(limit)),
         ttl_seconds=1.5,
         busy_payload=lambda: {
@@ -587,8 +589,9 @@ async def list_console_runtime_jobs(
 async def get_console_runtime_capabilities(
     current_user: User = Depends(get_console_runtime_user),
 ):
-    _ = current_user
-    return _cached_read(
+    """Keep synchronous mesh discovery off the request event loop."""
+    return await run_in_threadpool(
+        _cached_read,
         ("capabilities", current_user.id),
         ttl_seconds=8.0,
         busy_payload=lambda: {
@@ -615,7 +618,8 @@ async def get_console_runtime_route_summary(
     db: Session = Depends(get_db),
 ):
     try:
-        return _cached_read(
+        return await run_in_threadpool(
+            _cached_read,
             ("route-summary", current_user.id, job_id or "", int(limit)),
             ttl_seconds=2.0,
             busy_payload=lambda: {
@@ -1042,13 +1046,16 @@ async def get_console_runtime_worker_status(
     db: Session = Depends(get_db),
 ):
     async def load_status() -> dict[str, Any]:
-        status_extra = _worker_status_payload(db, user_id=current_user.id)
+        status_extra = await run_in_threadpool(
+            _worker_status_payload, db, user_id=current_user.id
+        )
         route_outcomes = status_extra.pop("_route_outcomes", [])
         payload = await console_runtime_worker_service.status_payload(
             runnable_count=status_extra.get("runnable_count", 0)
         )
         payload.update(status_extra)
-        payload["norllama"] = _norllama_runtime_status_snapshot(
+        payload["norllama"] = await run_in_threadpool(
+            _norllama_runtime_status_snapshot,
             route_outcomes=route_outcomes,
         )
         return payload
@@ -1105,7 +1112,9 @@ async def control_console_runtime_worker(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    status_extra = _worker_status_payload(db, user_id=current_user.id)
+    status_extra = await run_in_threadpool(
+        _worker_status_payload, db, user_id=current_user.id
+    )
     route_outcomes = status_extra.pop("_route_outcomes", [])
     response = await console_runtime_worker_service.status_payload(
         runnable_count=status_extra.get("runnable_count", 0)

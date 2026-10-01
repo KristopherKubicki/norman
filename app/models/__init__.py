@@ -21,6 +21,7 @@ from .console_runtime import (
     ConsoleRuntimeJobRecord,
     ConsoleRuntimeWorkstreamRecord,
 )
+from .bridge_conversation import BridgeConversationRecord
 from .kaizen import (
     KaizenCandidateFingerprintRecord,
     KaizenCandidateRecord,

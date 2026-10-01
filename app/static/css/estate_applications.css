@@ -1,0 +1,33 @@
+/* Keep application inventory legible in Norman's existing dark Systems shell. */
+.estate-apps,
+.estate-apps .card {
+  color: var(--ink, #f1f5f9);
+}
+.estate-apps .text-muted {
+  color: var(--ink-muted, #aeb9cb) !important;
+}
+.estate-apps summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.estate-apps details[open] > summary {
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--border, #334155);
+}
+.estate-apps p,
+.estate-apps li,
+.estate-apps td {
+  overflow-wrap: anywhere;
+}
+.estate-apps .table {
+  --bs-table-color: var(--ink, #f1f5f9);
+  --bs-table-bg: transparent;
+  --bs-table-border-color: var(--border, #334155);
+  font-size: 0.85rem;
+}
+.estate-apps h4 {
+  margin-top: 1.25rem;
+}
+.estate-apps input[type=checkbox] {
+  accent-color: #f5c966;
+}

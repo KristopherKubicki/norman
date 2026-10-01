@@ -2839,6 +2839,7 @@ class DbConsoleRuntimeStore:
         user_id: int,
         job_id: str,
         summary: str = "",
+        detail: str = "",
         artifacts: Iterable[Any] | None = None,
         attempt_id: str = "",
         lease_epoch: int | None = None,
@@ -2878,6 +2879,7 @@ class DbConsoleRuntimeStore:
             record,
             status=ConsoleJobStatus.DONE.value,
             summary=_clean(summary) or "Job completed",
+            detail=_clean(detail),
             artifacts=_json_list(record.artifacts_json),
         )
         self._append_event_record(

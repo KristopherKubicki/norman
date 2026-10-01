@@ -547,7 +547,7 @@ class ConsoleWorkstream:
 
 @dataclass
 class ModelBudget:
-    max_model_calls: int = 1
+    max_model_calls: int = 4
     max_runtime_seconds: int = 900
     max_output_tokens: int = 4096
 

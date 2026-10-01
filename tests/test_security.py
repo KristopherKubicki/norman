@@ -15,6 +15,10 @@ def test_password_hash_round_trip() -> None:
     assert verify_password(password, hashed)
 
 
+def test_unknown_password_hash_is_rejected() -> None:
+    assert verify_password("secret", "not-a-password-hash") is False
+
+
 def test_token_encode_decode() -> None:
     token = create_access_token({"sub": "user@example.com"})
     email = decode_access_token(token)

@@ -129,6 +129,18 @@ def test_console_status_url_accepts_explicit_access_token() -> None:
     assert url == "https://keystone.home.arpa/api/status?token=collector-token"
 
 
+def test_console_status_url_limits_history_payload() -> None:
+    url = console_status_url(
+        "https://keystone.home.arpa/",
+        access_token="collector-token",
+        history_limit=40,
+    )
+    assert (
+        url
+        == "https://keystone.home.arpa/api/status?token=collector-token&history_limit=40"
+    )
+
+
 def test_fetch_console_audit_normalizes_payload(monkeypatch) -> None:
     body = {
         "count": 1,

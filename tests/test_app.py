@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from pathlib import Path
 import pytest
 
 from app import crud
@@ -34,15 +35,218 @@ def test_home_page_requires_login(
     monkeypatch.setenv("ENABLE_AUTH_MIDDLEWARE_IN_TESTS", "1")
     response = test_app.get("/", follow_redirects=False)
     assert response.status_code == 303
-    assert response.headers["location"] in {"/login.html", "/setup.html"}
+    assert response.headers["location"] in {
+        "/login.html?next=%2F",
+        "/setup.html",
+    }
 
 
-def test_root_redirects_to_main_norman_chat_when_auth_disabled(
+def test_root_renders_norman_bridge_when_auth_disabled(
     test_app: TestClient,
 ) -> None:
     response = test_app.get("/", follow_redirects=False)
-    assert response.status_code == 307
-    assert response.headers["location"] == "/bot/norman/"
+    assert response.status_code == 200
+    assert 'id="norman-bridge"' in response.text
+    assert 'id="cockpit-group-list"' in response.text
+    assert 'id="cockpit-workspace-button"' in response.text
+    assert 'class="cockpit-groups"' not in response.text
+    assert 'id="cockpit-thread-field"' in response.text
+    assert 'id="cockpit-token-meter"' in response.text
+    assert 'id="bridge-icon-route"' in response.text
+    assert 'id="bridge-icon-user-plus"' in response.text
+    assert response.text.count('class="cockpit-icon"') >= 12
+    assert 'id="norman-favicon"' in response.text
+    assert "/static/favicon.svg?v=20260822a" in response.text
+    assert "/static/css/bridge.css?v=20260920-readability2" in response.text
+    assert "/static/js/bridge.js?v=" in response.text
+    assert "site-banner" not in response.text
+    assert 'id="global-status-bar"' not in response.text
+
+
+def test_bridge_route_renders_grouped_agent_workspace(
+    test_app: TestClient,
+) -> None:
+    response = test_app.get("/bridge.html", follow_redirects=False)
+    assert response.status_code == 200
+    assert 'id="cockpit-domains"' in response.text
+    assert 'id="cockpit-command-rail"' not in response.text
+    assert 'class="cockpit-command-rail"' in response.text
+    assert 'id="cockpit-composer"' in response.text
+    assert 'id="cockpit-rooms"' in response.text
+    assert 'id="bridge-room-dialog"' in response.text
+    assert "Direct messages" in response.text
+    assert "/static/js/bridge.js" in response.text
+    assert "Message Personal" not in response.text
+
+
+def test_legacy_cockpit_routes_redirect_to_bridge(test_app: TestClient) -> None:
+    for path in ("/cockpit", "/cockpit.html"):
+        response = test_app.get(path, follow_redirects=False)
+        assert response.status_code == 307
+        assert response.headers["location"] == "/bridge"
+
+
+def test_bridge_client_derives_boundaries_from_estate_registry() -> None:
+    source = Path("app/static/js/bridge.js").read_text(encoding="utf-8")
+    styles = Path("app/static/css/bridge.css").read_text(encoding="utf-8")
+    assert "function normalizeGroups(estate)" in source
+    assert "merged.set('norman'" in source
+    assert "function groupedAgents" in source
+    assert "function directoryGroup" in source
+    assert "function botIdentityTileHtml" in source
+    assert "function roomIdentityStackHtml" in source
+    assert "principal: group.slug" in source
+    assert "domain: domain?.slug" in source
+    assert "source: 'norman_bridge'" in source
+    assert "bridge_conversation_id" in source
+    assert "function selectConversation" in source
+    assert "function createRoom" in source
+    assert "function jobObjective(job)" in source
+    assert "recipientRow: el('cockpit-recipient-row')" in source
+    assert "composeMeta: el('cockpit-compose-meta')" in source
+    assert "function composerGuidance" in source
+    assert "Restoring ${name}'s thread" in source
+    assert "function normalizeBridgeResponse(text)" in source
+    assert "const COMPOSER_DRAFTS_KEY" in source
+    assert "function saveComposerDraft(" in source
+    assert "function restoreComposerDraft(" in source
+    assert "Continue this topic" not in source
+    assert "Prior Bridge status" not in source
+    assert "cockpit-resume-prompts" not in source
+    assert "function startBootActivity()" in source
+    assert "bridge-boot-activity" in source
+    assert 'data-chip="usage"' in source
+    assert 'data-chip="spend"' in source
+    assert "function formatCompactNumber" in source
+    assert "download=1" in source
+    assert "...state.conversations.filter((item) => item._local_only)" in source
+    assert "fetchEstateDirectory().then((directory) =>" in source
+    assert "if (!state.authRequired) applyEstateDirectory(directory);" in source
+    assert "60000 + Math.floor(Math.random() * 30000)" in source
+    assert "document.visibilityState === 'visible'" in source
+    assert "function provisionalAgents()" in source
+    assert "_statusDelayed: true" in source
+    assert "live ? `${live} live` : `${known} known`" in source
+    assert "{ timeoutMs: 180000 }" in source
+    assert "fetchJson(`${API}/estate/overview`, { timeoutMs: 12000 })" in source
+    assert "function hydrateConversationActivities(conversation)" in source
+    assert "/model\\.delta/.test(event.event_type || '')" in source
+    assert "execution\\.advisory_only/.test(type)) return 'running'" in source
+    assert "LOCAL_CONVERSATIONS_KEY" in source
+    assert "function loadLocalConversations" in source
+    assert "function persistConversationLocally" in source
+    assert "function mergeConversations" in source
+    assert "function discardNonConversationalDirectConversations()" in source
+    assert "ACTIVE_CONVERSATION_KEY" in source
+    assert "function restoreActiveConversation()" in source
+    assert "saveActiveConversation(conversation)" in source
+    assert "clearActiveConversation()" in source
+    assert "const bootstrapConversation = restoreActiveConversation();" in source
+    assert "const showBootInterstitial = (!quiet || !state.bootstrapped)" in source
+    assert "prior turns restored" not in source
+    assert "function isLegacyBridgeDiagnostic(value)" in source
+    assert (
+        "selected route:\\s*codex\\/gpt-5\\.4|\\[auto-continuation:/is.test(text.trim())"
+        in source
+    )
+    assert ".filter((turn) => !isLegacyBridgeDiagnostic(turn))" in source
+    assert "if (stationSlug)" in source
+    assert "Station history unavailable" in source
+    assert "No station history yet" in source
+    assert "stationHistoryLoaded" in source
+    assert "function pulseComposerTexture(" in source
+    assert "root.dataset.composerReactive" in source
+    assert '[data-composer-reactive="true"]' in styles
+    assert "This direct message could not be loaded right now." in source
+    assert "class BridgeRequestError" in source
+    assert "Log in to connect Norman" in source
+    assert "Saved on this device" in source
+    assert "Could not open direct message" not in source
+    assert "WORK_PRINCIPALS" not in source
+    assert "INFRA_PATTERN" not in source
+    assert "Message Personal" not in source
+    assert "PROFILE_PALETTES" in source
+    assert "function fontRoles" in source
+    assert "function patternDetail" in source
+    assert "--texture-cross-angle" in source
+    assert "new URLSearchParams(window.location.search).get('agent')" in source
+    assert "texture?.mark || displaySlug(slug)" in source
+    assert "function workingMessageHtml" in source
+    assert 'class="cockpit-presence"' in source
+    assert 'class="cockpit-turn"' in source
+    assert 'class="cockpit-event-stack"' in source
+    assert "function promptPhaseForStatus" in source
+    assert "function promptPhaseForEvent" in source
+    assert "function resumeTopicPrompts()" not in source
+    assert "function draftResumePrompt(prompt)" not in source
+    assert 'data-resume-prompt="${escapeHtml(prompt)}"' not in source
+    assert "function iconHtml" in source
+    assert "TEXTURE_MOTION_PROFILES" in source
+    assert "function textureMotionSignature" in source
+    assert "IDENTITY_GLYPHS" in source
+    assert "function identityGlyphFor" in source
+    assert "function agentSkeletonHtml" in source
+    assert "function setWorkspaceMenuOpen" in source
+    assert "bootstrapped: false" in source
+    assert "bridge-simple-cartouche--hero" in source
+    assert "data-motion=" in source
+    assert "root.dataset.identityMotion" in source
+    assert "function textureFractalWave" in source
+    assert "function interpolatedTextureProfile" in source
+    assert "function addTextureInput" in source
+    assert "root.addEventListener('pointermove'" in source
+    assert "root.addEventListener('keydown'" in source
+    assert "state.texture.inputEnergy" in source
+    assert "state.texture.disturbances" in source
+    assert "state.texture.targetX" in source
+    assert "const travelingWake" in source
+    assert "connectJobEventStream(created.job_id)" in source
+    assert "selectJob(created.job_id)" not in source
+    assert "cockpit-presence__sweep" not in source
+    assert "cockpit-working__signal" in source
+    assert "cockpit-working__progress" in source
+    assert "function updateBootInterstitial" in source
+    assert "function normalizeBridgeResponse" in source
+    assert 'data-entity-key="artmonster"' in styles
+    assert "bridge-boot-interstitial" in styles
+    assert "--radius-panel" in styles
+    assert "--thread-item-gap" in styles
+    assert ".cockpit-presence__nodes i:nth-child(4)" in styles
+    assert ".cockpit-turn__messages" in styles
+    assert ".cockpit-send span" in styles
+    assert ".cockpit-resume-prompts" not in styles
+    assert ".cockpit-resume-prompt" not in styles
+    assert '[data-prompt-state="running"] .cockpit-thread-field' in styles
+    assert ".cockpit-icon-sprite" in styles
+    assert "bridge-icon-breathe" in styles
+    assert ".cockpit-working__signal" in styles
+    assert "clip-path: inset(0 0 0 100%)" in styles
+    assert ".bridge-directory-group__head" in styles
+    assert ".bridge-bot-group__grid" in styles
+    assert '.bridge-simple-cartouche[data-variant="signal"]' in styles
+    assert '.bridge-simple-cartouche[data-variant="editorial"]' in styles
+    assert "@keyframes bridge-cartouche-drift" in styles
+    assert "@keyframes bridge-cartouche-orbit" in styles
+    assert "@keyframes bridge-cartouche-halftone" in styles
+    assert '.bridge-simple-cartouche[data-motion="masonry"]' in styles
+    assert ".entity-cartouche__glyph" in styles
+    assert ".bridge-simple-cartouche--hero" in styles
+    assert "Sidebar scroll ownership" in styles
+    assert ".cockpit-section--agents .cockpit-nav-list" in styles
+    assert "scrollbar-gutter: stable" in styles
+    assert "grid-template-areas:" in styles
+    assert '"warning"' in styles
+    assert "grid-area: feed" in styles
+    assert "grid-area: composer" in styles
+
+
+def test_bridge_loads_the_tui_font_roles() -> None:
+    source = Path("app/templates/base.html").read_text(encoding="utf-8")
+
+    assert "family=IBM+Plex+Mono" in source
+    assert "family=IBM+Plex+Sans+Condensed" in source
+    assert "family=IBM+Plex+Serif" in source
+    assert "family=Poppins" in source
 
 
 def test_root_redirects_switchboard_host_to_switchboard_dashboard(
@@ -110,5 +314,23 @@ def test_invalid_auth_cookie_redirects_to_login_and_clears_cookie(
     response = test_app.get("/dashboard.html", follow_redirects=False)
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/login.html"
+    assert response.headers["location"] == "/login.html?next=%2Fdashboard.html"
     assert 'access_token=""' in response.headers.get("set-cookie", "")
+
+
+def test_bridge_distinguishes_authentication_from_runtime_availability(
+    test_app: TestClient,
+) -> None:
+    response = test_app.get("/bridge", follow_redirects=False)
+
+    assert response.status_code == 200
+    bridge_js = Path("app/static/js/bridge.js").read_text()
+    assert "Login required" in bridge_js
+    assert "Log in to connect Norman" in bridge_js
+    assert "function isStalePendingJob" in bridge_js
+    assert "function recentBridgeRuntimeJobs" in bridge_js
+    assert (
+        "This response did not start. Send it again when the runtime is available."
+        in bridge_js
+    )
+    assert "Runtime is control-only" not in bridge_js

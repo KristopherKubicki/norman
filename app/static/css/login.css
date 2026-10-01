@@ -1,0 +1,33 @@
+/* Local, native sign-in: no font service, framework download, or entrance animation. */
+:root { color-scheme: dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #f3f4f5; background: #111315; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100svh; }
+main { padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+.norman-auth-shell { width: 100%; max-width: 430px; margin: clamp(0px, 6vh, 64px) auto; }
+.norman-auth-shell__brand { display: flex; align-items: center; gap: 12px; margin: 0 0 24px; }
+.brand-mark { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid #51565b; border-radius: 10px; font-size: 22px; font-weight: 600; }
+.brand-copy { display: grid; gap: 2px; }
+.brand-title { font-size: 18px; font-weight: 650; }
+.brand-sub { color: #b7bec5; font-size: 14px; }
+.norman-auth-card { padding: 24px; background: #1a1d20; border: 1px solid #41464c; border-radius: 16px; }
+.norman-auth-card__eyebrow { color: #b7bec5; font-size: 13px; margin-bottom: 8px; }
+.norman-auth-card__title { margin: 0 0 12px; font-size: 25px; line-height: 1.25; }
+.norman-auth-card__copy { margin: 0 0 24px; color: #c7ccd1; font-size: 15px; line-height: 1.5; }
+.norman-auth-label { display: block; margin: 0 0 8px; color: #f3f4f5; font-weight: 600; }
+.norman-auth-card__input { display: block; border: 1px solid #767e86; border-radius: 8px; background: #111315; color: #f3f4f5; padding: 12px; min-height: 48px; font: inherit; font-size: 16px; width: 100%; }
+.norman-auth-card__input:autofill { color: #161616; background: #e8f0fe; }
+.norman-auth-card__input:-webkit-autofill { -webkit-text-fill-color: #161616; caret-color: #161616; }
+:focus-visible { outline: 3px solid #85baff; outline-offset: 3px; }
+.mb-3 { margin-bottom: 20px; }
+.norman-auth-reveal { display: block; margin: -12px 0 8px auto; min-height: 44px; border: 0; padding: 8px 0 8px 12px; background: transparent; color: #c0dcff; font: inherit; text-decoration: underline; cursor: pointer; }
+.form-check { display: grid; grid-template-columns: 24px 1fr; align-items: start; gap: 4px 8px; }
+.form-check-input { width: 20px; height: 20px; margin: 2px 0 0; accent-color: #c0dcff; }
+.form-check-label { line-height: 1.5; cursor: pointer; }
+#remember-help { grid-column: 2; margin: 0; font-size: 13px; }
+.norman-auth-error { padding: 12px; margin: 0 0 20px; border: 1px solid #f2ad9f; border-radius: 8px; color: #ffdbd3; line-height: 1.5; }
+[hidden] { display: none !important; }
+.norman-auth-card__submit, .norman-auth-card__provider { display: block; width: 100%; min-height: 48px; border: 1px solid #bac1c8; border-radius: 8px; padding: 12px; background: #e6e9ed; color: #111315; font: inherit; font-weight: 650; text-align: center; cursor: pointer; text-decoration: none; }
+.norman-auth-card__submit:disabled { opacity: .7; cursor: wait; }
+.norman-auth-card__provider { margin-top: 12px; background: transparent; color: #f3f4f5; }
+hr { border: 0; border-top: 1px solid #41464c; margin: 24px 0 12px; }
+hr:last-child { display: none; }

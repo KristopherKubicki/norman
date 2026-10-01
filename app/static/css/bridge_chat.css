@@ -1,0 +1,165 @@
+/* Shared visual language with the focused console. */
+.page-bridge #norman-bridge {
+  --profile-bg: #111213 !important;
+  --profile-surface: #191a1c !important;
+  --profile-surface-2: #232427 !important;
+  --profile-surface-3: #2b2d30 !important;
+  --profile-text: #f0f0f2 !important;
+  --profile-muted: #a1a3aa !important;
+  --profile-border: #303236 !important;
+  --agent-accent: #b6becb !important;
+  --agent-accent-2: #a7afbc !important;
+  --cockpit-bg: #111213;
+  --cockpit-panel: #191a1c;
+  --cockpit-panel-2: #232427;
+  --cockpit-panel-3: #2b2d30;
+  --cockpit-line: #303236;
+  --cockpit-text: #f0f0f2;
+  --cockpit-muted: #a1a3aa;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-reading: var(--font-ui);
+  --font-brand: var(--font-ui);
+  --font-label: var(--font-ui);
+  --font-ui-wide: var(--font-ui);
+  background: var(--profile-bg);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+.page-bridge #norman-bridge [hidden] { display: none !important; }
+.page-bridge #norman-bridge::before,
+.page-bridge #norman-bridge::after,
+.page-bridge .cockpit-thread-field,
+.page-bridge .cockpit-conversation::before,
+.page-bridge .cockpit-feed::before,
+.page-bridge .cockpit-composer::before,
+.page-bridge .cockpit-composer::after { display: none !important; }
+.page-bridge #norman-bridge .cockpit-nav {
+  background: #171819;
+  border-right: 1px solid var(--profile-border);
+  box-shadow: none;
+}
+.page-bridge #norman-bridge .cockpit-nav__head { padding: 20px 16px 14px; border: 0; background: transparent; }
+.page-bridge #norman-bridge .bridge-workspace-switcher__button { border: 0; border-radius: 12px; background: transparent; padding: 8px; }
+.page-bridge #norman-bridge .bridge-workspace-switcher__mark { border-radius: 10px; background: #ededee; color: #171819; box-shadow: none; }
+.page-bridge #norman-bridge .bridge-workspace-switcher__copy strong { font: 600 15px var(--font-ui); }
+.page-bridge #norman-bridge .bridge-workspace-switcher__copy small { font: 10px var(--font-ui); letter-spacing: .08em; color: var(--profile-muted); }
+.page-bridge #norman-bridge .cockpit-search { margin: 0 16px 20px; padding: 11px 12px; border: 1px solid var(--profile-border); border-radius: 10px; background: transparent; }
+.page-bridge #norman-bridge .cockpit-search input { font: 13px var(--font-ui); }
+.page-bridge #norman-bridge .cockpit-section { padding: 12px; border: 0; }
+.page-bridge #norman-bridge .cockpit-section__head { padding: 8px; font: 500 11px var(--font-ui); letter-spacing: .07em; color: var(--profile-muted); }
+.page-bridge #norman-bridge .cockpit-nav-item { border: 0; border-radius: 10px; padding: 12px; background: transparent; box-shadow: none; }
+.page-bridge #norman-bridge .cockpit-nav-item.is-active { background: var(--profile-surface-2); box-shadow: none; }
+.page-bridge #norman-bridge .cockpit-nav-item:hover { background: var(--profile-surface-2); }
+.page-bridge #norman-bridge .cockpit-nav-item strong { font: 500 14px/1.45 var(--font-ui); }
+.page-bridge #norman-bridge .cockpit-nav-item small { font: 12px/1.5 var(--font-ui); color: var(--profile-muted); }
+.page-bridge #norman-bridge .cockpit-conversation { background: var(--profile-bg); }
+.page-bridge #norman-bridge .cockpit-conversation__head { margin: 0; padding: 16px 24px; min-height: 76px; background: transparent; border: 0; border-bottom: 1px solid var(--profile-border); border-radius: 0; box-shadow: none; }
+.page-bridge #norman-bridge .cockpit-conversation__title { font: 600 17px var(--font-ui); }
+.page-bridge #norman-bridge .cockpit-conversation__subtitle { color: var(--profile-muted); font: 12px/1.5 var(--font-ui); margin-top: 4px; }
+.page-bridge #norman-bridge .entity-cartouche { color: var(--profile-text); background: transparent; border-color: transparent; box-shadow: none; font-family: var(--font-ui); }
+.page-bridge #norman-bridge .cockpit-icon-button,
+.page-bridge #norman-bridge .cockpit-menu-button { background: transparent; border: 1px solid var(--profile-border); border-radius: 10px; min-height: 38px; min-width: 38px; }
+.page-bridge #norman-bridge .cockpit-command-rail { background: transparent; border: 0; padding: 8px 24px; gap: 8px; box-shadow: none; }
+.page-bridge #norman-bridge .cockpit-command-cell { border: 0; border-radius: 8px; background: var(--profile-surface); padding: 8px 12px; }
+.page-bridge #norman-bridge .cockpit-feed { padding: 30px clamp(20px, 4vw, 64px); background: transparent; }
+.page-bridge #norman-bridge .cockpit-message { max-width: 820px; margin: 0 auto 26px; border: 0; box-shadow: none; background: transparent; }
+.page-bridge #norman-bridge .cockpit-message--assistant { padding: 12px 0; border: 0; background: transparent; }
+.page-bridge #norman-bridge .cockpit-message__bubble { color: var(--profile-text); font: 400 16px/1.75 var(--font-reading); border: 0; box-shadow: none; }
+.page-bridge #norman-bridge .cockpit-message--operator .cockpit-message__bubble { background: var(--profile-surface-2); padding: 14px 20px; border-radius: 22px; }
+.page-bridge #norman-bridge .cockpit-message__head { margin-bottom: 10px; }
+.page-bridge #norman-bridge .cockpit-composer-wrap { width: min(100%, 900px); margin: 0 auto; padding: 12px 24px max(22px, env(safe-area-inset-bottom)); background: var(--profile-bg); border: 0; }
+.page-bridge #norman-bridge .cockpit-composer { padding: 14px; min-height: 82px; gap: 12px; background: var(--profile-surface); border: 1px solid var(--profile-border); border-radius: 24px; box-shadow: 0 8px 32px #0002; }
+.page-bridge #norman-bridge .cockpit-composer:focus-within { border-color: #74777d; }
+.page-bridge #norman-bridge .cockpit-composer textarea { background: transparent; color: var(--profile-text); font: 16px/1.65 var(--font-ui); }
+.page-bridge #norman-bridge .cockpit-send { width: 40px; height: 40px; border-radius: 50%; background: #ededee; color: #171819; box-shadow: none; }
+.page-bridge #norman-bridge .cockpit-compose-action { background: transparent; border: 0; }
+.page-bridge #norman-bridge .cockpit-inspector,
+.page-bridge #norman-bridge .cockpit-menu { background: var(--profile-surface); border-color: var(--profile-border); background-image: none; }
+.page-bridge #norman-bridge .cockpit-feed__empty h2 { font: 500 clamp(26px, 3vw, 36px)/1.25 var(--font-ui); letter-spacing: -.8px; }
+.page-bridge #norman-bridge .cockpit-feed__empty p { color: var(--profile-muted); font: 15px/1.65 var(--font-ui); max-width: 420px; }
+.page-bridge #norman-bridge .program-card,
+.page-bridge #norman-bridge .program-attention,
+.page-bridge #norman-bridge .program-summary { background: var(--profile-surface); border-color: var(--profile-border); box-shadow: none; border-radius: 14px; }
+.page-bridge #norman-bridge :is(button, a, input, textarea):focus-visible { outline: 2px solid var(--profile-text); outline-offset: 3px; }
+@media (max-width: 700px) {
+  .page-bridge #norman-bridge .cockpit-conversation__head { padding: 12px; min-height: 64px; }
+  .page-bridge #norman-bridge .cockpit-feed { padding: 24px 18px; }
+  .page-bridge #norman-bridge .cockpit-composer-wrap { padding: 8px 10px max(12px, env(safe-area-inset-bottom)); }
+  .page-bridge #norman-bridge .cockpit-composer { border-radius: 20px; padding: 10px; }
+  .page-bridge #norman-bridge .cockpit-message__bubble { font-size: 16px; }
+  .page-bridge #norman-bridge .cockpit-command-rail { padding: 6px 10px; gap: 4px; }
+  .page-bridge #norman-bridge .cockpit-command-cell { padding: 6px; }
+}
+
+/* Follow the application theme instead of forcing dark surfaces. */
+html:not(.dark-mode) .page-bridge #norman-bridge {
+  --profile-bg: #fafafa !important;
+  --profile-surface: #ffffff !important;
+  --profile-surface-2: #f0f0f2 !important;
+  --profile-surface-3: #e7e7ea !important;
+  --profile-text: #202124 !important;
+  --profile-muted: #585b63 !important;
+  --profile-border: #d0d1d5 !important;
+  --agent-accent: #525e72 !important;
+  --agent-accent-2: #525e72 !important;
+  color-scheme: light;
+}
+.page-bridge #norman-bridge {
+  --cockpit-bg: var(--profile-bg);
+  --cockpit-panel: var(--profile-surface);
+  --cockpit-panel-2: var(--profile-surface-2);
+  --cockpit-panel-3: var(--profile-surface-3);
+  --cockpit-text: var(--profile-text);
+  --cockpit-muted: var(--profile-muted);
+  --cockpit-line: var(--profile-border);
+}
+html.dark-mode .page-bridge #norman-bridge { color-scheme: dark; }
+.page-bridge #norman-bridge .cockpit-nav { background: var(--profile-surface); }
+.page-bridge #norman-bridge :is(input, select, textarea) { color: var(--profile-text); background-color: var(--profile-surface); }
+.page-bridge #norman-bridge :is(input, textarea)::placeholder { color: var(--profile-muted); opacity: 1; }
+.page-bridge #norman-bridge select option { color: var(--profile-text); background: var(--profile-surface); }
+.page-bridge #norman-bridge :is(button, a, summary, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--profile-text) !important; outline-offset: 3px;
+}
+.page-bridge #norman-bridge .cockpit-message__bubble { overflow-wrap: anywhere; }
+.page-bridge #norman-bridge .cockpit-message__bubble pre { max-width: 100%; overflow-x: auto; white-space: pre; }
+@media (max-width: 700px) {
+  .page-bridge #norman-bridge :is(.cockpit-icon-button, .cockpit-menu-button, .cockpit-compose-action, .cockpit-send) { min-width: 44px; min-height: 44px; }
+  .page-bridge #norman-bridge :is(input, select, textarea) { font-size: 16px; }
+}
+
+.page-bridge #norman-bridge .cockpit-message__bubble a { color: var(--profile-text); text-decoration: underline; text-underline-offset: 3px; }
+.page-bridge #norman-bridge .cockpit-send { background: var(--profile-text); color: var(--profile-bg); }
+/* Navigation and recovery stay close to the conversation. */
+.page-bridge #norman-bridge .cockpit-transport {
+  display: inline-flex !important; align-items: center; gap: 6px;
+  color: var(--profile-muted); font: 12px/1.4 var(--font-ui); white-space: nowrap;
+}
+.page-bridge #norman-bridge .cockpit-transport[data-tone="warn"] { color: var(--profile-text); }
+.page-bridge #norman-bridge .cockpit-transport__label { display: inline !important; }
+.page-bridge #norman-bridge #bridge-pin-chat { font-size: 22px; color: var(--profile-text); }
+.page-bridge #norman-bridge .bridge-quick-chat {
+  display: flex; width: 100%; gap: 10px; align-items: center; text-align: left;
+  min-height: 48px; padding: 10px 12px; border: 0; border-radius: 10px;
+  color: var(--profile-text); background: transparent; font: 14px/1.4 var(--font-ui);
+}
+.page-bridge #norman-bridge .bridge-quick-chat:hover,
+.page-bridge #norman-bridge .bridge-quick-chat.is-active { background: var(--profile-surface-2); }
+.page-bridge #norman-bridge .bridge-quick-chat > span:nth-child(2) { min-width: 0; }
+.page-bridge #norman-bridge .bridge-quick-chat strong { display: block; font-weight: 500; overflow-wrap: anywhere; }
+.page-bridge #norman-bridge .bridge-quick-chat small { display: block; color: var(--profile-muted); font-size: 11px; }
+.page-bridge #norman-bridge[data-activity-view="true"] :is(.cockpit-composer-wrap, .cockpit-recipient-row) { display: none; }
+.page-bridge #norman-bridge .bridge-activity { max-width: 820px; margin: 0 auto; }
+.page-bridge #norman-bridge .bridge-activity h2 { font: 600 24px/1.3 var(--font-ui); color: var(--profile-text); }
+.page-bridge #norman-bridge .bridge-activity-intro { color: var(--profile-muted); font: 14px/1.6 var(--font-ui); margin-bottom: 24px; }
+.page-bridge #norman-bridge .bridge-activity-card { padding: 18px; margin-bottom: 12px; border: 1px solid var(--profile-border); border-radius: 14px; background: var(--profile-surface); color: var(--profile-text); }
+.page-bridge #norman-bridge .bridge-activity-state { color: var(--profile-muted); font: 12px/1.5 var(--font-ui); }
+.page-bridge #norman-bridge .bridge-activity-card[data-state="unconfirmed"] { border-color: var(--profile-text); }
+.page-bridge #norman-bridge .bridge-activity-card p { margin: 10px 0; overflow-wrap: anywhere; font: 15px/1.6 var(--font-ui); }
+.page-bridge #norman-bridge .bridge-activity-card button { min-height: 44px; padding: 8px 14px; background: var(--profile-surface-2); color: var(--profile-text); border: 1px solid var(--profile-border); border-radius: 8px; font: 14px var(--font-ui); }
+@media (max-width: 700px) {
+  .page-bridge #norman-bridge .cockpit-conversation__head { position: relative; padding-bottom: 36px; }
+  .page-bridge #norman-bridge .cockpit-transport { position: absolute; left: 12px; bottom: 10px; }
+  .page-bridge #norman-bridge .cockpit-conversation__identity { min-width: 0; }
+  .page-bridge #norman-bridge .cockpit-conversation__actions { gap: 4px; }
+}
