@@ -27,7 +27,7 @@ dependencies = [
   "python-dotenv>=1.2,<2",
   "python-multipart>=0.0.22,<1",
   "email-validator>=2.3.0",
-  "pyjwt>=2.11.0",
+  "pyjwt>=2.14.0,<3",
   "PyYAML>=6.0,<7",
 ]
 
@@ -50,7 +50,7 @@ app = [
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.4,<9",
+  "pytest>=9.0.3,<10",
   "pytest-asyncio>=1.2,<2",
   "setuptools>=80,<82",
   "coverage>=7.13,<8",
