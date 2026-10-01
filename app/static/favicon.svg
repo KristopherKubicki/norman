@@ -1,11 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Norman">
   <defs>
-    <linearGradient id="nrm" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#22c1a5"/>
-      <stop offset="100%" stop-color="#0d6b5c"/>
+    <linearGradient id="norman-frame" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#34465d"/>
+      <stop offset="1" stop-color="#172130"/>
+    </linearGradient>
+    <linearGradient id="norman-n" x1="20" y1="17" x2="45" y2="48" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f1d47f"/>
+      <stop offset="1" stop-color="#ce8d49"/>
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="16" fill="#0b1324"/>
-  <rect x="6" y="6" width="52" height="52" rx="14" fill="url(#nrm)" opacity="0.95"/>
-  <path d="M20 44V20h6l12 14V20h6v24h-6L26 30v14h-6z" fill="#0b1324"/>
+  <rect width="64" height="64" rx="15" fill="#101720"/>
+  <rect x="5" y="5" width="54" height="54" rx="12" fill="url(#norman-frame)" stroke="#607690" stroke-width="2"/>
+  <path d="M13 20h38M13 32h38M13 44h38" stroke="#7baee1" stroke-opacity=".18" stroke-width="1"/>
+  <path d="M20 46V18h6l12 16V18h6v28h-6L26 30v16h-6Z" fill="url(#norman-n)"/>
+  <circle cx="49" cy="15" r="5" fill="#72c7a8" stroke="#e1fff4" stroke-opacity=".7" stroke-width="1"/>
 </svg>

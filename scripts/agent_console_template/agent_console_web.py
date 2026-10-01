@@ -21,6 +21,7 @@ import shlex
 import shutil
 import signal
 import socket
+import ssl
 import sqlite3
 import subprocess
 import sys
@@ -35,12 +36,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 from urllib import error as urllib_error, request as urllib_request
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 try:
     from app.services import tui_route_intent as SHARED_TUI_ROUTE_INTENT
 except Exception:
     SHARED_TUI_ROUTE_INTENT = None
+
+try:
+    from app.services.completion_contract import (
+        response_promises_unfinished_work as shared_response_promises_unfinished_work,
+    )
+except Exception:
+    shared_response_promises_unfinished_work = None
 
 try:
     from app.services.tui_waterfall import (
@@ -592,6 +600,7 @@ if not (Path(SCRIPT_MODULE_DIR) / "agent_console_child_agents.py").is_file():
     if SOURCE_SCRIPT_DIR not in sys.path:
         sys.path.insert(0, SOURCE_SCRIPT_DIR)
 
+
 from agent_console_session_budget import (
     SessionBudgetPolicy,
     evaluate_admission as evaluate_session_admission,
@@ -652,7 +661,194 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.08.04.1"
+CONSOLE_POLISH_CSS = """
+/* Conversation-first console. Operational detail stays available under Details. */
+body[data-console-design="quiet"]:not(.console-details-open) :is(.message-route-details, .operator-focus-rail) { display: none !important; }
+body[data-console-design="quiet"] {
+  --bg: #111213 !important;
+  --bg-soft: #18191b !important;
+  --surface: #191a1c !important;
+  --surface-2: #222326 !important;
+  --surface-3: #2b2d30 !important;
+  --border: #303236 !important;
+  --border-strong: #55585f !important;
+  --text: #f0f0f2 !important;
+  --muted: #a1a3aa !important;
+  --accent: #eeeeef !important;
+  --agent-accent: #b6becb !important;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-reading: var(--font-ui);
+  --font-body: var(--font-ui);
+  --font-label: var(--font-ui);
+  --font-brand: var(--font-ui);
+  --font-ui-wide: var(--font-ui);
+  --assistant-reading-size: 1rem;
+  --assistant-reading-line-height: 1.75;
+  --user-reading-size: 1rem;
+  --composer-input-size: 1rem;
+  color: var(--text);
+  background: var(--bg) !important;
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+body[data-console-mode="light"] {
+  --bg: #fafafa !important;
+  --bg-soft: #f3f3f4 !important;
+  --surface: #ffffff !important;
+  --surface-2: #f0f0f2 !important;
+  --surface-3: #e7e7ea !important;
+  --border: #dddde1 !important;
+  --border-strong: #b2b2b8 !important;
+  --text: #202124 !important;
+  --muted: #63666d !important;
+  --accent: #242529 !important;
+  --agent-accent: #606b7e !important;
+}
+body[data-console-design="quiet"] [hidden] { display: none !important; }
+body[data-console-design="quiet"]::before,
+body[data-console-design="quiet"]::after,
+body[data-console-design="quiet"] .microtexture-thread-field,
+body[data-console-design="quiet"] .conversation::before,
+body[data-console-design="quiet"] .topbar::before,
+body[data-console-design="quiet"] .topbar::after,
+body[data-console-design="quiet"] .composer-input-shell::before,
+body[data-console-design="quiet"] .composer-input-shell::after { display: none !important; }
+body[data-console-design="quiet"] .surface,
+body[data-console-design="quiet"] .composer-wrap,
+body[data-console-design="quiet"] .message,
+body[data-console-design="quiet"] .entity-cartouche {
+  background-image: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none;
+}
+body[data-console-design="quiet"] .topbar {
+  min-height: 68px;
+  padding: 12px 24px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg) !important;
+}
+body[data-console-design="quiet"] .brand-title { font-size: 18px; font-weight: 600; letter-spacing: -.4px; }
+body[data-console-design="quiet"] .entity-cartouche {
+  color: var(--text);
+  background: transparent !important;
+  border-color: transparent !important;
+  font: inherit;
+  text-shadow: none;
+}
+body[data-console-design="quiet"] .topbar .brand-line { gap: 12px; }
+body[data-console-design="quiet"] .topbar .pill { border: 0; border-radius: 999px; background: var(--surface-2); font-size: 12px; padding: 5px 10px; }
+body[data-console-design="quiet"] .topbar-actions { gap: 8px; }
+body[data-console-design="quiet"] .topbar-actions > :is(button, a) {
+  min-height: 38px; border-radius: 10px !important; padding: 8px 12px;
+  border: 1px solid var(--border); background: transparent; font: 500 13px var(--font-ui);
+}
+body[data-console-design="quiet"] .console-details-toggle[aria-expanded="true"] { background: var(--surface-3); }
+body[data-console-design="quiet"]:not(.console-details-open) :is(.chat-summary-bar, #kpi-strip) { display: none !important; }
+body[data-console-design="quiet"]:not(.console-details-open) #norman-command-rail:not(:has([data-tone="warn"], [data-tone="error"], [data-tone="bad"])) { display: none !important; }
+body[data-console-design="quiet"] #norman-command-rail { background: var(--surface); border-color: var(--border); padding: 12px 20px; }
+body[data-console-design="quiet"] .norman-command-cell { border-radius: 10px !important; background: var(--surface-2); border-color: var(--border); }
+body[data-console-design="quiet"] .chat-shell { --reading-lane: 800px; --conversation-lane: 840px; background: var(--bg) !important; padding-inline: 24px; }
+body[data-console-design="quiet"] .chat-main { padding-top: 22px; }
+body[data-console-design="quiet"] .history-toolbar { width: min(100%, 800px); margin: 0 auto 20px; padding: 0; }
+body[data-console-design="quiet"] .history-note { color: var(--muted); font: 11px var(--font-ui); letter-spacing: .06em; }
+body[data-console-design="quiet"] .history-toggle { border-radius: 999px !important; background: transparent; color: var(--muted); min-height: 32px; padding: 6px 12px; }
+body[data-console-design="quiet"] .conversation { width: min(100%, 840px); margin-inline: auto; gap: 24px; overflow: visible; }
+body[data-console-design="quiet"] .message { padding: 0; border: 0; border-radius: 0; max-width: 100%; margin: 0; background: transparent !important; }
+body[data-console-design="quiet"] .message.user {
+  width: fit-content; max-width: min(85%, 680px); align-self: flex-end; margin-left: auto;
+  padding: 14px 20px; border-radius: 22px !important; background: var(--surface-2) !important;
+}
+body[data-console-design="quiet"] .message.assistant { padding: 6px 0 20px; width: 100%; }
+body[data-console-design="quiet"] .message::before,
+body[data-console-design="quiet"] .message::after { display: none; }
+body[data-console-design="quiet"] .message .message-body { max-width: 100%; color: var(--text); font: 400 16px/1.75 var(--font-reading); }
+body[data-console-design="quiet"] .message-head { gap: 8px; margin-bottom: 12px; align-items: center; }
+body[data-console-design="quiet"] .message-role { font: 600 14px var(--font-ui); }
+body[data-console-design="quiet"] .message-meta { max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font: 11px var(--font-ui); }
+body[data-console-design="quiet"] .message-route-details { padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+body[data-console-design="quiet"] .message-route-details :is(dt, dd) { font-size: 12px; line-height: 1.6; }
+body[data-console-design="quiet"] :is(.message-route-chip, .message-usage-chip, .message-cost-chip, .message-estimate-chip) { background: transparent; border-color: var(--border); border-radius: 6px !important; color: var(--muted); }
+body[data-console-design="quiet"] .message-route-details-toggle { min-width: 32px; min-height: 32px; border-radius: 8px !important; }
+body[data-console-design="quiet"] .message-actions { gap: 6px; flex-wrap: wrap; margin-top: 14px; }
+body[data-console-design="quiet"] .message-actions button { min-height: 32px; padding: 6px 10px; border: 0; border-radius: 8px !important; background: transparent; color: var(--muted); font: 12px var(--font-ui); }
+body[data-console-design="quiet"] .message-actions button:hover { background: var(--surface-2); color: var(--text); }
+body[data-console-design="quiet"] .chat-shell > .composer-wrap { max-width: 840px; left: auto !important; right: auto !important; width: 100%; margin-inline: auto; transform: none; padding: 10px 0 max(16px, env(safe-area-inset-bottom)); background: var(--bg) !important; border: 0; }
+body[data-console-design="quiet"] #operator-focus-rail { padding: 8px 4px; border: 0; background: transparent; gap: 8px; }
+body[data-console-design="quiet"] .operator-focus-label { display: none; }
+body[data-console-design="quiet"] .operator-focus-state { color: var(--muted); font: 12px/1.5 var(--font-ui); font-weight: 400; }
+body[data-console-design="quiet"] .operator-focus-metric { background: transparent; border: 0; color: var(--muted); }
+body[data-console-design="quiet"] .composer { border: 0; padding: 0; background: transparent; }
+body[data-console-design="quiet"] .composer-input-shell { border: 1px solid var(--border) !important; border-radius: 24px !important; background: var(--surface) !important; padding: 14px; gap: 10px; box-shadow: 0 8px 32px #00000018 !important; }
+body[data-console-design="quiet"] .composer-input-shell:focus-within { border-color: var(--border-strong) !important; }
+body[data-console-design="quiet"] #prompt-input { min-height: 68px; padding: 8px 4px; background: transparent !important; color: var(--text); font: 16px/1.6 var(--font-ui); box-shadow: none; border: 0; }
+body[data-console-design="quiet"] #prompt-input::placeholder { color: var(--muted); opacity: 1; }
+body[data-console-design="quiet"] .composer-inline-actions button { border: 0; background: transparent; border-radius: 50% !important; min-width: 40px; min-height: 40px; }
+body[data-console-design="quiet"] .composer-send { min-width: 40px; min-height: 40px; border-radius: 50% !important; }
+body[data-console-design="quiet"] #ask-button { background: var(--text); color: var(--bg); border: 0; }
+body[data-console-design="quiet"] :is(.settings-panel, .switcher-panel, .system-panel, .topbar-menu, .status-action-panel, .operator-action-palette, .composer-upload-menu, .composer-toolbar-panels) { background: var(--surface) !important; border: 1px solid var(--border); border-radius: 16px !important; box-shadow: 0 20px 70px #0005 !important; }
+body[data-console-design="quiet"] :is(button, a, summary, textarea):focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+@media (max-width: 640px) {
+  body[data-console-design="quiet"] .topbar { min-height: 60px; padding: 10px 12px; }
+  body[data-console-design="quiet"] .topbar-actions { gap: 4px; }
+  body[data-console-design="quiet"] .topbar-actions > :is(button, a) { min-height: 40px; padding: 8px; font-size: 12px; }
+  body[data-console-design="quiet"] .chat-shell { padding-inline: 18px; }
+  body[data-console-design="quiet"] .chat-main { padding-top: 20px; }
+  body[data-console-design="quiet"] .conversation { gap: 22px; }
+  body[data-console-design="quiet"] .message.user { max-width: 92%; padding: 12px 16px; }
+  body[data-console-design="quiet"] .message .message-body { font-size: 16px; line-height: 1.7; }
+  body[data-console-design="quiet"] .message-meta { max-width: 130px; }
+  body[data-console-design="quiet"] .chat-shell > .composer-wrap { width: 100%; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  body[data-console-design="quiet"] .composer-input-shell { border-radius: 20px !important; padding: 10px; }
+  body[data-console-design="quiet"] #prompt-input { min-height: 52px; }
+  body[data-console-design="quiet"] .operator-focus-copy { min-width: 0; }
+  body[data-console-design="quiet"] .operator-focus-state { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 44vw; }
+  body[data-console-design="quiet"] .operator-focus-metrics { display: none; }
+  body[data-console-design="quiet"] .message-actions button { min-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body[data-console-design="quiet"] * { scroll-behavior: auto !important; }
+}
+
+body[data-console-design="quiet"] .composer-wrap::before { display: none; }
+body[data-console-design="quiet"] .message .inline-action { min-height: 34px; padding: 6px 10px; border: 0; border-radius: 8px !important; background: transparent; color: var(--muted); font: 12px var(--font-ui); }
+body[data-console-design="quiet"] .message .inline-action:hover { background: var(--surface-2); color: var(--text); }
+body[data-console-design="quiet"] .composer-send-cluster { flex: 0 0 40px; }
+body[data-console-design="quiet"] .composer-send-label { display: none !important; }
+body[data-console-design="quiet"] .composer-send::before { margin: 0; }
+body[data-console-design="quiet"] .composer-input-shell { grid-template-columns: auto minmax(0, 1fr) 40px; }
+/* Keep the input full-width, with tools below it rather than beside it. */
+body[data-console-design="quiet"] .composer-input-shell {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  grid-template-rows: auto auto;
+  align-items: end;
+  background: var(--surface) !important;
+}
+body[data-console-design="quiet"] #prompt-input {
+  grid-column: 1 / -1; grid-row: 1;
+  width: 100% !important; min-width: 0;
+  min-height: 54px !important; max-height: min(240px, 30dvh);
+  height: auto; padding: 6px !important;
+  border-radius: 0; background: transparent !important;
+}
+body[data-console-design="quiet"] .composer-inline-actions { grid-column: 1; grid-row: 2; justify-content: flex-start; }
+body[data-console-design="quiet"] .composer-send-cluster { grid-column: 2; grid-row: 2; display: flex !important; flex-direction: row !important; gap: 8px; align-items: center; }
+body[data-console-design="quiet"] .composer-send { width: 40px !important; height: 40px !important; min-width: 40px !important; padding: 0 !important; }
+body[data-console-design="quiet"] .topbar { background-color: var(--bg) !important; background-image: none !important; }
+body[data-console-design="quiet"] .brand { background: transparent !important; border: 0 !important; box-shadow: none !important; }
+body[data-console-design="quiet"] .brand::before { display: none; }
+body[data-console-design="quiet"] .message .message-body { background: transparent !important; }
+body[data-console-design="quiet"] .message-meta-wrap { gap: 5px; }
+body[data-console-design="quiet"] .message :is(.message-usage-chip, .message-cost-feedback-chip, .message-effort-chip, .message-estimate-chip) { font: 11px/1.4 var(--font-ui); padding: 4px 6px; }
+@media (max-width: 640px) {
+  body[data-console-design="quiet"] .message .inline-action { min-height: 40px; }
+  body[data-console-design="quiet"] .chat-main { padding-top: 32px; }
+}
+body[data-console-design="quiet"]:not(.console-details-open) .message :is(.message-usage-chip, .message-cost-feedback-chip, .message-estimate-chip, .message-route-chip) { display: none; }
+"""
+
+DEFAULT_UI_VERSION = "2026.09.30.1"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -799,6 +995,18 @@ CONTEXT_PREFLIGHT_ATTACHMENT_INLINE_CHARS = max(
         os.environ.get("NORMAN_CODEX_CONTEXT_PREFLIGHT_ATTACHMENT_INLINE_CHARS", "4000")
     ),
 )
+OPERATOR_PROMPT_INLINE_CHARS = max(
+    0,
+    int(os.environ.get("NORMAN_CODEX_OPERATOR_PROMPT_INLINE_CHARS", "6000")),
+)
+OPERATOR_PROMPT_HEAD_CHARS = max(
+    0,
+    int(os.environ.get("NORMAN_CODEX_OPERATOR_PROMPT_HEAD_CHARS", "4000")),
+)
+OPERATOR_PROMPT_TAIL_CHARS = max(
+    0,
+    int(os.environ.get("NORMAN_CODEX_OPERATOR_PROMPT_TAIL_CHARS", "1600")),
+)
 CONTEXT_PREFLIGHT_ATTACHMENT_HEAD_CHARS = max(
     200,
     int(os.environ.get("NORMAN_CODEX_CONTEXT_PREFLIGHT_ATTACHMENT_HEAD_CHARS", "1600")),
@@ -841,6 +1049,25 @@ USAGE_SPARKLINE_ITEMS = max(
 )
 KPI_INTERVAL_SECONDS = int(os.environ.get("NORMAN_CODEX_KPI_INTERVAL_SECONDS", "30"))
 KPI_WEDGE_SECONDS = int(os.environ.get("NORMAN_CODEX_KPI_WEDGE_SECONDS", "240"))
+KPI_DGX_ENABLED = os.environ.get(
+    "NORMAN_CODEX_KPI_DGX_ENABLED", "1"
+).strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+KPI_DGX_REFRESH_SECONDS = max(
+    60, int(os.environ.get("NORMAN_CODEX_KPI_DGX_REFRESH_SECONDS", "300"))
+)
+KPI_DGX_TIMEOUT_SECONDS = max(
+    5, min(30, int(os.environ.get("NORMAN_CODEX_KPI_DGX_TIMEOUT_SECONDS", "12")))
+)
+KPI_APP_PROBE_TIMEOUT_SECONDS = max(
+    1,
+    min(5, int(os.environ.get("NORMAN_CODEX_KPI_APP_PROBE_TIMEOUT_SECONDS", "2"))),
+)
+KPI_APP_PROBES_JSON = os.environ.get("NORMAN_CODEX_KPI_APP_PROBES", "").strip()
 RUNNING_NO_OUTPUT_SECONDS = int(
     os.environ.get("NORMAN_CODEX_RUNNING_NO_OUTPUT_SECONDS", str(15 * 60))
 )
@@ -901,6 +1128,9 @@ WEB_PROMPT_RATE_LIMIT_MAX_BACKOFF_SECONDS = max(
 WEB_PROMPT_AUTO_CONTINUE_PROMISES = os.environ.get(
     "NORMAN_CODEX_AUTO_CONTINUE_PROMISES", "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
+WEB_PROMPT_AUTO_CONTINUE_MAX_STEPS = max(
+    1, int(os.environ.get("NORMAN_CODEX_AUTO_CONTINUE_MAX_STEPS", "3"))
+)
 WEB_PROMPT_EMPTY_REPLY_MAX_RETRIES = max(
     0, int(os.environ.get("NORMAN_CODEX_EMPTY_REPLY_MAX_RETRIES", "1"))
 )
@@ -914,6 +1144,7 @@ AUTO_CONTINUE_ZERO_TOKEN_PROVIDER_MARKER = (
 )
 AUTO_CONTINUE_DEADLINE_MARKER = "[auto-continuation: deadline-checkpoint]"
 AUTO_CONTINUE_NEXT_ACTION_MARKER = "[auto-continuation: next-action-plan]"
+AUTO_CONTINUE_STEP_RE = re.compile(r"\[auto-continuation-step:(\d+)\]", re.I)
 DEADLINE_CHECKPOINT_POLICY = (
     os.environ.get("NORMAN_CODEX_DEADLINE_CHECKPOINT_POLICY", "auto").strip().lower()
 )
@@ -1472,7 +1703,7 @@ DEFAULT_LOCAL_LLM_MODELS = (DEFAULT_LOCAL_LLM_MODEL,)
 DEFAULT_LOCAL_LLM_BENCHMARK_MODELS = (DEFAULT_LOCAL_LLM_MODEL,)
 DEFAULT_LOCAL_LLM_CANARY_MODELS: tuple[str, ...] = ()
 DEFAULT_LOCAL_LLM_FALLBACK_MODELS: tuple[str, ...] = ()
-LOCAL_PLANNER_AUTOMATIC_MODEL = "qwen3-coder:30b-a3b-q4_K_M"
+LOCAL_PLANNER_AUTOMATIC_MODEL = DEFAULT_LOCAL_LLM_MODEL
 DEFAULT_LOCAL_LLM_LANE_MODELS = {
     "planner": (DEFAULT_LOCAL_LLM_MODEL,),
     "scout": (DEFAULT_LOCAL_LLM_MODEL,),
@@ -2948,6 +3179,8 @@ RESTART_HANDOFF_PATH = Path(
     )
 )
 KPI_PATH = STATE_DIR / "kpis.json"
+KPI_DGX_RANKING_PATH = STATE_DIR / "kpi_dgx_ranking.json"
+KPI_APP_HEALTH_PATH = STATE_DIR / "kpi_app_health.json"
 AUDIT_PATH = STATE_DIR / "audit.jsonl"
 AUDIT_LOCK = threading.RLock()
 DETERMINISTIC_ARCHIVE_QUEUE: queue.Queue[Callable[[], None]] = queue.Queue(
@@ -2969,6 +3202,19 @@ CONSOLE_RUNTIME_TOKEN_BREAKER_PATH = STATE_DIR / "console_runtime_token_breaker.
 DRAFT_ATTACHMENTS_PATH = STATE_DIR / "draft_attachments.json"
 RUNTIME_SETTINGS_PATH = STATE_DIR / "runtime_settings.json"
 ATTACHMENTS_DIR = STATE_DIR / "attachments"
+OPERATOR_PROMPTS_DIR = STATE_DIR / "operator-prompts"
+MEDIA_SOURCE_CATALOG: dict[str, tuple[dict[str, Any], ...]] = {
+    "artmonster": (
+        {
+            "id": "drops-art-public",
+            "label": "Drops.art public feed",
+            "index_url": "https://drops.art/",
+            "image_hosts": ("64.media.tumblr.com",),
+            "image_path_markers": ("/s1280x1920/",),
+            "trigger_terms": ("artbot", "drops.art", "drops art"),
+        },
+    ),
+}
 LOCAL_LLM_ROUTE_OUTCOME_PATH = Path(
     os.environ.get(
         "NORMAN_LOCAL_LLM_ROUTE_OUTCOME_PATH",
@@ -3544,6 +3790,10 @@ CONSOLE_RUNTIME_CAPABILITIES_LOCK = threading.Lock()
 CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LOCK = threading.Lock()
 WORKING_RECAP_LOCK = threading.Lock()
 KPI_LOCK = threading.RLock()
+KPI_DGX_LOCK = threading.Lock()
+KPI_DGX_RANKING_ACTIVE = False
+KPI_APP_LOCK = threading.Lock()
+KPI_APP_REFRESH_ACTIVE = False
 KPI_COLLECTOR_STARTED = False
 STATUS_SNAPSHOT_COLLECTOR_STARTED = False
 ACTIVE_PROMPT_THREAD: threading.Thread | None = None
@@ -5839,6 +6089,14 @@ def service_tier_config_args(value: Any) -> list[str]:
         if tier in {"bedrock-emergency", "bedrock-failover", "bedrock-failover-2"}
         else tier
     )
+    # Some ChatGPT Codex accounts reject Flex on the provider wire. Keep the
+    # subscription routing checks, but allow the supported normal wire tier.
+    if (
+        codex_tier == "flex"
+        and os.environ.get("NORMAN_CODEX_FLEX_EXECUTION_TIER", "flex").strip().lower()
+        == "default"
+    ):
+        codex_tier = "default"
     # A shared CODEX_HOME may default to Bedrock; direct tiers must override it.
     return [
         "-c",
@@ -5917,6 +6175,13 @@ def codex_model_for_service_tier(value: Any, model: Any = "") -> str:
     ):
         return codex_direct_model_name(CODEX_PRIORITY_MODEL)
     return codex_direct_model_name(normalized_model)
+
+
+def codex_subscription_model_name(model: Any = "") -> str:
+    direct_model = codex_direct_model_name(model)
+    if direct_model.lower().startswith("gpt-"):
+        return direct_model
+    return codex_direct_model_name(CODEX_FLEX_MODEL)
 
 
 def codex_thread_scope_key(value: Any, model: Any = "") -> str:
@@ -6983,7 +7248,7 @@ def build_turn_control_envelope(
         "blocked_actions": blocked_actions,
         "budget": {
             "max_wall_seconds": job_budget_timeout_seconds(job_budget),
-            "max_model_calls": 1,
+            "max_model_calls": 4,
             "max_retries": max_retries,
             "max_decisions": max_decisions,
         },
@@ -9738,6 +10003,9 @@ BBS_SUMMARY_URL = (
     .strip()
     .rstrip("/")
 )
+BBS_SUMMARY_FALLBACK_URL = (
+    (os.environ.get("NORMAN_CODEX_BBS_FALLBACK_URL") or "").strip().rstrip("/")
+)
 BBS_SUMMARY_ACTOR = (
     os.environ.get("NORMAN_CODEX_BBS_ACTOR")
     or os.environ.get("NORMAN_CODEX_BBS_ACTOR")
@@ -10419,6 +10687,23 @@ def build_relay_targets(
     return targets
 
 
+def browser_relay_targets(targets: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """Return relay metadata that is safe to embed in the console page."""
+    public_targets: list[dict[str, str]] = []
+    for target in targets:
+        parsed = urlparse(str(target.get("url") or ""))
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        query.pop("token", None)
+        public_targets.append(
+            {
+                "label": str(target.get("label") or ""),
+                "url": parsed._replace(query=urlencode(query, doseq=True)).geturl(),
+                "host": str(target.get("host") or parsed.netloc),
+            }
+        )
+    return public_targets
+
+
 def build_handoff_message(source_prompt: str, source_response: str) -> str:
     prompt = source_prompt.strip() or "[no original prompt recorded]"
     response = source_response.strip() or "[no assistant response recorded]"
@@ -10624,6 +10909,78 @@ def session_admission_allows_auto_rollover(decision: Any) -> bool:
         if str(reason).strip()
     }
     return bool(reasons) and reasons <= AUTO_SESSION_ROLLOVER_CHECKPOINT_REASONS
+
+
+def session_admission_requires_idle_fresh_rotation(decision: Any) -> bool:
+    """Rotate an old idle provider thread instead of rejecting a new operator turn.
+
+    Web history is durable outside the provider thread, so an idle thread that has
+    exceeded the age budget can be retired without erasing the visible console
+    conversation. Recent over-budget threads still use the compact-handoff path so
+    related work keeps the context it may need.
+    """
+    if not isinstance(decision, dict) or bool(decision.get("allowed")):
+        return False
+    reason_code = str(decision.get("reason_code") or "").strip()
+    if reason_code == "reauthorization_required":
+        return True
+    if reason_code != "checkpoint_required":
+        return False
+    usage = decision.get("usage") if isinstance(decision.get("usage"), dict) else {}
+    return _coerce_int(usage.get("age_seconds")) >= max(
+        1, int(SESSION_BUDGET_POLICY.max_age_seconds)
+    )
+
+
+def rotate_idle_provider_thread_for_operator_prompt(
+    decision: Any,
+    *,
+    prompt: str,
+    source: str,
+    actor_ip: str = "",
+) -> dict[str, Any]:
+    """Clear a stale idle resume pointer while preserving web history and audit."""
+    if normalize_queue_source(source, {}, prompt) != "operator":
+        return {}
+    if not session_admission_requires_idle_fresh_rotation(decision):
+        return {}
+    if prompt_runtime_alive():
+        return {}
+    with STATUS_LOCK:
+        meta = load_status_meta()
+        if meta.get("pending") or normalize_queue(meta.get("queued_prompts")):
+            return {}
+        prior_thread_id = read_text(THREAD_ID_PATH).strip()
+        if not prior_thread_id:
+            return {}
+        write_text(THREAD_ID_PATH, "")
+        write_text(THREAD_SCOPE_PATH, "")
+    usage = decision.get("usage") if isinstance(decision.get("usage"), dict) else {}
+    rotation = {
+        "schema": "norman.tui.idle-thread-rotation.v1",
+        "reason": "stale_idle_provider_thread",
+        "prior_thread_id": prior_thread_id,
+        "age_seconds": _coerce_int(usage.get("age_seconds")),
+        "total_tokens": _coerce_int(usage.get("total_tokens")),
+        "rotated_at": now_ts(),
+    }
+    append_audit_event(
+        event_type="session.idle-thread-rotated",
+        summary="Rotated a stale idle provider thread before admitting new work.",
+        detail=(
+            "The visible web history was preserved; the next operator prompt will "
+            "start in a fresh provider thread."
+        ),
+        severity="info",
+        actor_type="system",
+        actor_ip=actor_ip,
+        thread_id=prior_thread_id,
+        payload={
+            "rotation": rotation,
+            "prompt_preview": summarize_text(prompt, 240),
+        },
+    )
+    return rotation
 
 
 def auto_session_rollover_checkpoint_prompt(
@@ -11718,6 +12075,10 @@ def upsert_human_intervention(value: dict[str, Any]) -> dict[str, Any]:
     if conn is None:
         return item
     try:
+        # Serialize the read/modify/write sequence. Without this lock, a status
+        # collector that selected an open row just before an operator closed it
+        # could write its stale copy back as open a moment later.
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
             SELECT payload_json
@@ -13202,6 +13563,70 @@ def attachment_text_prompt_body(body: str) -> tuple[str, dict[str, Any]]:
     }
 
 
+def operator_prompt_context(prompt: str) -> tuple[str, dict[str, Any]]:
+    """Keep large operator requests authoritative without carrying all text to cloud."""
+
+    text = str(prompt or "").strip()
+    full_tokens = _estimated_text_tokens(text)
+    if len(text) <= OPERATOR_PROMPT_INLINE_CHARS:
+        return text, {
+            "mode": "inline",
+            "chars": len(text),
+            "full_tokens": full_tokens,
+            "rendered_tokens": full_tokens,
+            "saved_tokens": 0,
+            "path": "",
+        }
+
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
+    source_path = OPERATOR_PROMPTS_DIR / f"request-{digest}.txt"
+    try:
+        OPERATOR_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+        if not source_path.exists() or source_path.read_text(encoding="utf-8") != text:
+            source_path.write_text(text, encoding="utf-8")
+    except OSError:
+        # Preserve the request inline if the local source cannot be stored.
+        return text, {
+            "mode": "inline-storage-fallback",
+            "chars": len(text),
+            "full_tokens": full_tokens,
+            "rendered_tokens": full_tokens,
+            "saved_tokens": 0,
+            "path": "",
+        }
+
+    head = text[:OPERATOR_PROMPT_HEAD_CHARS].rstrip()
+    tail = (
+        text[-OPERATOR_PROMPT_TAIL_CHARS:].lstrip()
+        if OPERATOR_PROMPT_TAIL_CHARS
+        else ""
+    )
+    omitted = max(0, len(text) - len(head) - len(tail))
+    lines = [
+        "Operator request (authoritative source):",
+        f"- Full request path: {source_path}",
+        (
+            f"- Cloud preview contains {len(head) + len(tail):,} of {len(text):,} "
+            f"characters; {omitted:,} middle characters are omitted."
+        ),
+        "- Read the source file before relying on omitted details. Do not infer or invent them.",
+        "[operator request preview]",
+        head,
+    ]
+    if tail:
+        lines.extend(["[operator request preview tail]", tail])
+    rendered = "\n".join(line for line in lines if line)
+    rendered_tokens = _estimated_text_tokens(rendered)
+    return rendered, {
+        "mode": "path_backed_preview",
+        "chars": len(text),
+        "full_tokens": full_tokens,
+        "rendered_tokens": rendered_tokens,
+        "saved_tokens": max(0, full_tokens - rendered_tokens),
+        "path": str(source_path),
+    }
+
+
 def context_preflight_memory_rerank(value: Any) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
     return {
@@ -13305,6 +13730,7 @@ def local_planner_preflight_prompt(payload: dict[str, Any]) -> str:
         "runtime": payload.get("runtime"),
         "model": payload.get("model"),
         "prompt_estimated_tokens": payload.get("prompt_estimated_tokens"),
+        "inherited_context": payload.get("inherited_context") or {},
         "prompt_preview": summarize_text(
             str(payload.get("prompt_preview") or ""),
             LOCAL_PLANNER_PREFLIGHT_PROMPT_CHARS,
@@ -13315,7 +13741,11 @@ def local_planner_preflight_prompt(payload: dict[str, Any]) -> str:
     }
     return "\n".join(
         [
-            "You are Norman's local Norllama planner preflight.",
+            "You are Qwen 3.8, Norman's local Norllama planner preflight.",
+            "GPT-6 Astra (gpt-6-astra) is your only cloud escalation target. "
+            "Request it with cloud_needed=true and a specific cloud_escalation_reason when local evidence "
+            "is insufficient, verification fails, evidence conflicts, or required reasoning/tools exceed your capability. "
+            "Otherwise keep the task local. Include the task, evidence, attempts and unresolved issue in task_brief.",
             "Return compact JSON only. Do not include private chain-of-thought.",
             "You do not have shell, file, deployment, secret, or network authority.",
             (
@@ -13327,14 +13757,25 @@ def local_planner_preflight_prompt(payload: dict[str, Any]) -> str:
             (
                 "Use these keys: route, cloud_needed, safe_local_answer_possible, "
                 "next_local_steps, context_to_fetch, memory_ref_ids, confidence, "
-                "recall_status, "
+                "recall_status, task_brief, task_constraints, "
                 "cloud_escalation_reason, risk."
+            ),
+            (
+                "task_brief must be a factual, compact 1-4 sentence restatement "
+                "of the requested outcome and the next evidence/action. "
+                "task_constraints must be a short JSON array of explicit limits "
+                "or approvals from the request. Do not invent requirements."
             ),
             (
                 "When the supplied memory refs are useful, return memory_ref_ids as "
                 "an ordered JSON array of only their supplied turn ids. Return an "
                 "empty array when none are relevant. Set recall_status to complete, "
                 "partial, or not_needed. Confidence must be a number from 0 to 1."
+            ),
+            (
+                "Treat inherited_context as the actual cloud-session pressure, not "
+                "just the typed prompt size. When it is high, prefer a compact local "
+                "handoff before recommending cloud execution."
             ),
             json.dumps(compact_payload, sort_keys=True, ensure_ascii=True),
         ]
@@ -13437,6 +13878,19 @@ def local_planner_advice_summary(text: str) -> str:
             continue
         parts.append(f"{label}={local_planner_value_summary(value)}")
     return summarize_text("; ".join(parts) or clean, 700)
+
+
+def local_planner_task_brief(value: Any) -> tuple[str, list[str]]:
+    parsed = value if isinstance(value, dict) else parse_local_planner_json(str(value))
+    if not isinstance(parsed, dict):
+        return "", []
+    brief = summarize_text(str(parsed.get("task_brief") or ""), 700)
+    constraints = [
+        summarize_text(str(item or ""), 180)
+        for item in parsed.get("task_constraints") or []
+        if str(item or "").strip()
+    ][:6]
+    return brief, constraints
 
 
 LOCAL_ROUTE_INTENT_CLASSIFIER_SAFE_ACTIONS = {"status"}
@@ -15380,12 +15834,19 @@ def cloud_context_gate_accounting(
     specialist: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     estimated_tokens = _coerce_int(payload.get("prompt_estimated_tokens"))
+    inherited_context = (
+        payload.get("inherited_context")
+        if isinstance(payload.get("inherited_context"), dict)
+        else {}
+    )
+    inherited_tokens = _coerce_int(inherited_context.get("thread_tokens"))
+    effective_context_tokens = max(estimated_tokens, inherited_tokens)
     normalized_runtime = normalize_runtime(payload.get("runtime"))
     threshold = CLOUD_CONTEXT_GATE_TOKENS
     active = bool(
         threshold > 0
         and normalized_runtime != "localllm"
-        and estimated_tokens >= threshold
+        and effective_context_tokens >= threshold
     )
     reasons: list[str] = []
     local_preflight_used = bool(planner.get("used"))
@@ -15401,8 +15862,15 @@ def cloud_context_gate_accounting(
     )
     if active:
         reasons.append(
-            f"estimated prompt tokens {estimated_tokens:,} >= gate {threshold:,}"
+            f"effective context tokens {effective_context_tokens:,} >= gate {threshold:,}"
         )
+        if inherited_tokens > estimated_tokens:
+            reasons.append(
+                f"inherited thread ceiling {inherited_tokens:,} tokens dominates "
+                f"typed prompt estimate {estimated_tokens:,}"
+            )
+        if inherited_context.get("context_pack_applied"):
+            reasons.append("inherited thread was compacted before cloud handoff")
         if local_preflight_used:
             reasons.append("Norllama planner preflight ran")
         if local_specialist_used:
@@ -15424,6 +15892,8 @@ def cloud_context_gate_accounting(
         ),
         "threshold_tokens": threshold,
         "prompt_estimated_tokens": estimated_tokens,
+        "inherited_context_tokens": inherited_tokens,
+        "effective_context_tokens": effective_context_tokens,
         "reasons": reasons,
     }
 
@@ -15484,6 +15954,13 @@ def context_preflight_accounting_payload(
         "preflight_prompt_estimated_tokens": _coerce_int(
             payload.get("prompt_estimated_tokens")
         ),
+        "inherited_context": dict(
+            payload.get("inherited_context")
+            if isinstance(payload.get("inherited_context"), dict)
+            else {}
+        ),
+        "inherited_context_tokens": _coerce_int(gate.get("inherited_context_tokens")),
+        "effective_context_tokens": _coerce_int(gate.get("effective_context_tokens")),
         "attachment_saved_tokens": avoided_floor,
         "memory_ref_count": len(payload.get("memory_refs") or []),
         "memory_rerank_used": bool(rerank_payload.get("used")),
@@ -15586,6 +16063,15 @@ def usage_fields_from_context_preflight_accounting(
         "preflight_accounting_schema": str(accounting.get("schema") or "").strip(),
         "preflight_prompt_estimated_tokens": _coerce_int(
             accounting.get("preflight_prompt_estimated_tokens")
+        ),
+        "inherited_context": accounting.get("inherited_context")
+        if isinstance(accounting.get("inherited_context"), dict)
+        else {},
+        "inherited_context_tokens": _coerce_int(
+            accounting.get("inherited_context_tokens")
+        ),
+        "effective_context_tokens": _coerce_int(
+            accounting.get("effective_context_tokens")
         ),
         "attachment_saved_tokens": _coerce_int(
             accounting.get("attachment_saved_tokens")
@@ -15831,6 +16317,7 @@ def context_preflight_prompt_context(
     attachment_savings: list[dict[str, Any]] | None = None,
     runtime: str = "",
     model: str = "",
+    inherited_context: dict[str, Any] | None = None,
 ) -> str:
     if not CONTEXT_PREFLIGHT_ENABLED:
         return ""
@@ -15846,6 +16333,7 @@ def context_preflight_prompt_context(
     ]
     estimated_prompt_tokens = _estimated_text_tokens(prompt)
     saved_tokens = sum(_coerce_int(item.get("saved_tokens")) for item in savings_rows)
+    inherited = dict(inherited_context or {})
     preflight_payload = {
         "schema": "norman.tui.context-preflight-request.v1",
         "agent": AGENT_NAME,
@@ -15859,6 +16347,7 @@ def context_preflight_prompt_context(
         "memory_candidate_count": len(lexical_memory_candidates),
         "attachment_savings": savings_rows,
         "attachment_count": len(attachments or []),
+        "inherited_context": inherited,
     }
     should_run_offline = bool(CONTEXT_PREFLIGHT_OFFLINE_COMMAND) and (
         estimated_prompt_tokens >= 800
@@ -15967,6 +16456,17 @@ def context_preflight_prompt_context(
         "Context preflight:",
         "- Local planner is active. Preserve the operator's request; use compact references before reloading large prior context.",
     ]
+    inherited_tokens = _coerce_int(inherited.get("thread_tokens"))
+    if inherited_tokens:
+        pack_status = (
+            "was compacted before this handoff"
+            if inherited.get("context_pack_applied")
+            else "still needs compact handling"
+        )
+        lines.append(
+            "- Inherited cloud context: "
+            f"{_compact_token_label(inherited_tokens)} tokens; {pack_status}."
+        )
     if savings_rows:
         cost_range = _context_pack_cost_range(saved_tokens, model=normalized_model)
         cost_label = str(cost_range.get("label") or "").strip()
@@ -16041,6 +16541,20 @@ def context_preflight_prompt_context(
             f"({offline.get('status', 'not-used')})."
         )
     if planner.get("used"):
+        planner_brief, planner_constraints = local_planner_task_brief(
+            planner.get("parsed") or planner
+        )
+        if planner_brief:
+            lines.append(
+                "- Local task brief (advisory; the operator request and source file "
+                f"remain authoritative): {planner_brief}"
+            )
+        if planner_constraints:
+            lines.append(
+                "- Explicit constraints captured locally: "
+                + "; ".join(planner_constraints)
+                + "."
+            )
         lines.append(
             "- Norllama planner preflight: "
             + summarize_text(str(planner.get("summary") or ""), 700)
@@ -16140,8 +16654,9 @@ def context_preflight_prompt_context(
 
 
 PROMISED_FOLLOWUP_RE = re.compile(
-    r"\b(?:i(?:['\u2019]ll| will)|i(?:['\u2019]m| am) going to)\s+"
-    r"(?:(?:now|next|then|still)\s+)?"
+    r"\b(?:i(?:['\u2019]ll| will)|i(?:['\u2019]m| am) going to|"
+    r"(?:i|we) (?:need|have|must) to|(?:i|we) should|let me)\s+"
+    r"(?:(?:first|now|next|then|still)\s+)?"
     r"(?:run|check|dig|look|verify|test|inspect|patch|fix|deploy|research|trace|"
     r"investigate|write|create|update|make|pull|query|audit|review|try|finish|"
     r"collect|execute|identify|install|continue|start|resume|complete|sample|do|"
@@ -16183,6 +16698,8 @@ def response_needs_next_action_plan(response: str) -> bool:
 
 
 def response_promises_unfinished_work(response: str) -> bool:
+    if shared_response_promises_unfinished_work is not None:
+        return shared_response_promises_unfinished_work(response)
     clean = " ".join((response or "").split())
     if not clean:
         return False
@@ -16205,9 +16722,19 @@ def prompt_is_auto_continuation(prompt: str) -> bool:
     )
 
 
+def auto_continuation_step(prompt: str) -> int:
+    match = AUTO_CONTINUE_STEP_RE.search(str(prompt or ""))
+    return max(0, _coerce_int(match.group(1))) if match else 0
+
+
+def next_auto_continuation_step_marker(prompt: str) -> str:
+    return f"[auto-continuation-step:{auto_continuation_step(prompt) + 1}]"
+
+
 def build_promised_work_continuation_prompt(prompt: str, response: str) -> str:
     return (
         f"{AUTO_CONTINUE_PROMISE_MARKER}\n"
+        f"{next_auto_continuation_step_marker(prompt)}\n"
         "You ended the previous turn by promising follow-up work, but the TUI "
         "saw the turn finish without that work being completed.\n\n"
         f"Previous operator prompt:\n{summarize_text(prompt, 900)}\n\n"
@@ -16229,6 +16756,7 @@ def build_next_action_planning_prompt(
         clean_status = "checkpoint"
     return (
         f"{AUTO_CONTINUE_NEXT_ACTION_MARKER}\n"
+        f"{next_auto_continuation_step_marker(prompt)}\n"
         f"The previous assistant reply ended with {clean_status.upper()} rather than DONE. "
         "Run one bounded next-action planning pass.\n\n"
         f"Previous operator prompt:\n{summarize_text(prompt, 900)}\n\n"
@@ -16495,6 +17023,7 @@ def build_deadline_checkpoint_continuation_prompt(
     warning = summarize_text(warning_message, 500)
     lines = [
         AUTO_CONTINUE_DEADLINE_MARKER,
+        next_auto_continuation_step_marker(prompt),
         "Deadline-checkpoint continuation:",
         "- The previous turn was paused at a supported tool boundary because the selected time target or final warning was reached.",
         "- Continue the same operator task from the current repo/runtime state; do not restart broad setup.",
@@ -17008,6 +17537,10 @@ def build_attachment_origin_label(entry: dict[str, Any]) -> str:
         return "log tail"
     if source == "pane-capture":
         return "live pane capture"
+    if source == "drops-art-public":
+        return "public Drops.art image"
+    if source == "session-history":
+        return "image from this session"
     if source == "upload":
         if name:
             return f"uploaded {name}"
@@ -17221,6 +17754,171 @@ def capture_web_attachment(*, url: str, label: str = "") -> dict[str, Any]:
     raise ValueError(f"screenshot capture failed: {last_error}")
 
 
+def prompt_requests_latest_image(prompt: Any) -> bool:
+    text = prompt_core_request(str(prompt or "")).lower()
+    if not text:
+        return False
+    has_recency = bool(re.search(r"\b(?:latest|newest|recent)\b", text))
+    has_media = bool(
+        re.search(r"\b(?:image|images|picture|photo|art|artwork|capture)\b", text)
+    )
+    return has_recency and has_media
+
+
+def prompt_requests_session_media(prompt: Any) -> bool:
+    text = prompt_core_request(str(prompt or "")).lower()
+    if not text:
+        return False
+    has_media = bool(
+        re.search(
+            r"\b(?:image|images|picture|pictures|photo|photos|artwork|"
+            r"attachment|attachments|capture|captures)\b",
+            text,
+        )
+    )
+    has_session_reference = bool(
+        re.search(
+            r"\b(?:session|thread|history|chat|conversation|here|above|previous)\b",
+            text,
+        )
+    )
+    return has_media and has_session_reference
+
+
+def stage_session_media_attachments(
+    prompt: Any, *, maximum: int = 4
+) -> list[dict[str, Any]]:
+    """Restage recent image attachments so a follow-up can render them inline."""
+    if not prompt_requests_session_media(prompt):
+        return []
+    staged: list[dict[str, Any]] = []
+    seen_sources: set[str] = set()
+    for turn in reversed(load_history(limit=MAX_HISTORY_ITEMS)):
+        for attachment in reversed(normalize_attachments(turn.get("attachments"))):
+            if attachment.get("kind") != "image":
+                continue
+            path = Path(str(attachment.get("path") or ""))
+            source_key = str(attachment.get("url") or "").strip() or str(path)
+            if source_key in seen_sources:
+                continue
+            try:
+                if not path.is_file() or path.stat().st_size > MAX_ATTACHMENT_BYTES:
+                    continue
+                raw_bytes = path.read_bytes()
+            except OSError:
+                continue
+            try:
+                staged.append(
+                    create_draft_attachment(
+                        raw_bytes=raw_bytes,
+                        name=str(attachment.get("name") or path.name),
+                        content_type=str(attachment.get("content_type") or "image/*"),
+                        source="session-history",
+                        kind="image",
+                        url=str(attachment.get("url") or ""),
+                    )
+                )
+            except (OSError, ValueError):
+                continue
+            seen_sources.add(source_key)
+            if len(staged) >= max(1, int(maximum or 1)):
+                return staged
+    return staged
+
+
+def configured_media_sources_for_agent() -> tuple[dict[str, Any], ...]:
+    agent_slug = slugify_filename(AGENT_NAME).replace("_", "-").lower()
+    return MEDIA_SOURCE_CATALOG.get(agent_slug, ())
+
+
+def extract_source_image_url(page: str, source: dict[str, Any]) -> str:
+    allowed_hosts = {
+        str(host or "").strip().lower()
+        for host in source.get("image_hosts", ())
+        if str(host or "").strip()
+    }
+    path_markers = tuple(
+        str(marker or "").strip()
+        for marker in source.get("image_path_markers", ())
+        if str(marker or "").strip()
+    )
+    index_url = str(source.get("index_url") or "").strip()
+    for match in re.finditer(
+        r"""(?:src|data-src)\s*=\s*["']([^"']+)["']""",
+        html.unescape(str(page or "")),
+        re.IGNORECASE,
+    ):
+        candidate = urljoin(index_url, html.unescape(match.group(1)).strip())
+        parsed = urlparse(candidate)
+        if (
+            parsed.scheme in {"http", "https"}
+            and parsed.netloc.lower() in allowed_hosts
+            and re.search(r"\.(?:avif|gif|jpe?g|png|webp)(?:$|[?#])", parsed.path, re.I)
+            and (
+                not path_markers
+                or any(marker in parsed.path for marker in path_markers)
+            )
+        ):
+            return candidate
+    return ""
+
+
+def fetch_latest_source_attachment(prompt: Any) -> dict[str, Any] | None:
+    if not prompt_requests_latest_image(prompt):
+        return None
+    prompt_text = prompt_core_request(str(prompt or "")).lower()
+    for source in configured_media_sources_for_agent():
+        triggers = tuple(
+            str(term or "").strip().lower()
+            for term in source.get("trigger_terms", ())
+            if str(term or "").strip()
+        )
+        if triggers and not any(term in prompt_text for term in triggers):
+            continue
+        index_url = str(source.get("index_url") or "").strip()
+        if not index_url:
+            continue
+        try:
+            page_request = urllib_request.Request(
+                index_url,
+                headers={"User-Agent": "Norman-Artmonster/1.0"},
+            )
+            with urllib_request.urlopen(page_request, timeout=12) as response:
+                page = response.read(1_500_000).decode("utf-8", errors="replace")
+            image_url = extract_source_image_url(page, source)
+            if not image_url:
+                continue
+            image_request = urllib_request.Request(
+                image_url,
+                headers={"User-Agent": "Norman-Artmonster/1.0"},
+            )
+            with urllib_request.urlopen(image_request, timeout=18) as response:
+                content_type = (
+                    str(response.headers.get("Content-Type") or "")
+                    .split(";", 1)[0]
+                    .strip()
+                )
+                raw_bytes = response.read(MAX_ATTACHMENT_BYTES + 1)
+            if (
+                not content_type.startswith("image/")
+                or len(raw_bytes) > MAX_ATTACHMENT_BYTES
+            ):
+                continue
+            label = slugify_filename(str(source.get("label") or "latest-image"))
+            suffix = mimetypes.guess_extension(content_type) or ".img"
+            return create_draft_attachment(
+                raw_bytes=raw_bytes,
+                name=f"{label}{suffix}",
+                content_type=content_type,
+                source=str(source.get("id") or "media-source"),
+                kind="image",
+                url=image_url,
+            )
+        except (OSError, TimeoutError, urllib_error.URLError, ValueError):
+            continue
+    return None
+
+
 def remove_draft_attachment(token: str) -> list[dict[str, Any]]:
     clean = str(token or "").strip()
     if not clean:
@@ -17262,9 +17960,35 @@ def normalize_history_entry(payload: Any) -> dict[str, Any] | None:
     return entry
 
 
+LEGACY_TRANSCRIPT_DIAGNOSTIC_RE = re.compile(
+    r"prior bridge status|characters omitted from live transport|"
+    r"bridge opening the estate|this diagnostic reply has been superseded|"
+    r"this status used deterministic tui state",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def history_entry_is_transcript_artifact(entry: dict[str, Any]) -> bool:
+    """Keep transport/status internals out of the operator conversation."""
+    prompt = str(entry.get("prompt") or "").strip()
+    model = str(entry.get("model") or "").strip().lower()
+    text = "\n".join(
+        str(entry.get(field) or "").strip()
+        for field in ("prompt", "response", "result", "error")
+    )
+    return bool(
+        model == "deterministic-status"
+        or prompt_is_auto_continuation(prompt)
+        or LEGACY_TRANSCRIPT_DIAGNOSTIC_RE.search(text)
+    )
+
+
 def finalize_history_entries(
     entries: list[dict[str, Any]], *, limit: int = MAX_HISTORY_ITEMS
 ) -> list[dict[str, Any]]:
+    entries = [
+        entry for entry in entries if not history_entry_is_transcript_artifact(entry)
+    ]
     if limit and len(entries) > limit:
         entries = entries[-limit:]
     usage_entries = usage_entries_with_effective_deltas(
@@ -17282,6 +18006,7 @@ def load_history_from_state_db(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str,
     try:
         params: tuple[Any, ...] = ()
         if limit and limit > 0:
+            fetch_limit = max(int(limit) * 4, int(limit) + 24)
             rows = conn.execute(
                 """
                 SELECT payload_json
@@ -17293,7 +18018,7 @@ def load_history_from_state_db(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str,
                 )
                 ORDER BY COALESCE(finished_at, started_at, 0) ASC, id ASC
                 """,
-                (int(limit),),
+                (fetch_limit,),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -17433,6 +18158,10 @@ def append_history_entry(
     usage: dict[str, Any] | None = None,
     turn_envelope: dict[str, Any] | None = None,
 ) -> None:
+    if str(
+        model or ""
+    ).strip().lower() == "deterministic-status" or prompt_is_auto_continuation(prompt):
+        return
     entries = load_history(limit=0)
     clean_error_text = strip_codex_empty_last_message_warning(error_text)
     normalized_budget = normalize_job_budget(job_budget)
@@ -18048,7 +18777,9 @@ def _record_console_runtime_error(exc: BaseException) -> None:
     CONSOLE_RUNTIME_LAST_ERROR_AT = time.time()
 
 
-def console_runtime_job_visibility(job_id: str) -> dict[str, Any]:
+def console_runtime_job_visibility(
+    job_id: str, *, probe: bool = True
+) -> dict[str, Any]:
     clean_job_id = str(job_id or "").strip()
     if not clean_job_id or not console_runtime_bridge_enabled():
         return {
@@ -18058,6 +18789,15 @@ def console_runtime_job_visibility(job_id: str) -> dict[str, Any]:
             "error": "console runtime bridge disabled or missing job id",
         }
     receipt_url = f"/api/v1/console-runtime/jobs/{quote(clean_job_id, safe='')}"
+    if not probe:
+        # Submission is already durable locally. A remote receipt read must not
+        # delay its acknowledgement or imply that the remote job was verified.
+        return {
+            "state": "pending",
+            "job_id": clean_job_id,
+            "receipt_url": receipt_url,
+            "error": "",
+        }
     try:
         payload = _console_runtime_json_request(
             "GET",
@@ -19819,6 +20559,19 @@ def host_pressure_guard_snapshot(snapshot_at: int | None = None) -> dict[str, An
     guard["enabled"] = True
     guard["stale"] = stale
     guard["path"] = str(HOST_PRESSURE_GUARD_PATH)
+    expected_target = (
+        os.environ.get("NORMAN_CODEX_HOST_PRESSURE_GUARD_TARGET", socket.gethostname())
+        .strip()
+        .lower()
+        .split(".")[0]
+    )
+    actual_target = str(payload.get("target") or "").strip().lower().split(".")[0]
+    guard["applies_to_this_host"] = bool(
+        actual_target and actual_target == expected_target
+    )
+    if not guard["applies_to_this_host"]:
+        guard["enabled"] = False
+        guard["advisory_reason"] = "Pressure observation belongs to a different host."
     return guard
 
 
@@ -20244,7 +20997,6 @@ def bbs_request_json(
     payload: dict[str, Any] | None = None,
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    url = f"{BBS_SUMMARY_URL.rstrip('/')}/{path.lstrip('/')}"
     data = None
     headers = {
         "Accept": "application/json",
@@ -20253,17 +21005,33 @@ def bbs_request_json(
     if payload is not None:
         data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    req = urllib_request.Request(
-        url,
-        data=data,
-        headers=headers,
-        method=method.upper(),
-    )
     timeout = (
         BBS_SUMMARY_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     )
-    with urllib_request.urlopen(req, timeout=timeout) as response:
-        raw = response.read().decode("utf-8", errors="replace")
+    bases = [BBS_SUMMARY_URL]
+    if BBS_SUMMARY_FALLBACK_URL and BBS_SUMMARY_FALLBACK_URL not in bases:
+        bases.append(BBS_SUMMARY_FALLBACK_URL)
+    last_error: Exception | None = None
+    raw = ""
+    for base in bases:
+        url = f"{base.rstrip('/')}/{path.lstrip('/')}"
+        req = urllib_request.Request(
+            url,
+            data=data,
+            headers=headers,
+            method=method.upper(),
+        )
+        try:
+            with urllib_request.urlopen(req, timeout=timeout) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+            break
+        except urllib_error.HTTPError:
+            raise
+        except (urllib_error.URLError, OSError, TimeoutError) as exc:
+            last_error = exc
+    else:
+        if last_error is not None:
+            raise last_error
     payload = json.loads(raw or "{}")
     return payload if isinstance(payload, dict) else {}
 
@@ -24138,9 +24906,15 @@ def prompt_is_generic_followup_action(prompt: Any) -> bool:
 
 
 def followup_source_turn(prompt: Any) -> dict[str, str]:
-    """Return the latest concrete turn when a reply shortcut has no session context."""
-    if not prompt_is_generic_followup_action(prompt):
-        return {}
+    """Carry the matching compact handoff into a fresh operator session."""
+    clean = str(prompt or "").strip()
+    generic = prompt_is_generic_followup_action(clean) or bool(
+        re.fullmatch(
+            r"(?:yes[,!]?\s*)?(?:please\s+)?(?:fix it|do it|proceed|continue|go ahead|make it so)(?:\s+please)?[.!]*|yes(?:\s+please)?[.!]*",
+            clean,
+            re.IGNORECASE,
+        )
+    )
     try:
         entries = load_history(limit=8)
     except Exception:
@@ -24149,12 +24923,23 @@ def followup_source_turn(prompt: Any) -> dict[str, str]:
         if not isinstance(entry, dict):
             continue
         prior_prompt = str(entry.get("prompt") or "").strip()
-        if not prior_prompt or prompt_is_generic_followup_action(prior_prompt):
+        response = str(entry.get("response") or "").strip()
+        if not prior_prompt or entry.get("error") or not response:
             continue
-        return {
-            "prompt": summarize_text(prior_prompt, 1200),
-            "response": summarize_text(str(entry.get("response") or ""), 1400),
-        }
+        if prior_prompt.startswith("/compact"):
+            pending = re.search(
+                r"<pending-operator-request>\s*(.*?)\s*</pending-operator-request>",
+                prior_prompt,
+                re.DOTALL,
+            )
+            if (pending and pending.group(1).strip() == clean) or generic:
+                return {"prompt": clean, "response": response[:16000]}
+            return {}
+        if not generic:
+            return {}
+        if prompt_is_generic_followup_action(prior_prompt):
+            continue
+        return {"prompt": prior_prompt[:8000], "response": response[:16000]}
     return {}
 
 
@@ -24172,6 +24957,8 @@ def build_followup_execution_prompt(prompt: str) -> str:
     parts = [
         "This is a continuation action from the Norman TUI.",
         "Continue the concrete operator request below; do not discuss this wrapper.",
+        "Preserve the active task and existing operator authorization. Background alerts do not replace it.",
+        "The prior result is context; compaction-only tool restrictions ended with the compacting turn.",
         "Prior operator request:",
         prior_prompt,
     ]
@@ -27563,6 +28350,571 @@ def bedrock_health_snapshot(
     }
 
 
+KPI_PROFILE_FOCUS = {
+    "operations": "service health, blocked work, queue pressure, and stale handoffs",
+    "research": "accepted research, blocked searches, queue age, and fresh results",
+    "media": "active media work, queue pressure, failures, and output freshness",
+    "delivery": "release readiness, validation failures, blocked work, and freshness",
+    "executive": "current health, material exceptions, freshness, and decision backlog",
+    "general": "current health, queue pressure, completion rate, and local processing",
+}
+KPI_PROFILE_INSTANCES = {
+    "operations": {
+        "cloudagent",
+        "control-plane",
+        "diamond-roc",
+        "infra",
+        "networking",
+        "norman",
+        "uplink",
+        "uscache",
+        "usbhome",
+    },
+    "research": {
+        "earlybird",
+        "eyebat",
+        "glimpser",
+        "market-sizing",
+        "scout",
+        "theseus",
+    },
+    "media": {"artmonster", "autocamera", "dj", "studio", "tv"},
+    "delivery": {
+        "castle",
+        "compere",
+        "gold-book",
+        "mls",
+        "panelbot",
+        "platinum-standard",
+        "publisher",
+        "tmi-dashboards",
+    },
+    "executive": {"housebot", "leadership-kpis", "parkergale", "phone-ops"},
+}
+
+
+def kpi_profile_name() -> str:
+    slug = str(AGENT_SLUG or SESSION or "").strip().lower()
+    for profile, instances in KPI_PROFILE_INSTANCES.items():
+        if slug in instances:
+            return profile
+    return "general"
+
+
+def _kpi_meter(
+    meter_id: str,
+    label: str,
+    value: Any,
+    *,
+    tone: str = "ok",
+    detail: str = "",
+    source: str = "local status",
+    updated_at: int = 0,
+) -> dict[str, Any]:
+    return {
+        "id": meter_id,
+        "label": label,
+        "value": value,
+        "tone": tone,
+        "detail": detail,
+        "source": source,
+        "updated_at": updated_at or now_ts(),
+        "stale_after_seconds": max(90, KPI_DGX_REFRESH_SECONDS * 2),
+    }
+
+
+def configured_kpi_app_probes() -> list[dict[str, Any]]:
+    """Return bounded, operator-configured probes plus this TUI's own app route."""
+
+    query = "?" + urlencode({"token": TOKEN}) if TOKEN else ""
+    probes: list[dict[str, Any]] = [
+        {
+            "id": "engine",
+            "label": "engine",
+            "url": f"http://127.0.0.1:{PORT}/health{query}",
+            "required": True,
+            "expect_health": True,
+            "allow_auth_denied": False,
+        }
+    ]
+    scheme, authority = canonical_origin_components()
+    if authority:
+        probes.append(
+            {
+                "id": "route",
+                "label": "route",
+                "url": f"{scheme}://{authority}/health",
+                "required": True,
+                "expect_health": False,
+                "allow_auth_denied": True,
+            }
+        )
+    try:
+        configured = json.loads(KPI_APP_PROBES_JSON) if KPI_APP_PROBES_JSON else []
+    except json.JSONDecodeError:
+        configured = []
+    if not isinstance(configured, list):
+        configured = []
+    for index, raw in enumerate(configured[:4]):
+        item = {"url": raw} if isinstance(raw, str) else raw
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        label = re.sub(r"[^a-zA-Z0-9 ._-]+", "", str(item.get("label") or "app"))
+        probes.append(
+            {
+                "id": f"attached-{index + 1}",
+                "label": (label.strip() or "app")[:40],
+                "url": url,
+                "required": item.get("required") is not False,
+                "expect_health": item.get("expect_health") is not False,
+                "allow_auth_denied": bool(item.get("allow_auth_denied")),
+            }
+        )
+    return probes[:6]
+
+
+def _request_kpi_app_component(
+    target: dict[str, Any],
+) -> tuple[bool, str, int]:
+    url = str(target.get("url") or "")
+    try:
+        request = urllib_request.Request(
+            url,
+            headers={"Accept": "application/json", "User-Agent": "norman-kpi/1.0"},
+        )
+        kwargs: dict[str, Any] = {"timeout": KPI_APP_PROBE_TIMEOUT_SECONDS}
+        if url.startswith("https://"):
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            kwargs["context"] = context
+        with urllib_request.urlopen(request, **kwargs) as response:
+            http_status = int(response.getcode() or 0)
+            body = response.read(65536).decode("utf-8", "replace")
+        ok = 200 <= http_status < 400
+        status = f"http-{http_status}"
+        if ok and target.get("expect_health"):
+            try:
+                payload = json.loads(body or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            health_status = str(payload.get("status") or "").strip().lower()
+            ok = health_status in {"ok", "healthy", "ready"}
+            status = health_status or "invalid-health"
+        return ok, status, http_status
+    except urllib_error.HTTPError as exc:
+        http_status = int(exc.code or 0)
+        ok = bool(target.get("allow_auth_denied")) and http_status in {401, 403}
+        status = "reachable-auth" if ok else f"http-{http_status}"
+        return ok, status, http_status
+    except Exception:
+        return False, "unreachable", 0
+
+
+def _probe_kpi_app_component(target: dict[str, Any]) -> dict[str, Any]:
+    started = time.monotonic()
+    ok = False
+    status = "unreachable"
+    http_status = 0
+    for _attempt in range(2):
+        ok, status, http_status = _request_kpi_app_component(target)
+        if status != "unreachable":
+            break
+    return {
+        "id": str(target.get("id") or "app"),
+        "label": str(target.get("label") or "app"),
+        "required": target.get("required") is not False,
+        "ok": ok,
+        "status": status,
+        "http_status": http_status,
+        "latency_ms": max(0, int((time.monotonic() - started) * 1000)),
+    }
+
+
+def refresh_kpi_app_health() -> dict[str, Any]:
+    """Refresh this TUI's web-app checks without invoking a model provider."""
+
+    result = {
+        "schema": "norman.tui.app-health.v1",
+        "checked_at": now_ts(),
+        "components": [
+            _probe_kpi_app_component(target) for target in configured_kpi_app_probes()
+        ],
+        "read_only": True,
+        "cloud_fallback": False,
+    }
+    write_json(KPI_APP_HEALTH_PATH, result)
+    return result
+
+
+def _kpi_app_health_worker() -> None:
+    global KPI_APP_REFRESH_ACTIVE
+    try:
+        refresh_kpi_app_health()
+    finally:
+        with KPI_APP_LOCK:
+            KPI_APP_REFRESH_ACTIVE = False
+
+
+def maybe_schedule_kpi_app_health() -> bool:
+    global KPI_APP_REFRESH_ACTIVE
+    health = read_json(KPI_APP_HEALTH_PATH, {})
+    checked_at = (
+        _coerce_int(health.get("checked_at")) if isinstance(health, dict) else 0
+    )
+    components = health.get("components", []) if isinstance(health, dict) else []
+    healthy = bool(components) and all(
+        not isinstance(item, dict)
+        or not bool(item.get("required", True))
+        or bool(item.get("ok"))
+        for item in components
+    )
+    refresh_seconds = (
+        KPI_DGX_REFRESH_SECONDS if healthy else max(15, min(60, KPI_INTERVAL_SECONDS))
+    )
+    if now_ts() - checked_at < refresh_seconds:
+        return False
+    with KPI_APP_LOCK:
+        if KPI_APP_REFRESH_ACTIVE:
+            return False
+        KPI_APP_REFRESH_ACTIVE = True
+    threading.Thread(
+        target=_kpi_app_health_worker,
+        daemon=True,
+        name="tui-kpi-app-health",
+    ).start()
+    return True
+
+
+def app_health_kpi_meters() -> list[dict[str, Any]]:
+    health = read_json(KPI_APP_HEALTH_PATH, {})
+    if not isinstance(health, dict):
+        return []
+    checked_at = _coerce_int(health.get("checked_at"))
+    components = [
+        item for item in health.get("components") or [] if isinstance(item, dict)
+    ]
+    if checked_at <= 0 or not components:
+        return []
+    required = [item for item in components if item.get("required") is not False]
+    failed_required = [item for item in required if not item.get("ok")]
+    failed_optional = [
+        item
+        for item in components
+        if item.get("required") is False and not item.get("ok")
+    ]
+    up = sum(bool(item.get("ok")) for item in components)
+    max_latency = max(_coerce_int(item.get("latency_ms")) for item in components)
+    failed_labels = [str(item.get("label") or "component") for item in failed_required]
+    tone = "alert" if failed_required else "warn" if failed_optional else "ok"
+    detail = (
+        "Web app engine and front-door route are reachable."
+        if not failed_required and not failed_optional
+        else "Unavailable: "
+        + ", ".join(
+            failed_labels
+            + [str(item.get("label") or "component") for item in failed_optional]
+        )
+    )
+    stale_after = max(90, KPI_DGX_REFRESH_SECONDS * 2)
+    return [
+        {
+            **_kpi_meter(
+                "app-health",
+                "Web app",
+                f"{up}/{len(components)} up",
+                tone=tone,
+                detail=detail,
+                source="local app probes",
+                updated_at=checked_at,
+            ),
+            "stale_after_seconds": stale_after,
+        },
+        {
+            **_kpi_meter(
+                "app-latency",
+                "App latency",
+                f"{max_latency}ms",
+                tone="warn" if max_latency >= 1000 else "ok",
+                detail="Slowest response among the app engine, route, and configured attachments.",
+                source="local app probes",
+                updated_at=checked_at,
+            ),
+            "stale_after_seconds": stale_after,
+        },
+    ]
+
+
+def build_local_kpi_candidates(
+    snapshot: dict[str, Any], metrics: dict[str, Any], *, observed_at: int
+) -> list[dict[str, Any]]:
+    """Build bounded, read-only KPI facts before the DGX ranking pass."""
+
+    resource = (
+        snapshot.get("resource_meter")
+        if isinstance(snapshot.get("resource_meter"), dict)
+        else {}
+    )
+    candidates = app_health_kpi_meters()
+    candidates.extend(normalize_kpi_meters(resource.get("kpi_meters"), limit=4))
+    services = [
+        item for item in snapshot.get("services") or [] if isinstance(item, dict)
+    ]
+    required = [item for item in services if item.get("required") is not False]
+    unhealthy = [
+        item
+        for item in required
+        if str(item.get("state") or "").strip().lower() != "active"
+    ]
+    queue_depth = max(0, _coerce_int(metrics.get("queue_depth")))
+    turns = max(0, _coerce_int(metrics.get("turns")))
+    successes = max(0, _coerce_int(metrics.get("successful_turns")))
+    success_rate = round((successes / turns) * 100) if turns else 100
+    local_rate = max(
+        0.0, min(100.0, _coerce_float(metrics.get("route_local_turn_rate_24h")))
+    )
+    avoided = max(0, _coerce_int(metrics.get("route_cloud_tokens_avoided_24h")))
+    bbs = snapshot.get("bbs") if isinstance(snapshot.get("bbs"), dict) else {}
+    bbs_counts = bbs.get("counts") if isinstance(bbs.get("counts"), dict) else {}
+    bbs_attention = sum(
+        max(0, _coerce_int(bbs_counts.get(key)))
+        for key in ("actionable_urgent", "actionable_high", "needs_ack")
+    )
+    generic = [
+        _kpi_meter(
+            "health",
+            "Health",
+            "Watch" if unhealthy else "Good",
+            tone="warn" if unhealthy else "ok",
+            detail=(
+                f"{len(unhealthy)} of {len(required)} required services need attention."
+                if unhealthy
+                else f"{len(required)} required services are active."
+            ),
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "queue",
+            "Queue",
+            queue_depth,
+            tone="warn" if queue_depth else "ok",
+            detail="Operator prompts waiting in this TUI.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "success",
+            "Success",
+            f"{success_rate}%",
+            tone="warn" if turns and success_rate < 90 else "ok",
+            detail=f"{successes} successful turns out of {turns} recorded turns.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "turn-time",
+            "Turn time",
+            format_duration_label(max(0, _coerce_int(metrics.get("avg_turn_seconds")))),
+            tone="warn" if _coerce_int(metrics.get("avg_turn_seconds")) > 900 else "ok",
+            detail="Average completed turn duration from the local usage ledger.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "local-share",
+            "DGX/local",
+            f"{round(local_rate)}%",
+            tone="ok" if local_rate >= 60 else "warn" if turns else "ok",
+            detail="Share of recent turns handled by local or local-assisted routes.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "tokens-avoided",
+            "Tokens saved",
+            avoided,
+            detail="Estimated cloud tokens avoided during the last 24 hours.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "bbs-attention",
+            "BBS",
+            bbs_attention,
+            tone="warn" if bbs_attention else "ok",
+            detail="Urgent, high-priority, or acknowledgement-needed BBS items visible here.",
+            updated_at=observed_at,
+        ),
+    ]
+    seen = {str(item.get("id") or "") for item in candidates}
+    candidates.extend(item for item in generic if item["id"] not in seen)
+    return candidates[:10]
+
+
+def load_kpi_dgx_ranking() -> dict[str, Any]:
+    payload = read_json(KPI_DGX_RANKING_PATH, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _kpi_ranking_ids(response_text: Any, allowed: set[str]) -> list[str]:
+    text = re.sub(r"(?is)<think>.*?</think>", "", str(response_text or "")).strip()
+    match = re.search(r"\[[\s\S]*?\]", text)
+    if not match:
+        return []
+    try:
+        values = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+    selected: list[str] = []
+    for value in values if isinstance(values, list) else []:
+        meter_id = str(value or "").strip()
+        if meter_id in allowed and meter_id not in selected:
+            selected.append(meter_id)
+    return selected[:4]
+
+
+def top_kpi_meters(
+    candidates: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    ranking = load_kpi_dgx_ranking()
+    allowed = {str(item.get("id") or "") for item in candidates}
+    selected_ids = [
+        str(value)
+        for value in ranking.get("selected_ids") or []
+        if str(value) in allowed
+    ]
+    by_id = {str(item.get("id") or ""): item for item in candidates}
+    ordered = [by_id["app-health"]] if "app-health" in by_id else []
+    ordered.extend(
+        by_id[meter_id]
+        for meter_id in selected_ids
+        if meter_id in by_id and by_id[meter_id] not in ordered
+    )
+    ordered.extend(item for item in candidates if item not in ordered)
+    processor = {
+        "mode": "local-dgx",
+        "status": str(ranking.get("status") or "warming"),
+        "model": str(ranking.get("model") or LOCAL_PLANNER_AUTOMATIC_MODEL),
+        "ranked_at": _coerce_int(ranking.get("ranked_at")),
+        "cloud_fallback": False,
+    }
+    return ordered[:4], processor
+
+
+def _kpi_dgx_ranking_worker(candidates: list[dict[str, Any]], profile: str) -> None:
+    global KPI_DGX_RANKING_ACTIVE
+    ranked_at = now_ts()
+    result = {
+        "schema": "norman.tui.kpi-dgx-ranking.v1",
+        "ranked_at": ranked_at,
+        "status": "unavailable",
+        "model": LOCAL_PLANNER_AUTOMATIC_MODEL,
+        "selected_ids": [],
+        "cloud_fallback": False,
+    }
+    try:
+        refresh_kpi_app_health()
+        fresh_app = app_health_kpi_meters()
+        fresh_ids = {str(item.get("id") or "") for item in fresh_app}
+        candidates = fresh_app + [
+            item for item in candidates if str(item.get("id") or "") not in fresh_ids
+        ]
+        automatic_models = globals().get("local_automatic_text_models")
+        model = (
+            (automatic_models() or [""])[0] if callable(automatic_models) else ""
+        ) or str(globals().get("WORKING_RECAP_LOCAL_MODEL") or "")
+        endpoint_resolver = globals().get("local_llm_candidate_endpoints")
+        endpoints = (
+            endpoint_resolver(model, foreground=False)
+            if model and callable(endpoint_resolver)
+            else list(globals().get("WORKING_RECAP_LOCAL_ENDPOINTS") or [])
+        )
+        prompt = json.dumps(
+            {
+                "task": "Select the four most useful KPI ids for an operator's compact TUI bar. Return only a JSON array of ids, most important first.",
+                "console": AGENT_SLUG,
+                "profile": profile,
+                "focus": KPI_PROFILE_FOCUS.get(profile, KPI_PROFILE_FOCUS["general"]),
+                "candidates": [
+                    {
+                        key: item.get(key)
+                        for key in ("id", "label", "value", "tone", "detail")
+                    }
+                    for item in candidates
+                ],
+                "constraints": {"count": 4, "read_only": True, "cloud_fallback": False},
+            },
+            separators=(",", ":"),
+        )
+        allowed = {str(item.get("id") or "") for item in candidates}
+        for endpoint in endpoints:
+            try:
+                local_generate = globals().get("local_llm_generate_once")
+                if callable(local_generate):
+                    payload, _, _ = local_generate(
+                        endpoint,
+                        model,
+                        prompt,
+                        timeout_seconds=KPI_DGX_TIMEOUT_SECONDS,
+                        max_output_tokens=96,
+                        num_ctx=4096,
+                        work_class="background",
+                        work_source="tui-kpi-ranker",
+                    )
+                else:
+                    recap_generate = globals().get("working_recap_local_generate")
+                    if not callable(recap_generate):
+                        continue
+                    payload = recap_generate(
+                        endpoint,
+                        model,
+                        prompt,
+                        timeout_seconds=KPI_DGX_TIMEOUT_SECONDS,
+                        max_output_tokens=96,
+                        source="tui-kpi-ranker",
+                    )
+            except Exception:
+                continue
+            response_reader = globals().get("local_llm_response_text")
+            if not callable(response_reader):
+                response_reader = globals().get("working_recap_local_response_text")
+            response_text = (
+                response_reader(payload) if callable(response_reader) else ""
+            )
+            selected_ids = _kpi_ranking_ids(response_text, allowed)
+            if selected_ids:
+                result.update(status="ranked", model=model, selected_ids=selected_ids)
+                break
+        write_json(KPI_DGX_RANKING_PATH, result)
+    finally:
+        with KPI_DGX_LOCK:
+            KPI_DGX_RANKING_ACTIVE = False
+
+
+def maybe_schedule_kpi_dgx_ranking(snapshot: dict[str, Any]) -> bool:
+    global KPI_DGX_RANKING_ACTIVE
+    if not KPI_DGX_ENABLED:
+        return False
+    kpis = snapshot.get("kpis") if isinstance(snapshot.get("kpis"), dict) else {}
+    candidates = [
+        item for item in kpis.get("ranking_candidates") or [] if isinstance(item, dict)
+    ]
+    if not candidates:
+        return False
+    previous = load_kpi_dgx_ranking()
+    if now_ts() - _coerce_int(previous.get("ranked_at")) < KPI_DGX_REFRESH_SECONDS:
+        return False
+    with KPI_DGX_LOCK:
+        if KPI_DGX_RANKING_ACTIVE:
+            return False
+        KPI_DGX_RANKING_ACTIVE = True
+    threading.Thread(
+        target=_kpi_dgx_ranking_worker,
+        args=(candidates, kpi_profile_name()),
+        daemon=True,
+        name="tui-kpi-dgx-ranker",
+    ).start()
+    return True
+
+
 def default_kpi_snapshot() -> dict[str, Any]:
     return {
         "schema": "norman.tui.kpis.v1",
@@ -27581,6 +28933,15 @@ def default_kpi_snapshot() -> dict[str, Any]:
         "last_pane_hash": "",
         "state_entered_at": 0,
         "signals": [],
+        "profile": kpi_profile_name(),
+        "top_meters": [],
+        "ranking_candidates": [],
+        "processor": {
+            "mode": "local-dgx",
+            "status": "warming",
+            "model": LOCAL_PLANNER_AUTOMATIC_MODEL,
+            "cloud_fallback": False,
+        },
         "sentinel": {
             "schema": "norman.tui.sentinel.v1",
             "mode": SENTINEL_MODE,
@@ -28166,8 +29527,26 @@ def build_sentinel_state(
         or _coerce_int(snapshot.get("active_child_pid")) > 0
     )
     oldest_queue_age = _sentinel_oldest_queue_age(snapshot, observed_at)
-    human_ask_count = _coerce_int(snapshot.get("human_intervention_ask_now_count"))
-    human_count = _coerce_int(snapshot.get("human_intervention_count"))
+    human_items = snapshot.get("human_interventions")
+    if isinstance(human_items, list):
+        # Sentinel alerts report underlying problems; they must not become an
+        # input to Sentinel itself. Counting them here creates a self-sustaining
+        # waiting_operator loop after the original problem has recovered.
+        underlying_human_items = [
+            item
+            for item in human_items
+            if isinstance(item, dict)
+            and not str(item.get("kind") or "").startswith("sentinel_")
+        ]
+        human_count = len(underlying_human_items)
+        human_ask_count = sum(
+            1
+            for item in underlying_human_items
+            if str(item.get("severity") or "") == "ask_now"
+        )
+    else:
+        human_ask_count = _coerce_int(snapshot.get("human_intervention_ask_now_count"))
+        human_count = _coerce_int(snapshot.get("human_intervention_count"))
     urgent_bbs = (
         _sentinel_bbs_count(snapshot, "urgent")
         + _sentinel_bbs_count(snapshot, "high")
@@ -28400,24 +29779,44 @@ def maybe_raise_sentinel_intervention(
 ) -> dict[str, Any] | None:
     if SENTINEL_MODE == "off" or not isinstance(sentinel, dict):
         return None
-    if str(sentinel.get("severity") or "") != "ask_now":
-        return None
     reason_codes = [
         str(item)
         for item in sentinel.get("reason_codes", [])
         if str(item or "").strip()
     ]
-    if "open_intervention" in reason_codes:
-        return None
     state = str(sentinel.get("state") or "sentinel_attention").strip()
-    fingerprint = ":".join(
-        [
-            "sentinel",
-            str(AGENT_NAME or SESSION),
-            state,
-            ",".join(sorted(reason_codes)),
-        ]
+    should_raise = (
+        str(sentinel.get("severity") or "") == "ask_now"
+        and "open_intervention" not in reason_codes
     )
+    fingerprint = (
+        ":".join(
+            [
+                "sentinel",
+                str(AGENT_NAME or SESSION),
+                state,
+                ",".join(sorted(reason_codes)),
+            ]
+        )
+        if should_raise
+        else ""
+    )
+    changed: dict[str, Any] | None = None
+    for item in load_human_interventions():
+        if not str(item.get("kind") or "").startswith("sentinel_"):
+            continue
+        if fingerprint and str(item.get("fingerprint") or "") == fingerprint:
+            continue
+        try:
+            changed = update_human_intervention_status(
+                str(item.get("id") or item.get("fingerprint") or ""),
+                "not_actionable",
+                note="Sentinel condition cleared or changed.",
+            )
+        except (RuntimeError, ValueError):
+            continue
+    if not should_raise:
+        return changed
     return upsert_human_intervention(
         {
             "kind": f"sentinel_{state}",
@@ -28597,6 +29996,12 @@ def build_kpi_snapshot(
         "signals": signals,
         "metrics": metrics,
     }
+    candidates = build_local_kpi_candidates(snapshot, metrics, observed_at=now)
+    top_meters, processor = top_kpi_meters(candidates)
+    payload["profile"] = kpi_profile_name()
+    payload["top_meters"] = top_meters
+    payload["ranking_candidates"] = candidates
+    payload["processor"] = processor
     payload["sentinel"] = build_sentinel_state(snapshot, payload)
     return payload
 
@@ -29897,6 +31302,20 @@ def live_turn_with_event(
     return normalize_live_turn(live)
 
 
+def record_live_turn_phase(phase: str) -> None:
+    if phase not in {"checking_runtime", "preparing_context", "waiting_model"}:
+        return
+    with STATUS_LOCK:
+        meta = load_status_meta()
+        if not meta.get("pending"):
+            return
+        live = normalize_live_turn(meta.get("live_turn"))
+        live["phase"] = phase
+        live["phase_started_at"] = now_ts()
+        meta["live_turn"] = live
+        save_status_meta(meta)
+
+
 def record_live_turn_event(event: dict[str, Any], *, kind: str = "") -> None:
     if not isinstance(event, dict):
         return
@@ -30465,12 +31884,22 @@ def local_status_preflight_available() -> bool:
     return bool(local_planner_preflight_readiness().get("ready"))
 
 
+def prompt_requests_media_work(prompt: Any) -> bool:
+    """Keep visual artifact requests on the normal model/tool path."""
+    lower = prompt_core_request(str(prompt or "")).lower()
+    return bool(
+        re.search(
+            r"\b(?:image|images|picture|pictures|photo|photos|artwork|"
+            r"asset|assets|attachment|attachments|render|embed|inline|download)\b",
+            lower,
+        )
+    )
+
+
 def deterministic_status_prompt_allowed(
     prompt: str, attachments: list[dict[str, Any]], *, route_lock: bool = False
 ) -> bool:
     if route_lock or normalize_attachments(attachments):
-        return False
-    if prompt_runtime_alive():
         return False
     core = prompt_core_request(prompt)
     if not core:
@@ -30481,10 +31910,16 @@ def deterministic_status_prompt_allowed(
         return False
     if prompt_requests_investigation(core):
         return False
+    if prompt_requests_media_work(core):
+        return False
+    # A requested command is not answered by the console's own status snapshot.
+    if re.search(r"\b(?:ssh|run|execute|command|shell)\b", core, re.IGNORECASE):
+        return False
     return (
         prompt_is_explicit_status_request(core)
         and prompt_is_quick_status_request(core)
         and route_receipt_requested_action(core) == "status"
+        and not prompt_runtime_alive()
     )
 
 
@@ -30525,8 +31960,8 @@ def deterministic_command_prompt_allowed(
     return bool(
         not route_lock
         and not normalize_attachments(attachments)
-        and not prompt_runtime_alive()
         and deterministic_command_request(prompt)
+        and not prompt_runtime_alive()
     )
 
 
@@ -30568,51 +32003,33 @@ def execute_deterministic_command(argv: list[str]) -> tuple[str, bool]:
 
 
 def deterministic_status_response(prompt: str, *, fast_snapshot: bool = False) -> str:
-    """Build a zero-token status response from current TUI state.
-
-    Web acknowledgements use the bounded live overlay so a status request cannot
-    block behind the full diagnostics snapshot. Direct callers retain the full
-    snapshot by default.
-    """
+    """Build a concise, user-facing status response without runtime diagnostics."""
     snapshot = _live_status_overlay() if fast_snapshot else current_snapshot()
     state = str(snapshot.get("state") or "unknown").strip() or "unknown"
-    pending = "yes" if snapshot.get("pending") else "no"
-    status_message = summarize_text(snapshot.get("status_message"), 180) or "n/a"
-    selected_runtime = str(snapshot.get("selected_runtime") or "").strip() or "unknown"
-    selected_model = str(snapshot.get("selected_model") or "").strip() or "unknown"
-    last_runtime = str(snapshot.get("last_runtime") or "").strip() or "unknown"
-    last_model = str(snapshot.get("last_model") or "").strip() or "unknown"
-    last_error = summarize_text(snapshot.get("last_error"), 220)
-    last_response = summarize_text(snapshot.get("last_response"), 220)
-    response_note = last_error or last_response or "no visible response recorded"
-    route_receipts = snapshot.get("route_receipts")
-    if isinstance(route_receipts, dict):
-        receipt_status = str(route_receipts.get("status") or "unknown").strip()
-        receipt_count = _coerce_int(route_receipts.get("receipt_count"))
-        receipt_note = f"{receipt_status}, {receipt_count} receipts"
-    else:
-        receipt_note = "not reported"
-    local_route = snapshot.get("local_llm_health")
-    if isinstance(local_route, dict):
-        local_note = summarize_text(
-            local_route.get("reason")
-            or local_route.get("status")
-            or local_route.get("model")
-            or "",
-            180,
+    pending = bool(snapshot.get("pending"))
+    needs_attention = bool(snapshot.get("last_error")) or state in {
+        "error",
+        "failed",
+        "degraded",
+    }
+    if pending:
+        summary = "A request is still in progress."
+        next_step = "I will post the result here when it is ready."
+    elif needs_attention:
+        summary = "The last request needs attention."
+        next_step = (
+            "Open the runtime details for diagnostics, or send a focused follow-up."
         )
     else:
-        local_note = ""
-    if not local_note:
-        local_note = "local route telemetry not loaded in this snapshot"
-    requested = summarize_text(prompt, 120)
+        summary = "Bridge is ready and no request is running."
+        next_step = "Send the next focused request when you are ready."
     return "\n".join(
         [
-            f"- State: {state}; pending: {pending}; status: {status_message}.",
-            f"- Selected route: {selected_runtime}/{selected_model}; last turn: {last_runtime}/{last_model}.",
-            f"- Last visible result: {response_note}.",
-            f"- Local lane availability: {local_note}; route receipts: {receipt_note}.",
-            f"- Next: continue from `{requested}` with a scoped prompt if more work is needed; this status used deterministic TUI state, not a cloud/model call.",
+            "Bridge status",
+            "",
+            f"- {summary}",
+            f"- {next_step}",
+            "- This was an instant local status check; no model was called.",
         ]
     )
 
@@ -31706,6 +33123,40 @@ def start_next_queued_prompt() -> (
             ),
             checkpoint_intent=bool(prior_admission.get("checkpoint_intent")),
         )
+        if (
+            not queue_admission.get("allowed")
+            and queue_admission.get("reason_code") == "reauthorization_required"
+            and normalize_queue_source(item.get("source"), relay_callback, prompt)
+            == "operator"
+            and str(queue_admission.get("thread_id") or "").strip()
+            and not prompt_runtime_alive()
+        ):
+            # The owner already submitted this request. Rotate only the spent
+            # provider thread, then re-check all admission rules from scratch.
+            prior_thread_id = read_text(THREAD_ID_PATH).strip()
+            if prior_thread_id == str(queue_admission["thread_id"]).strip():
+                write_text(THREAD_ID_PATH, "")
+                write_text(THREAD_SCOPE_PATH, "")
+                append_audit_event(
+                    event_type="session.queued-operator-thread-rotated",
+                    summary="Preserved queued operator request in a fresh provider thread.",
+                    thread_id=prior_thread_id,
+                    payload={"queue_item_id": item.get("id")},
+                )
+                queue_admission = session_budget_admission(
+                    model=model,
+                    reasoning_effort=normalize_reasoning_effort(
+                        prior_admission.get("reasoning_effort")
+                        or response_reasoning_effort(speed)
+                    ),
+                    escalation_reason=str(
+                        prior_admission.get("escalation_reason") or ""
+                    ),
+                    reauthorization_reason=str(
+                        prior_admission.get("reauthorization_reason") or ""
+                    ),
+                    checkpoint_intent=bool(prior_admission.get("checkpoint_intent")),
+                )
         if prior_rollover:
             queue_admission["auto_rollover"] = prior_rollover
         item["session_admission"] = queue_admission
@@ -32622,7 +34073,10 @@ def schedule_web_only_restart(
 
     def _restart_web_service() -> None:
         time.sleep(max(0.05, float(delay_seconds)))
-        proc = run(["systemctl", "restart", WEB_SERVICE])
+        command = ["systemctl", "restart", WEB_SERVICE]
+        if os.geteuid() != 0:
+            command = ["sudo", "-n", *command]
+        proc = run(command)
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             update_status_meta(
@@ -32772,8 +34226,10 @@ def build_prompt_with_attachments(
     service_tier: Any = "",
     optimization_mode: Any = "",
     preflight_context: str | None = None,
+    inherited_context: dict[str, Any] | None = None,
 ) -> str:
-    combined = prompt.strip()
+    operator_context, _operator_meta = operator_prompt_context(prompt)
+    combined = operator_context
     attachment_savings: list[dict[str, Any]] = []
     attachment_context = attachment_prompt_context(
         attachments, savings_out=attachment_savings
@@ -32803,6 +34259,7 @@ def build_prompt_with_attachments(
             attachment_savings=attachment_savings,
             runtime=runtime or configured_runtime(),
             model=model or configured_chat_model(),
+            inherited_context=inherited_context,
         )
     if resolved_preflight_context:
         combined = f"{combined}\n{resolved_preflight_context}".strip()
@@ -33733,6 +35190,34 @@ def bedrock_context_pack_prompt_context(plan: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def bedrock_context_pack_preflight_context(plan: dict[str, Any]) -> dict[str, Any]:
+    """Return bounded inherited-session facts for local planner routing."""
+    if not isinstance(plan, dict):
+        return {}
+    fields = (
+        "session_id",
+        "thread_scope",
+        "thread_tokens",
+        "thread_input_tokens",
+        "thread_cached_input_tokens",
+        "thread_uncached_input_tokens",
+        "thread_output_tokens",
+        "hard_cap_tokens",
+        "hard_cap_exceeded",
+        "uncached_input_pressure",
+        "costly_thread",
+        "low_yield_thread",
+        "current_tokens",
+        "packed_tokens",
+        "saved_tokens",
+        "saved_pct",
+        "reason",
+    )
+    context = {key: plan.get(key) for key in fields if plan.get(key) not in (None, "")}
+    context["context_pack_applied"] = bool(plan.get("should_pack"))
+    return context
+
+
 def _execute_codex_prompt(
     prompt: str,
     speed: str,
@@ -33780,6 +35265,7 @@ def _execute_codex_prompt(
                 }
             ),
         )
+    record_live_turn_phase("checking_runtime")
     release_preflight = codex_launch_preflight(normalized_service_tier)
     if not release_preflight["allowed"]:
         blocked_message = str(
@@ -33849,6 +35335,7 @@ def _execute_codex_prompt(
         and codex_profile_v2_for_service_tier(normalized_service_tier)
     ):
         session_id = ""
+    record_live_turn_phase("preparing_context")
     context_pack_plan = (
         bedrock_context_pack_plan(
             service_tier=normalized_service_tier,
@@ -33858,6 +35345,9 @@ def _execute_codex_prompt(
         )
         if normalized_optimization_mode != "raw"
         else {"should_pack": False, "mode": "raw"}
+    )
+    inherited_preflight_context = bedrock_context_pack_preflight_context(
+        context_pack_plan
     )
     read_only_self_improvement = is_subscription_capacity_self_improvement_prompt(
         prompt
@@ -33973,6 +35463,7 @@ def _execute_codex_prompt(
         normalized_service_tier,
         normalized_optimization_mode,
         preflight_context=preflight_context,
+        inherited_context=inherited_preflight_context,
     )
     preflight_usage_fields = usage_fields_from_context_preflight_accounting(
         add_context_pack_to_preflight_accounting(
@@ -34054,6 +35545,7 @@ def _execute_codex_prompt(
         start_new_session=True,
     )
     set_active_codex_process(popen)
+    record_live_turn_phase("waiting_model")
 
     def _observe_stdout_line(line: str) -> None:
         nonlocal checkpoint_interrupted, deadline_checkpoint_interrupted
@@ -39739,6 +41231,33 @@ def _prompt_worker(
                     break
                 if not is_rate_limit_error(error_text):
                     break
+                retry_meta = load_status_meta()
+                if not empty_reply_retry_allowed(retry_meta):
+                    error_text = (
+                        "Provider rate limit hit after tool or file activity. "
+                        "I stopped instead of replaying work that may already have run."
+                    )
+                    append_audit_event(
+                        event_type="chat.rate-limit-no-retry",
+                        summary="Provider rate limit hit after side effects; retry skipped.",
+                        detail=(
+                            "Retry skipped because the failed turn observed tool or "
+                            "file activity, so repeating the prompt could duplicate "
+                            "side effects."
+                        ),
+                        severity="warn",
+                        actor_type="system",
+                        thread_id=thread_id,
+                        payload={
+                            "previous_prompt_preview": summarize_text(prompt, 240),
+                            "live_turn": retry_meta.get("live_turn"),
+                            "runtime": normalized_runtime,
+                            "model": normalized_model,
+                            "service_tier": normalized_service_tier,
+                            "job_budget": normalized_budget,
+                        },
+                    )
+                    break
                 rate_limit_attempt += 1
                 if rate_limit_attempt >= WEB_PROMPT_RATE_LIMIT_MAX_ATTEMPTS:
                     error_text = rate_limit_exhausted_message(
@@ -39897,7 +41416,7 @@ def _prompt_worker(
                 else error_text
                 if error_text and not response
                 else error_text
-                if (timed_out or rate_limited) and not response
+                if error_text and not response
                 else response or "[no response returned]"
             )
             write_last_response(
@@ -39907,6 +41426,7 @@ def _prompt_worker(
                 source="prompt_worker",
                 updated_at=finished_at,
             )
+            current_continuation_step = auto_continuation_step(prompt)
             continuation_incomplete = (
                 bool(response)
                 and not cancelled
@@ -39916,6 +41436,7 @@ def _prompt_worker(
                 and not rate_limited
                 and prompt_is_auto_continuation(prompt)
                 and response_promises_unfinished_work(response)
+                and current_continuation_step >= WEB_PROMPT_AUTO_CONTINUE_MAX_STEPS
             )
             final_response_status = response_final_status(response)
             next_action_planning_needed = (
@@ -39965,7 +41486,10 @@ def _prompt_worker(
                 and not deadline_checkpoint_interrupted
                 and not timed_out
                 and not rate_limited
-                and not prompt_is_auto_continuation(prompt)
+                and (
+                    not prompt_is_auto_continuation(prompt)
+                    or current_continuation_step < WEB_PROMPT_AUTO_CONTINUE_MAX_STEPS
+                )
                 and response_promises_unfinished_work(response)
             )
             prompt_success = (
@@ -41427,6 +42951,36 @@ def cost_route_decision_for_prompt(
     return decision
 
 
+def recorded_operator_submission(
+    prompt: str, attachments: Any, submission_id: Any
+) -> tuple[str, int]:
+    """Recognize exact retries from durable state before repeating admission work."""
+    identifier = normalize_submission_id(submission_id)
+    if not identifier:
+        return "", 0
+    incoming = prompt_attachment_signature(normalize_attachments(attachments or []))
+    # Read-only fast path; misses fall through to the locked admission checks.
+    meta = load_status_meta()
+    if (
+        meta.get("pending")
+        and meta.get("running_submission_id") == identifier
+        and meta.get("running_request_source") == "operator"
+        and str(meta.get("running_prompt") or "").strip() == prompt
+        and prompt_attachment_signature(meta.get("running_attachments")) == incoming
+    ):
+        return "running", 0
+    for position, item in enumerate(normalize_queue(meta.get("queued_prompts")), 1):
+        if (
+            item.get("submission_id") == identifier
+            and item.get("source") == "operator"
+            and not item.get("relay_callback")
+            and str(item.get("prompt") or "").strip() == prompt
+            and prompt_attachment_signature(item.get("attachments")) == incoming
+        ):
+            return "queued", position
+    return "", 0
+
+
 def start_web_prompt(
     prompt: str,
     speed: str,
@@ -41450,6 +43004,16 @@ def start_web_prompt(
     clean = prompt.strip()
     if not clean:
         return False, current_snapshot()
+    if source == "operator" and not relay_callback:
+        recorded_state, recorded_position = recorded_operator_submission(
+            clean, attachments, submission_id
+        )
+        if recorded_state:
+            snapshot = _live_status_overlay()
+            snapshot["deduplicated_prompt"] = True
+            snapshot["recorded_submission_state"] = recorded_state
+            snapshot["recorded_queue_position"] = recorded_position
+            return True, snapshot
     guard = host_pressure_guard_snapshot()
     if host_pressure_guard_blocks_new_work(guard):
         detail = host_pressure_guard_message(guard)
@@ -41593,6 +43157,20 @@ def start_web_prompt(
         codex_model_for_service_tier(bedrock_service_tier, base_model),
     )
     bedrock_available = bool(codex_profile_v2_for_service_tier(bedrock_service_tier))
+    subscription_capacity_state = str(
+        subscription_capacity_decision.get("state") or ""
+    ).strip()
+    subscription_capacity_exhausted = bool(
+        subscription_capacity_decision.get("enabled")
+        and subscription_capacity_decision.get("fresh")
+        and subscription_capacity_decision.get("chatgpt_auth_verified")
+        and subscription_capacity_state == "blocked"
+    )
+    if subscription_capacity_exhausted and not norllama_safe_final:
+        bedrock_available = bool(
+            bedrock_available
+            and codex_launch_preflight(bedrock_service_tier).get("allowed")
+        )
     manual_bedrock_available = bool(
         codex_profile_v2_for_service_tier(base_service_tier)
     )
@@ -41705,7 +43283,7 @@ def start_web_prompt(
     selected_service_tier = normalize_service_tier(
         cost_route_decision.get("selected_service_tier") or base_service_tier
     )
-    if waterfall_stage == "norllama_pool":
+    if waterfall_stage in {"norllama_pool", "norllama_resident_first"}:
         local_execution_runtime = normalize_runtime(
             local_route_probe.get("selected_runtime")
         )
@@ -41793,6 +43371,21 @@ def start_web_prompt(
         reauthorization_reason=normalized_reauthorization_reason,
         checkpoint_intent=checkpoint_intent,
     )
+    fresh_thread_rotation = rotate_idle_provider_thread_for_operator_prompt(
+        session_admission,
+        prompt=clean,
+        source=normalized_source,
+        actor_ip=actor_ip,
+    )
+    if fresh_thread_rotation:
+        session_admission = session_budget_admission(
+            model=normalized_model,
+            reasoning_effort=effective_reasoning_effort,
+            escalation_reason=normalized_escalation_reason,
+            reauthorization_reason=normalized_reauthorization_reason,
+            checkpoint_intent=checkpoint_intent,
+        )
+        session_admission["fresh_thread_rotation"] = fresh_thread_rotation
     append_session_admission_audit(
         session_admission,
         prompt=clean,
@@ -42487,6 +44080,7 @@ def current_snapshot() -> dict[str, Any]:
     if (
         auth.get("required") is False
         and _contains_codex_ready_prompt(pane)
+        and not str(last_error or "").strip()
         and not prompt_thread_alive()
         and not latest_history_requires_reauth
     ):
@@ -43159,6 +44753,9 @@ def _live_status_overlay() -> dict[str, Any]:
         "running_submission_id": normalize_submission_id(
             meta.get("running_submission_id")
         ),
+        "running_console_runtime_job_id": str(
+            meta.get("running_console_runtime_job_id") or ""
+        ),
         "queue_depth": len(queue),
         "queued_prompts": _transport_snapshot_value(queue),
         "queue_interlace_mode": normalize_queue_interlace_mode(
@@ -43325,14 +44922,29 @@ def status_snapshot() -> dict[str, Any]:
     return snapshot
 
 
+def initial_status_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return a lean first-paint snapshot; SSE supplies the full live state."""
+    initial = dict(snapshot)
+    initial["history"] = list(snapshot.get("history") or [])[-2:]
+    usage = dict(snapshot.get("usage") or {})
+    usage.pop("recent", None)
+    initial["usage"] = usage
+    initial["pane"] = summarize_text(str(snapshot.get("pane") or ""), 1200)
+    initial["logs"] = summarize_text(str(snapshot.get("logs") or ""), 800)
+    initial["initial_snapshot_compact"] = True
+    return initial
+
+
 def status_snapshot_collector_loop() -> None:
     while True:
+        maybe_schedule_kpi_app_health()
         refreshed = refresh_status_snapshot_cache(blocking=True)
         if refreshed:
             with STATUS_SNAPSHOT_CACHE_LOCK:
                 snapshot = STATUS_SNAPSHOT_CACHE.get("data")
             if isinstance(snapshot, dict):
                 emit_kaizen_tui_snapshot(snapshot)
+                maybe_schedule_kpi_dgx_ranking(snapshot)
                 maybe_schedule_codex_account_capacity_probe(
                     pane=snapshot.get("pane"),
                     auth_mode=snapshot.get("codex_auth_mode"),
@@ -43529,7 +45141,14 @@ def _contains_openai_auth_error(text: str) -> bool:
 
 
 def _contains_codex_auth_failure(text: str) -> bool:
-    return _contains_token_reuse_error(text) or _contains_openai_auth_error(text)
+    clean = str(text or "").lower()
+    return (
+        _contains_token_reuse_error(clean)
+        or _contains_openai_auth_error(clean)
+        or "invalid_refresh_token" in clean
+        or "could not validate your refresh token" in clean
+        or "your access token could not be refreshed" in clean
+    )
 
 
 def _contains_codex_cli_upgrade_error(text: str) -> bool:
@@ -43553,35 +45172,20 @@ def _contains_openai_transport_error(text: str) -> bool:
 
 
 def _contains_cert_workflow_error(text: str) -> bool:
-    clean = str(text or "").lower()
-    if not clean:
-        return False
-    cert_terms = (
-        "certificate_verify_failed",
-        "certbot",
-        "acme",
-        "x509",
-        "make_cert",
-        "cert queue",
-        "cert-worker",
-        "cert_enqueue",
-    )
-    if any(term in clean for term in cert_terms):
-        return True
-    has_certish = any(term in clean for term in ("certificate", "ssl", "tls"))
-    has_failure = any(
-        term in clean
-        for term in (
-            "error",
-            "failed",
-            "invalid",
-            "expired",
-            "mismatch",
-            "verify",
-            "handshake",
+    """Require a certificate failure, not a tool name or unrelated log error."""
+    for line in str(text or "").lower().splitlines():
+        if "certificate_verify_failed" in line:
+            return True
+        cert = re.search(
+            r"\b(?:certificate|ssl|tls|certbot|acme|x509|make_cert|cert-worker|cert_enqueue)\b",
+            line,
         )
-    )
-    return has_certish and has_failure
+        failure = re.search(
+            r"\b(?:error|failed|failure|invalid|expired|mismatch|unable|cannot)\b", line
+        )
+        if cert and failure:
+            return True
+    return False
 
 
 def _contains_update_interstitial(text: str) -> bool:
@@ -46242,7 +47846,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/status":
-            self.json_response(status_snapshot())
+            snapshot = status_snapshot()
+            requested_history_limit = _coerce_int(
+                (params.get("history_limit") or [""])[0]
+            )
+            if requested_history_limit:
+                snapshot["history"] = list(snapshot.get("history") or [])[
+                    -min(
+                        max(1, requested_history_limit),
+                        STATUS_TRANSPORT_HISTORY_LIMIT,
+                    ) :
+                ]
+            self.json_response(snapshot)
             return
 
         if parsed.path == "/api/children":
@@ -46980,6 +48595,12 @@ class Handler(BaseHTTPRequestHandler):
             actor_ip = self.request_client_ip()
             attachments = load_draft_attachments()
             message = (params.get("message", [""])[0]).strip()
+            if message and not attachments:
+                sourced_attachment = fetch_latest_source_attachment(message)
+                if sourced_attachment:
+                    attachments = [sourced_attachment]
+                else:
+                    attachments = stage_session_media_attachments(message)
             submission_id = normalize_submission_id(
                 (params.get("submission_id") or [""])[0]
             )
@@ -47026,6 +48647,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             raw_runtime = (params.get("runtime") or [""])[0]
             raw_model = (params.get("model") or [""])[0]
+            bridge_direct = coerce_boolish((params.get("bridge_direct") or [""])[0])
             route_lock = coerce_boolish(
                 (params.get("route_lock") or params.get("strict_route") or [""])[0]
             )
@@ -47080,7 +48702,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if not message:
                 message = build_attachment_lead_message(attachments)
-            if deterministic_command_prompt_allowed(
+            if not bridge_direct and deterministic_command_prompt_allowed(
                 message, attachments, route_lock=route_lock
             ):
                 snapshot = complete_deterministic_command_prompt(
@@ -47121,7 +48743,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.redirect_root(params)
                 return
-            if deterministic_status_prompt_allowed(
+            if not bridge_direct and deterministic_status_prompt_allowed(
                 message, attachments, route_lock=route_lock
             ):
                 snapshot = complete_deterministic_status_prompt(
@@ -47226,7 +48848,7 @@ class Handler(BaseHTTPRequestHandler):
                     or ""
                 ).strip()
                 receipt_visibility = console_runtime_job_visibility(
-                    console_runtime_job_id
+                    console_runtime_job_id, probe=False
                 )
                 error_text = str(
                     snapshot.get("session_admission_error")
@@ -48071,7 +49693,7 @@ class Handler(BaseHTTPRequestHandler):
                     last_marker = marker
                     last_sent = now
                 elif (now - last_sent) >= STREAM_IDLE_SECONDS:
-                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.write(b"event: heartbeat\ndata: {}\n\n")
                     self.wfile.flush()
                     last_sent = now
                 time.sleep(
@@ -48139,12 +49761,14 @@ class Handler(BaseHTTPRequestHandler):
             client_ip=request_client_ip,
         )
         relay_targets_json = script_json(
-            build_relay_targets(
-                token=token_value_raw,
-                profile=active_profile,
-                request_host=request_host,
-                route_mode=route_preference,
-                client_ip=request_client_ip,
+            browser_relay_targets(
+                build_relay_targets(
+                    token=token_value_raw,
+                    profile=active_profile,
+                    request_host=request_host,
+                    route_mode=route_preference,
+                    client_ip=request_client_ip,
+                )
             )
         )
         theme_toggle_target = profile_for_mode(active_profile, opposite_mode)
@@ -48580,7 +50204,7 @@ class Handler(BaseHTTPRequestHandler):
             else ""
         )
         initial_snapshot_data = status_snapshot()
-        initial_snapshot = script_json(initial_snapshot_data)
+        initial_snapshot = script_json(initial_status_snapshot(initial_snapshot_data))
         initial_tone, initial_run_label = _snapshot_tone_label(initial_snapshot_data)
         initial_status_message = _initial_status_text(initial_snapshot_data)
         initial_chat_activity_text, initial_chat_activity_hidden = (
@@ -48609,7 +50233,7 @@ class Handler(BaseHTTPRequestHandler):
             route=route_preference,
             prefix=path_prefix,
         )
-        token_value = script_json(TOKEN)
+        token_value = script_json(local_token_value)
         active_profile_name_json = script_json(active_profile)
         active_profile_label_json = script_json(active_profile_label)
         default_response_speed_json = script_json(DEFAULT_RESPONSE_SPEED)
@@ -48635,7 +50259,7 @@ class Handler(BaseHTTPRequestHandler):
   <title>{html.escape(CONSOLE_TAB_TITLE)}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Poppins:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" media="print" onload="this.media='all'" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Poppins:wght@400;500;600;700&display=swap">
   {favicon_links_html(self.request_path_prefix())}
   <style>
     :root {{
@@ -50032,6 +51656,10 @@ class Handler(BaseHTTPRequestHandler):
       top: var(--topbar-menu-top, 54px);
       right: var(--topbar-menu-right, 12px);
       width: min(320px, calc(100vw - 18px));
+      max-height: calc(100vh - var(--topbar-menu-top, 54px) - 12px);
+      max-height: calc(100dvh - var(--topbar-menu-top, 54px) - 12px - env(safe-area-inset-bottom, 0px));
+      overflow-y: auto;
+      overscroll-behavior: contain;
       padding: 10px;
       display: flex;
       flex-direction: column;
@@ -62388,9 +64016,559 @@ class Handler(BaseHTTPRequestHandler):
         padding-inline: 9px;
       }}
     }}
+    /*
+     * Responsive surface contract. This is intentionally the final visual
+     * layer so menus, sheets, forms, and dialogs share one interaction model.
+     */
+    :is(
+      .status-action-panel,
+      .topbar-menu,
+      .operator-action-palette,
+      .composer-upload-menu,
+      .composer-toolbar-panels,
+      .switcher-panel,
+      .settings-panel,
+      .notices-panel,
+      .system-panel,
+      .usage-limit-reset-dialog
+    ) {{
+      border-color: color-mix(in srgb, var(--border-strong) 54%, var(--agent-accent)) !important;
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, white 1%), color-mix(in srgb, var(--surface-2) 94%, black 2%)) !important;
+      box-shadow:
+        0 24px 64px rgba(7, 11, 18, 0.22),
+        0 4px 14px rgba(7, 11, 18, 0.10),
+        inset 0 1px 0 color-mix(in srgb, white 7%, transparent) !important;
+      backdrop-filter: blur(20px) saturate(118%);
+    }}
+    :is(
+      .status-action-panel,
+      .topbar-menu,
+      .operator-action-palette,
+      .composer-upload-menu,
+      .composer-toolbar-panels,
+      .switcher-panel,
+      .settings-panel,
+      .notices-panel,
+      .system-panel,
+      .usage-limit-reset-dialog,
+      .system-card,
+      .connector-access,
+      .bbs-summary-card
+    ) {{
+      border-radius: 14px !important;
+    }}
+    :is(.settings-head, .notices-head, .switcher-head, .system-panel-head) {{
+      align-items: center;
+      min-width: 0;
+    }}
+    :is(.settings-head, .notices-head, .switcher-head, .system-panel-head) h2 {{
+      letter-spacing: -0.018em;
+    }}
+    :is(
+      .settings-panel,
+      .notices-panel,
+      .switcher-panel,
+      .system-panel,
+      .composer-toolbar-panels,
+      .operator-action-palette
+    ) :is(input, select, textarea) {{
+      box-sizing: border-box;
+      max-width: 100%;
+      border: 1px solid color-mix(in srgb, var(--border-strong) 76%, var(--agent-accent));
+      border-radius: 8px !important;
+      background: color-mix(in srgb, var(--surface) 90%, var(--surface-2));
+      color: var(--text);
+      transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    }}
+    :is(
+      .settings-panel,
+      .notices-panel,
+      .switcher-panel,
+      .system-panel,
+      .composer-toolbar-panels,
+      .operator-action-palette
+    ) :is(input, select, textarea):focus-visible {{
+      border-color: color-mix(in srgb, var(--agent-accent) 82%, var(--border-strong));
+      outline: none;
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--agent-accent) 20%, transparent);
+      background: var(--surface);
+    }}
+    :is(.topbar-menu-links, .status-action-controls, .composer-upload-menu) :is(button, .button-link),
+    .operator-action-palette button {{
+      min-height: 38px;
+      border-radius: 8px !important;
+    }}
+    :is(.topbar-menu-links, .composer-upload-menu) :is(button, .button-link) {{
+      justify-content: flex-start;
+      text-align: left;
+    }}
+    .system-card {{
+      border-color: color-mix(in srgb, var(--border) 46%, transparent);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 48%, transparent), transparent 70%),
+        color-mix(in srgb, var(--surface-2) 54%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+    }}
+    .connector-access-app {{
+      min-height: 34px;
+      border-radius: 8px !important;
+    }}
+    .usage-limit-reset-card {{
+      line-height: 1.48;
+    }}
+    .usage-limit-reset-card h2 {{
+      font-size: clamp(1.1rem, 2vw, 1.32rem);
+      letter-spacing: -0.025em;
+    }}
+    .usage-limit-reset-actions button {{
+      min-height: 40px;
+      border-radius: 8px !important;
+    }}
+    /* Second-pass hierarchy and density cleanup. */
+    .message.empty {{
+      align-self: center;
+      width: min(560px, calc(100% - 24px));
+      max-width: 560px;
+      margin-top: clamp(18px, 8vh, 72px);
+      padding: 16px 18px;
+      border-style: solid;
+      border-color: color-mix(in srgb, var(--agent-accent) 16%, var(--border));
+      border-radius: 12px;
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 36%, transparent), transparent),
+        color-mix(in srgb, var(--surface-2) 42%, transparent);
+      color: color-mix(in srgb, var(--muted) 86%, var(--text));
+      line-height: 1.45;
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 3%, transparent);
+    }}
+    .settings-body,
+    .notifications-list,
+    .switcher-list,
+    .system-panel-body,
+    .operator-action-palette-list {{
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--agent-accent) 28%, var(--border)) transparent;
+    }}
+    :is(
+      .settings-body,
+      .notifications-list,
+      .switcher-list,
+      .system-panel-body,
+      .operator-action-palette-list
+    )::-webkit-scrollbar {{
+      width: 7px;
+      height: 7px;
+    }}
+    :is(
+      .settings-body,
+      .notifications-list,
+      .switcher-list,
+      .system-panel-body,
+      .operator-action-palette-list
+    )::-webkit-scrollbar-thumb {{
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--agent-accent) 28%, var(--border));
+    }}
+    .settings-card {{
+      border-color: color-mix(in srgb, var(--border-strong) 44%, transparent);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 30%, transparent), transparent 72%),
+        color-mix(in srgb, var(--surface-2) 46%, transparent);
+    }}
+    .settings-label {{
+      color: color-mix(in srgb, var(--text) 76%, var(--muted));
+      font-weight: 720;
+      letter-spacing: 0.055em;
+    }}
+    .settings-note {{
+      color: color-mix(in srgb, var(--muted) 88%, var(--text));
+    }}
+    .setting-pill.active {{
+      border-color: color-mix(in srgb, var(--agent-accent) 58%, var(--border-strong));
+      background: color-mix(in srgb, var(--agent-accent) 14%, var(--surface-3));
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, white 4%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--agent-accent) 10%, transparent);
+    }}
+    .topbar-menu-shortcuts {{
+      border-top: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+      padding-top: 10px;
+    }}
+    @media (min-width: 641px) {{
+      .status-action-panel {{
+        width: min(32rem, calc(100vw - 32px));
+      }}
+      .topbar-menu {{
+        width: min(350px, calc(100vw - 24px));
+      }}
+      .switcher-panel {{
+        width: min(450px, calc(100vw - 24px));
+        max-height: calc(100dvh - 94px);
+        overflow: hidden;
+      }}
+      .settings-panel {{
+        width: min(590px, calc(100vw - 24px));
+      }}
+      .system-panel {{
+        width: min(720px, 54vw);
+      }}
+      .switcher-list {{
+        max-height: min(56dvh, 590px);
+        overflow-y: auto;
+      }}
+    }}
+    @media (max-width: 640px) {{
+      :root {{
+        --mobile-sheet-gutter: 8px;
+      }}
+      .topbar {{
+        padding-left: max(4px, env(safe-area-inset-left));
+        padding-right: max(4px, env(safe-area-inset-right));
+      }}
+      .chat-summary-bar {{
+        overflow-x: auto;
+        overscroll-behavior-inline: contain;
+        scrollbar-width: none;
+        scroll-snap-type: x proximity;
+      }}
+      .chat-summary-bar::-webkit-scrollbar {{
+        display: none;
+      }}
+      .chat-summary-bar > * {{
+        flex: 0 0 auto;
+        scroll-snap-align: start;
+      }}
+      :is(.system-panel, .settings-panel, .notices-panel, .switcher-panel) {{
+        top: auto !important;
+        right: var(--mobile-sheet-gutter) !important;
+        bottom: 0 !important;
+        left: var(--mobile-sheet-gutter) !important;
+        width: auto !important;
+        max-height: calc(100dvh - max(16px, env(safe-area-inset-top))) !important;
+        border-bottom: 0 !important;
+        border-radius: 18px 18px 0 0 !important;
+        transform: translateY(14px);
+      }}
+      body:is(.system-open, .settings-open, .notices-open, .switcher-open)
+      :is(.system-panel, .settings-panel, .notices-panel, .switcher-panel) {{
+        transform: translateY(0);
+      }}
+      :is(.system-panel-body, .settings-body, .notifications-list, .switcher-list) {{
+        padding-bottom: calc(18px + env(safe-area-inset-bottom));
+        scroll-padding-bottom: calc(18px + env(safe-area-inset-bottom));
+      }}
+      :is(.settings-head, .notices-head, .switcher-head, .system-panel-head) {{
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        padding-top: 10px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
+        background: color-mix(in srgb, var(--surface) 94%, transparent);
+        backdrop-filter: blur(14px);
+      }}
+      .settings-card {{
+        gap: 9px;
+        padding: 12px;
+      }}
+      .settings-row {{
+        grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+      }}
+      .message.empty {{
+        width: min(520px, calc(100% - 20px));
+        margin-top: clamp(14px, 6vh, 44px);
+        padding: 14px 16px;
+        font-style: normal;
+      }}
+      .topbar-menu {{
+        top: calc(48px + env(safe-area-inset-top));
+        right: max(6px, env(safe-area-inset-right));
+        bottom: auto !important;
+        left: max(6px, env(safe-area-inset-left));
+        width: auto;
+        height: auto !important;
+        max-height: calc(100dvh - 60px - env(safe-area-inset-top));
+        overflow-y: auto;
+        border-radius: 14px !important;
+      }}
+      .topbar-menu-links {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
+      .topbar-menu-meta {{
+        position: sticky;
+        top: -10px;
+        z-index: 1;
+        margin: -2px -2px 0;
+        padding: 4px 2px 8px;
+        background: color-mix(in srgb, var(--surface) 90%, transparent);
+        backdrop-filter: blur(12px);
+      }}
+      .status-action-panel {{
+        position: fixed;
+        top: calc(48px + env(safe-area-inset-top));
+        right: max(6px, env(safe-area-inset-right));
+        left: max(6px, env(safe-area-inset-left));
+        width: auto;
+        max-height: calc(100dvh - 60px - env(safe-area-inset-top));
+        overflow-y: auto;
+      }}
+      .status-action-controls {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .status-action-controls .utility-button {{
+        width: 100%;
+        min-height: 44px;
+      }}
+      .operator-action-palette {{
+        right: 4px;
+        left: 4px;
+        width: auto;
+        max-height: min(62dvh, 470px);
+      }}
+      .operator-action-palette button,
+      .composer-upload-item {{
+        min-height: 44px;
+      }}
+      .composer-toolbar-panels {{
+        right: 0;
+        left: 0;
+        width: auto;
+        max-height: min(70dvh, 580px);
+        padding: 10px;
+      }}
+      :is(
+        .settings-panel,
+        .notices-panel,
+        .switcher-panel,
+        .system-panel,
+        .composer-toolbar-panels,
+        .operator-action-palette
+      ) :is(input, select, textarea) {{
+        min-height: 44px;
+        font-size: 16px;
+      }}
+      .system-card {{
+        padding: 12px 10px;
+        border-radius: 12px !important;
+      }}
+      .connector-access-apps {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .usage-limit-reset-dialog {{
+        width: calc(100vw - 16px);
+        max-width: none;
+        margin: auto 8px 0;
+        border-bottom: 0;
+        border-radius: 18px 18px 0 0 !important;
+      }}
+      .usage-limit-reset-card {{
+        gap: 12px;
+        padding: 20px 16px calc(16px + env(safe-area-inset-bottom));
+      }}
+      .usage-limit-reset-actions {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .usage-limit-reset-actions button {{
+        width: 100%;
+        min-height: 46px;
+      }}
+      #usage-limit-reset-approve {{ order: 1; }}
+      #usage-limit-reset-fallback {{ order: 2; }}
+      #usage-limit-reset-cancel {{ order: 3; }}
+    }}
+    @media (hover: none), (pointer: coarse) {{
+      :is(
+        .topbar-menu,
+        .status-action-panel,
+        .switcher-panel,
+        .settings-panel,
+        .notices-panel,
+        .system-panel,
+        .operator-action-palette,
+        .composer-toolbar-panels
+      ) :is(button, .button-link, [role="button"]) {{
+        min-height: 44px;
+      }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      :is(
+        .status-action-panel,
+        .topbar-menu,
+        .operator-action-palette,
+        .composer-upload-menu,
+        .composer-toolbar-panels,
+        .switcher-panel,
+        .settings-panel,
+        .notices-panel,
+        .system-panel,
+        .usage-limit-reset-dialog
+      ) {{
+        scroll-behavior: auto;
+        transition-duration: 0.01ms !important;
+      }}
+    }}
+    /* Keep transient controls quick to paint and quick to reach on touchscreens. */
+    :is(button, .button-link, [role="button"]) {{
+      touch-action: manipulation;
+    }}
+    :is(
+      .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+      .topbar-menu, .status-action-panel, .operator-action-palette,
+      .composer-upload-menu, .composer-toolbar-panels
+    ) {{
+      transition-duration: 100ms;
+    }}
+    @media (max-width: 640px), (pointer: coarse) {{
+      :is(
+        .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+        .topbar-menu, .status-action-panel, .operator-action-palette,
+        .composer-upload-menu, .composer-toolbar-panels,
+        .settings-backdrop, .switcher-backdrop, .notices-backdrop, .system-backdrop
+      ) {{
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+      }}
+    }}
+    /* Matte surface finish: static, low-contrast detail at the panel edge. */
+    :root {{
+      --finish-grain: 0.022;
+      --finish-sheen: 0.045;
+      --finish-fiber: 0.012;
+    }}
+    :is(
+      .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+      .topbar-menu, .status-action-panel, .operator-action-palette,
+      .composer-upload-menu, .composer-toolbar-panels, .usage-limit-reset-dialog
+    ) {{
+      background-color: var(--surface);
+      background-image:
+        radial-gradient(ellipse at 12% 0%, color-mix(in srgb, var(--agent-accent) 5%, transparent), transparent 62%),
+        linear-gradient(165deg, rgb(255 255 255 / var(--finish-sheen)), transparent 38%),
+        repeating-linear-gradient(115deg, rgb(255 255 255 / var(--finish-fiber)) 0 1px, transparent 1px 7px),
+        radial-gradient(circle, rgb(255 255 255 / var(--finish-grain)) 0.5px, transparent 0.8px);
+      background-size: 100% 100%, 100% 100%, 100% 100%, 5px 7px;
+      background-repeat: no-repeat, no-repeat, no-repeat, repeat;
+      background-position: 0 0, 0 0, 0 0, 1px 2px;
+      background-blend-mode: normal;
+      box-shadow:
+        inset 0 1px 0 rgb(255 255 255 / 0.07),
+        inset 0 -1px 0 rgb(0 0 0 / 0.12),
+        0 12px 36px rgb(0 0 0 / 0.22);
+    }}
+    :is(.settings-card, .system-card, .local-cli-session) {{
+      background-image: linear-gradient(165deg, rgb(255 255 255 / 0.025), transparent 48%);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.035);
+    }}
+    @media (max-width: 640px), (pointer: coarse) {{
+      :root {{
+        --finish-grain: 0.012;
+        --finish-sheen: 0.03;
+        --finish-fiber: 0;
+      }}
+      body .microtexture-thread-field {{
+        opacity: calc(var(--microtexture-thread-opacity) * 0.6);
+      }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      body .microtexture-thread-field {{
+        display: none;
+      }}
+    }}
+    @media (prefers-contrast: more), (forced-colors: active) {{
+      :is(
+        .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+        .topbar-menu, .status-action-panel, .operator-action-palette,
+        .composer-upload-menu, .composer-toolbar-panels, .usage-limit-reset-dialog,
+        .settings-card, .system-card, .local-cli-session
+      ) {{
+        background-image: none;
+        box-shadow: none;
+      }}
+    }}
+  {CONSOLE_POLISH_CSS}
+/* Shared readability and touch controls; preserve each console's profile. */
+body[data-agent-slug] :is(input:not([type=checkbox]):not([type=radio]), select, textarea) {{
+  color: var(--text); background-color: var(--surface); border-color: var(--border-strong);
+}}
+body[data-agent-slug] :is(input, textarea)::placeholder {{ color: var(--muted); opacity: 1; }}
+body[data-agent-slug] select option {{ color: var(--text); background: var(--surface); }}
+body[data-agent-slug] :is(button, a, summary, input, select, textarea, [tabindex]):focus-visible {{
+  outline: 2px solid var(--text) !important; outline-offset: 3px;
+}}
+body[data-agent-slug] #operator-focus-action {{ color: var(--text); }}
+body[data-agent-slug] .message-body {{ overflow-wrap: anywhere; }}
+body[data-agent-slug] .message-body pre {{ max-width: 100%; overflow-x: auto; white-space: pre; }}
+body[data-agent-slug] :is(.message-actions, .topbar-actions) {{ gap: 8px; }}
+body[data-agent-slug] .operator-focus-state {{ white-space: normal; overflow: visible; text-overflow: clip; max-width: none; }}
+body[data-agent-slug] .operator-focus-copy {{ min-width: 0; }}
+body[data-agent-slug] :is(.settings-panel, .switcher-panel, .system-panel, .topbar-menu) {{ border-radius: 12px; }}
+@media (max-width: 640px) {{
+  body[data-agent-slug] .topbar-actions > :is(button, a),
+  body[data-agent-slug] :is(.message-tools-toggle, .message-route-details-toggle, .inline-action, .history-toggle,
+    #operator-focus-action, #operator-action-palette-toggle, #activity-peek-toggle, #composer-tools-toggle) {{
+    min-height: 44px !important; min-width: 44px !important;
+  }}
+  body[data-agent-slug] .composer-inline-actions {{ gap: 8px; }}
+  body[data-agent-slug] :is(input:not([type=checkbox]):not([type=radio]), select, textarea) {{ font-size: 16px; }}
+  body[data-agent-slug] #operator-focus-rail {{ flex-wrap: wrap; row-gap: 8px; }}
+  body[data-agent-slug] .operator-focus-copy {{ flex: 1 1 100%; }}
+  body[data-agent-slug] .operator-focus-state {{ max-width: none; white-space: normal; }}
+}}
+body[data-agent-slug] .message-body a {{ color: var(--text); text-decoration: underline; text-underline-offset: 3px; }}
+@media (max-width: 640px) {{
+  body[data-agent-slug] .reply-tail-actions {{ flex-wrap: wrap; gap: 6px; }}
+}}
+/* Conversation layout polish: keep navigation compact and reading comfortable. */
+body[data-agent-slug] .topbar {{ gap: 16px; padding: 12px 20px; background-image: none !important; }}
+body[data-agent-slug] .topbar .brand {{ min-width: 0; flex: 1 1 auto; }}
+body[data-agent-slug] .topbar .brand-line {{ flex-wrap: wrap; gap: 8px 12px; }}
+body[data-agent-slug] .topbar .brand-title {{ font-size: 19px; line-height: 1.3; letter-spacing: -.02em; }}
+body[data-agent-slug] .topbar .topbar-version,
+body[data-agent-slug] .topbar-actions :is(#prime-home-button, #directory-home-button) {{ display: none !important; }}
+body[data-agent-slug] .topbar-actions {{ flex: 0 0 auto; gap: 8px; align-items: center; }}
+body[data-agent-slug] .topbar-actions > :is(button, a) {{ min-height: 44px; border-radius: 12px; }}
+body[data-agent-slug] .header-connection-state {{ display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font: 500 12px/1.4 var(--font-ui, system-ui); white-space: nowrap; }}
+body[data-agent-slug] .header-connection-state::before {{ content: ''; width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: currentColor; }}
+body[data-agent-slug] .header-connection-state[data-connected="true"]::before {{ background: var(--ok, #429676); }}
+body[data-agent-slug] .topbar .status-copy {{ font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }}
+body[data-agent-slug] .conversation {{ width: min(100%, 860px); margin-inline: auto; gap: 28px; }}
+body[data-agent-slug] .message {{ min-width: 0; }}
+body[data-agent-slug] .message.assistant .message-body {{ max-width: 76ch; font-size: 16px; line-height: 1.75; letter-spacing: .005em; }}
+body[data-agent-slug] .message-body > :first-child {{ margin-top: 0; }}
+body[data-agent-slug] .message-body > :last-child {{ margin-bottom: 0; }}
+body[data-agent-slug] .message-body :is(p, ul, ol, blockquote) {{ margin-block: 0 1em; }}
+body[data-agent-slug] .message-body li + li {{ margin-top: .35em; }}
+body[data-agent-slug] .message-body :is(h1, h2, h3) {{ line-height: 1.35; letter-spacing: -.015em; margin-block: 1.5em .65em; }}
+body[data-agent-slug] .message-body :is(pre, table) {{ max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }}
+body[data-agent-slug] .message-body table {{ display: block; }}
+body[data-agent-slug] .message-head {{ align-items: baseline; gap: 8px; flex-wrap: wrap; }}
+body[data-agent-slug] .message-meta {{ font-size: 11px; line-height: 1.5; }}
+body[data-agent-slug] .message-actions {{ gap: 8px; flex-wrap: wrap; }}
+body[data-agent-slug] :is(button, a, textarea):focus-visible {{ outline: 2px solid var(--agent-accent, #7186a5); outline-offset: 3px; }}
+@media (max-width: 640px) {{
+  body[data-agent-slug] .topbar {{ padding: 10px 12px; gap: 8px; align-items: flex-start; }}
+  body[data-agent-slug] .topbar .brand-line {{ gap: 6px 8px; }}
+  body[data-agent-slug] .topbar .brand-title {{ font-size: 17px; }}
+  body[data-agent-slug] .topbar-actions {{ gap: 4px; flex-wrap: nowrap; max-width: none; }}
+  body[data-agent-slug] .topbar-actions > :is(button, a) {{ min-width: 44px; min-height: 44px; padding-inline: 10px; }}
+  body[data-agent-slug] .header-connection-state {{ font-size: 11px; }}
+  body[data-agent-slug] .conversation {{ gap: 22px; }}
+  body[data-agent-slug] .message.assistant .message-body {{ font-size: 16px; line-height: 1.7; }}
+  body[data-agent-slug] .message.user {{ max-width: 94%; }}
+  body[data-agent-slug] .message-head {{ row-gap: 4px; }}
+  body[data-agent-slug] :is(.message-actions button, .message .inline-action) {{ min-height: 44px; }}
+}}
+@media (prefers-reduced-motion: reduce) {{
+  body[data-agent-slug] :is(.topbar, .message, .topbar-menu, .composer-input-shell) {{ animation: none !important; transition: none !important; scroll-behavior: auto !important; }}
+}}
+
   </style>
 </head>
-<body data-agent-slug="{html.escape(AGENT_SLUG)}" data-agent-group="{
+<body data-console-design="quiet" data-console-mode="{
+            profile_mode(active_profile)
+        }" data-agent-slug="{html.escape(AGENT_SLUG)}" data-agent-group="{
             html.escape(agent_brand_group)
         }" data-agent-variant="{
             html.escape(AGENT_STYLE_VARIANT)
@@ -62407,6 +64585,7 @@ class Handler(BaseHTTPRequestHandler):
             html.escape(initial_run_label)
         }</span>
           <span id="bedrock-health-badge" class="bedrock-health-badge idle" title="Bedrock health has not been checked yet." hidden>Bedrock</span>
+          <span id="header-connection-state" class="header-connection-state" role="status">Connecting…</span>
           <span class="topbar-version" title="Console UI version">v{
             html.escape(UI_VERSION)
         }</span>
@@ -62430,6 +64609,7 @@ class Handler(BaseHTTPRequestHandler):
         </div>
       </div>
       <div class="topbar-actions">
+        <button id="console-details-toggle" class="ghost console-details-toggle" type="button" aria-expanded="false" aria-controls="norman-command-rail kpi-strip" title="Show session and workspace details">Details</button>
         <a id="prime-home-button" class="ghost utility-button button-link prime-home-button" data-icon="{
             html.escape(icon_for_label("Prime", "⌂"))
         }" href="{
@@ -62516,7 +64696,7 @@ class Handler(BaseHTTPRequestHandler):
         </button>
       </div>
     </section>
-    <div id="topbar-menu" class="topbar-menu surface" aria-hidden="true">
+    <div id="topbar-menu" class="topbar-menu surface" aria-hidden="true" inert>
           <div class="topbar-menu-meta">
             <span class="version-chip" title="Console UI version">UI v{
             html.escape(UI_VERSION)
@@ -62919,11 +65099,11 @@ class Handler(BaseHTTPRequestHandler):
                 </button>
               </div>
               <textarea id="prompt-input" name="message" rows="1" autocomplete="off" autocapitalize="sentences" spellcheck="true" enterkeyhint="send" aria-label="Prompt" placeholder="{
-            html.escape(PROMPT_PLACEHOLDER)
+            html.escape("Message " + AGENT_NAME + "…")
         }"></textarea>
               <span id="response-summary" class="response-summary visually-hidden">Think Std · Reply Balanced</span>
               <div class="composer-send-cluster" aria-label="Prompt submit controls">
-                <button id="ask-button" type="submit" class="primary composer-send composer-send-queue" data-icon="→" title="Queue prompt. Press Enter to queue and Shift+Enter for a new line." data-tooltip="Queue prompt. Enter queues; Shift+Enter inserts a new line." aria-label="Queue prompt"><span id="ask-button-label" class="composer-send-label">Queue</span></button>
+                <button id="ask-button" type="submit" class="primary composer-send composer-send-queue" data-icon="→" title="Send message. Press Enter to send and Shift+Enter for a new line." data-tooltip="Send message. Enter sends; Shift+Enter inserts a new line." aria-label="Send message"><span id="ask-button-label" class="composer-send-label">Send</span></button>
                 <button id="interrupt-submit-button" type="button" class="ghost composer-send composer-send-interrupt" data-icon="↑" title="Interrupt at the next safe checkpoint" data-tooltip="Interrupt at the next safe checkpoint" aria-label="Interrupt at the next safe checkpoint"><span class="composer-send-label">Interrupt</span></button>
               </div>
             </div>
@@ -63515,6 +65695,7 @@ class Handler(BaseHTTPRequestHandler):
     const PROMPT_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
     const PROMPT_SUBMISSION_STORAGE_KEY = `${{AGENT_LABEL.toLowerCase().replace(/[^a-z0-9]+/g, "-")}}-console-submission-v1:${{window.location.hostname}}${{window.location.pathname}}`;
     const PROMPT_SUBMISSION_MAX_AGE_MS = 1000 * 60 * 60 * 12;
+    const PROMPT_SUBMISSION_RECONCILE_GRACE_MS = 1000 * 30;
     const SWITCHER_STORAGE_KEY = "agent-console-switcher-v1";
     const SWITCHER_STATE_PARAM = "fleet";
     const SWITCHER_RECENTS_LIMIT = 8;
@@ -65641,14 +67822,24 @@ class Handler(BaseHTTPRequestHandler):
 
     let controlTooltipHydrationFrame = 0;
     let controlTooltipObserver = null;
+    const controlTooltipHydrationRoots = new Set();
 
-    function scheduleControlTooltipHydration() {{
+    function scheduleControlTooltipHydration(root = document.body) {{
+      if (root instanceof Element) {{
+        controlTooltipHydrationRoots.add(root);
+      }}
       if (controlTooltipHydrationFrame) {{
         return;
       }}
       controlTooltipHydrationFrame = window.requestAnimationFrame(() => {{
         controlTooltipHydrationFrame = 0;
-        hydrateControlTooltips(document.body);
+        const roots = Array.from(controlTooltipHydrationRoots).filter((node) => node.isConnected);
+        controlTooltipHydrationRoots.clear();
+        for (const node of roots) {{
+          if (!roots.some((other) => other !== node && other.contains(node))) {{
+            hydrateControlTooltips(node);
+          }}
+        }}
       }});
     }}
 
@@ -65661,22 +67852,21 @@ class Handler(BaseHTTPRequestHandler):
         return;
       }}
       controlTooltipObserver = new MutationObserver((mutations) => {{
-        if (
-          mutations.some((mutation) =>
-            Array.from(mutation.addedNodes).some(
-              (node) =>
-                node instanceof Element
-                && (
-                  node.matches(CONTROL_TOOLTIP_SELECTOR)
-                  || node.querySelector?.(CONTROL_TOOLTIP_SELECTOR)
-                )
-            )
-          )
-        ) {{
-          scheduleControlTooltipHydration();
+        for (const mutation of mutations) {{
+          for (const node of mutation.addedNodes) {{
+            if (node instanceof Element) {{
+              scheduleControlTooltipHydration(node);
+            }} else if (node.nodeType === Node.TEXT_NODE) {{
+              const control = node.parentElement?.closest(CONTROL_TOOLTIP_SELECTOR);
+              if (control) {{
+                scheduleControlTooltipHydration(control);
+              }}
+            }}
+          }}
         }}
       }});
       controlTooltipObserver.observe(document.body, {{ childList: true, subtree: true }});
+      scheduleControlTooltipHydration();
     }}
 
     function defaultCompletionBell() {{
@@ -66066,7 +68256,11 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function containsCodexAuthFailure(value) {{
-      return containsTokenReuseError(value) || containsOpenAIAuthError(value);
+      const text = String(value || "").toLowerCase();
+      return containsTokenReuseError(text) || containsOpenAIAuthError(text)
+        || text.includes("invalid_refresh_token")
+        || text.includes("could not validate your refresh token")
+        || text.includes("your access token could not be refreshed");
     }}
 
     function containsCodexCliUpgradeError(value) {{
@@ -66099,30 +68293,11 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function containsCertWorkflowError(value) {{
-      const text = String(value || "").toLowerCase();
-      if (!text) return false;
-      if (
-        text.includes("certificate_verify_failed")
-        || text.includes("certbot")
-        || text.includes("acme")
-        || text.includes("x509")
-        || text.includes("make_cert")
-        || text.includes("cert queue")
-        || text.includes("cert-worker")
-        || text.includes("cert_enqueue")
-      ) {{
-        return true;
-      }}
-      const hasCertish = text.includes("certificate") || text.includes("ssl") || text.includes("tls");
-      const hasFailure =
-        text.includes("error")
-        || text.includes("failed")
-        || text.includes("invalid")
-        || text.includes("expired")
-        || text.includes("mismatch")
-        || text.includes("verify")
-        || text.includes("handshake");
-      return hasCertish && hasFailure;
+      return String(value || "").toLowerCase().split(/\\n/).some((line) => (
+        line.includes("certificate_verify_failed")
+        || (/\\b(certificate|ssl|tls|certbot|acme|x509|make_cert|cert-worker|cert_enqueue)\\b/.test(line)
+          && /\\b(error|failed|failure|invalid|expired|mismatch|unable|cannot)\\b/.test(line))
+      ));
     }}
 
     function isPlaceholderAssistantResponse(value) {{
@@ -66839,27 +69014,47 @@ class Handler(BaseHTTPRequestHandler):
       return String(relay?.target_connector_name || relay?.target || relay?.relay_id || "Switchboard").trim() || "Switchboard";
     }}
 
+    const storageMemory = new Map();
+    const storagePending = new Set();
+
     function safeStorageGet(key) {{
+      if (storagePending.has(key)) {{
+        const value = storageMemory.get(key) ?? null;
+        try {{
+          if (value === null) window.localStorage.removeItem(key);
+          else window.localStorage.setItem(key, value);
+          storagePending.delete(key);
+        }} catch (_) {{ /* Retry persistence on the next read without losing memory state. */ }}
+        return value;
+      }}
       try {{
-        return window.localStorage.getItem(key);
+        const value = window.localStorage.getItem(key);
+        storageMemory.set(key, value);
+        return value;
       }} catch (_) {{
-        return null;
+        return storageMemory.get(key) ?? null;
       }}
     }}
 
     function safeStorageSet(key, value) {{
+      storageMemory.set(key, String(value));
+      storagePending.add(key);
       try {{
         window.localStorage.setItem(key, value);
+        storagePending.delete(key);
       }} catch (_) {{
-        // Ignore unavailable storage and continue with in-memory preferences.
+        // Retain drafts and receipt IDs in this tab when browser storage is blocked or full.
       }}
     }}
 
     function safeStorageRemove(key) {{
+      storageMemory.set(key, null);
+      storagePending.add(key);
       try {{
         window.localStorage.removeItem(key);
+        storagePending.delete(key);
       }} catch (_) {{
-        // Ignore unavailable storage and continue with in-memory state.
+        // A memory tombstone prevents an old stored receipt from reappearing.
       }}
     }}
 
@@ -67067,6 +69262,7 @@ class Handler(BaseHTTPRequestHandler):
             state: provisional.state,
             prompt: textBlockSignature(provisional.value),
             attachments: attachmentSignature(provisional.attachments),
+            phase: provisional.phase,
           }}
           : null,
       }});
@@ -67125,7 +69321,8 @@ class Handler(BaseHTTPRequestHandler):
         return false;
       }}
       const submission = loadPromptSubmission();
-      if (submission && promptReceiptMatches(draft, submission.value)) {{
+      if (submission && promptReceiptMatches(draft, submission.value)
+        && !["sending", "reconciling"].includes(String(submission.state || ""))) {{
         clearPromptDraft();
         return false;
       }}
@@ -67192,7 +69389,9 @@ class Handler(BaseHTTPRequestHandler):
           safeStorageRemove(PROMPT_SUBMISSION_STORAGE_KEY);
           return null;
         }}
-        if (submittedAt > 0 && Date.now() - submittedAt > PROMPT_SUBMISSION_MAX_AGE_MS) {{
+        // Time alone cannot prove an identified request was never accepted.
+        if (!String(payload?.submissionId || "").trim()
+          && submittedAt > 0 && Date.now() - submittedAt > PROMPT_SUBMISSION_MAX_AGE_MS) {{
           safeStorageRemove(PROMPT_SUBMISSION_STORAGE_KEY);
           return null;
         }}
@@ -67345,20 +69544,24 @@ class Handler(BaseHTTPRequestHandler):
         }}
 
         function snapshotCompletedPromptSubmission(snapshot, value) {{
-          if (!snapshot || !value) {{
-            return false;
-          }}
-      if (historyEntries(snapshot).some((item) => promptReceiptMatches(item?.prompt, value))) {{
-        return true;
-      }}
-      const response = String(snapshot.last_response || "").trim();
-      const finalResponse = response
-        && response !== "[waiting for reply]"
-        && response !== "[no response yet]"
-        && !isPlaceholderAssistantResponse(response);
-      return !snapshot.pending
-        && finalResponse
-        && promptReceiptMatches(snapshot.last_prompt, value);
+      const receipt = loadPromptSubmission();
+      if (!snapshot || !value || !receipt) return false;
+      const matches = (item) => {{
+        if (!promptReceiptMatches(item?.prompt, value)) return false;
+        const response = String(item.response || "").trim();
+        const complete = Boolean(item.error || (item.attachments || []).length
+          || (response && !isPlaceholderAssistantResponse(response)));
+        if (!complete) return false;
+        if (item.submission_id && receipt.submissionId) return item.submission_id === receipt.submissionId;
+        const raw = item.started_at;
+        const started = typeof raw === "number" ? raw * (raw < 1e12 ? 1000 : 1) : Date.parse(raw);
+        return receipt.submittedAt > 0 && started >= receipt.submittedAt - 5000;
+      }};
+      if (historyEntries(snapshot).some(matches)) return true;
+      return !snapshot.pending && matches({{
+        prompt: snapshot.last_prompt, response: snapshot.last_response,
+        started_at: snapshot.last_started_at,
+      }});
     }}
 
     function reconcilePromptSubmission(snapshot = state.snapshot) {{
@@ -67373,7 +69576,7 @@ class Handler(BaseHTTPRequestHandler):
       }}
       if (
         snapshotIncludesSubmissionId(snapshot, receipt.submissionId)
-        || snapshotIncludesPromptSubmission(snapshot, value)
+        || (!receipt.submissionId && snapshotIncludesPromptSubmission(snapshot, value))
       ) {{
         const draft = loadPromptDraft();
         if (draft && promptReceiptMatches(draft, value)) {{
@@ -67387,6 +69590,21 @@ class Handler(BaseHTTPRequestHandler):
           }});
         }}
         return true;
+      }}
+      const receiptState = String(receipt.state || "").trim().toLowerCase();
+      const reconcileAgeMs = Math.max(0, Date.now() - Number(receipt.submittedAt || 0));
+      if (
+        receiptState === "reconciling"
+        && receipt.submittedAt > 0
+        && reconcileAgeMs >= PROMPT_SUBMISSION_RECONCILE_GRACE_MS
+        && !snapshot.pending
+      ) {{
+        restoreRejectedPrompt(value);
+        setOperatorReceipt(
+          "Delivery is still unconfirmed. Your draft is restored; retry checks the same submission without duplicating it.",
+          "warning"
+        );
+        return false;
       }}
       return true;
     }}
@@ -67403,20 +69621,17 @@ class Handler(BaseHTTPRequestHandler):
       if (
         snapshotCompletedPromptSubmission(snapshot, receipt.value)
         || snapshotIncludesSubmissionId(snapshot, receipt.submissionId)
-        || snapshotIncludesPromptSubmission(snapshot, receipt.value)
+        || (!receipt.submissionId && snapshotIncludesPromptSubmission(snapshot, receipt.value))
       ) {{
         return null;
       }}
       const phase = receiptState === "reconciling"
         ? {{
-          meta: "Outcome unknown · reconciling",
-          body: "Checking live console state before retrying.",
+          meta: "Checking delivery",
+          body: "Checking whether your message arrived before offering a retry.",
         }}
         : receiptState === "sending"
-          ? {{
-            meta: `Sending to ${{AGENT_LABEL}}`,
-            body: "Checking admission and starting the worker…",
-          }}
+          ? sendingPromptPhase(receipt)
           : receiptState === "queued"
             ? {{
               meta: "Accepted · awaiting queue state",
@@ -68858,14 +71073,25 @@ class Handler(BaseHTTPRequestHandler):
 
     function setTopbarMenuOpen(open) {{
       const shouldOpen = Boolean(open);
+      const focusWasInside = el.topbarMenu.contains(document.activeElement);
       if (shouldOpen) {{
         setOperatorActionPaletteOpen(false);
-        syncTopbarMenuPosition();
+        setSwitcherOpen(false);
+        setSettingsOpen(false);
+        setNoticesOpen(false);
+        setSystemOpen(false);
         setStatusActionOpen(false);
+        syncTopbarMenuPosition();
       }}
       document.body.classList.toggle("topbar-menu-open", shouldOpen);
+      el.topbarMenu.inert = !shouldOpen;
       el.topbarMenu.setAttribute("aria-hidden", shouldOpen ? "false" : "true");
       el.topbarMenuButton.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+      if (shouldOpen && !focusWasInside) {{
+        el.topbarMenu.querySelector('button:not(:disabled), a[href]:not([aria-disabled="true"])')?.focus({{ preventScroll: true }});
+      }} else if (!shouldOpen && focusWasInside) {{
+        el.topbarMenuButton.focus({{ preventScroll: true }});
+      }}
     }}
 
     function setStatusActionOpen(open) {{
@@ -68924,6 +71150,12 @@ class Handler(BaseHTTPRequestHandler):
       state.transportConnected = Boolean(connected);
       el.transportStateMenu.textContent = label;
       el.transportStateMenu.dataset.connected = connected ? "true" : "false";
+      const headerConnection = document.getElementById("header-connection-state");
+      if (headerConnection) {{
+        headerConnection.textContent = connected ? "Live" : "Not connected";
+        headerConnection.dataset.connected = connected ? "true" : "false";
+        headerConnection.title = state.transportLabel;
+      }}
       if (state.snapshot) {{
         renderComposerActiveWork(state.snapshot);
         renderStatusCapsules(state.snapshot);
@@ -75047,7 +77279,7 @@ class Handler(BaseHTTPRequestHandler):
       if (!canvas) {{
         return false;
       }}
-      const dpr = Math.max(1, Math.min(2, Number(window.devicePixelRatio || 1)));
+      const dpr = Math.max(1, Math.min(window.innerWidth <= 640 ? 1 : 1.5, Number(window.devicePixelRatio || 1)));
       const width = Math.max(320, Math.ceil(window.innerWidth || document.documentElement.clientWidth || 0));
       const height = Math.max(320, Math.ceil(window.innerHeight || document.documentElement.clientHeight || 0));
       const size = state.microtextureThreadSize || {{}};
@@ -75187,6 +77419,15 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function drawMicrotextureThreadField(timestampMs = 0) {{
+      if (document.visibilityState === "hidden") {{
+        state.microtextureThreadFrame = 0;
+        return;
+      }}
+      const frameInterval = window.innerWidth <= 640 ? 50 : 1000 / 30;
+      if (timestampMs > 0 && timestampMs - Number(state.microtextureThreadLastTs || 0) < frameInterval) {{
+        state.microtextureThreadFrame = window.requestAnimationFrame(drawMicrotextureThreadField);
+        return;
+      }}
       const canvas = el.microtextureThreadCanvas;
       if (!canvas || !canvas.getContext) {{
         return;
@@ -75848,6 +78089,40 @@ class Handler(BaseHTTPRequestHandler):
         }})
         .filter(Boolean)
         .slice(0, 4);
+    }}
+
+    function normalizeTopKpiMeters(snapshot) {{
+      const kpis = snapshot?.kpis && typeof snapshot.kpis === "object" ? snapshot.kpis : {{}};
+      const rawMeters = Array.isArray(kpis.top_meters) ? kpis.top_meters : [];
+      if (!rawMeters.length) return [];
+      const processor = kpis.processor && typeof kpis.processor === "object" ? kpis.processor : {{}};
+      const processorStatus = String(processor.status || "warming").trim().toLowerCase();
+      const processorMeta = processorStatus === "ranked" ? "DGX ranked" : "local fallback";
+      return rawMeters.map((item, index) => {{
+        if (!item || typeof item !== "object" || !String(item.label || "").trim()) return null;
+        const source = String(item.source || "local status").trim();
+        const detail = String(item.detail || "").trim();
+        const updatedAt = parseKpiTimestampSeconds(item.updated_at);
+        const staleAfter = Math.max(0, Number(item.stale_after_seconds || 0));
+        const stale = updatedAt > 0 && staleAfter > 0 && (Date.now() / 1000) - updatedAt > staleAfter;
+        let tone = normalizeKpiTone(item.tone);
+        if (stale && (tone === "ok" || tone === "active")) tone = "warn";
+        return {{
+          id: String(item.id || `top-kpi-${{index}}`),
+          label: String(item.label || "KPI").trim(),
+          value: item.value === null || item.value === undefined || item.value === "" ? "n/a" : String(item.value),
+          meta: stale ? `${{processorMeta}} · stale` : processorMeta,
+          tone,
+          title: [
+            detail,
+            `Source · ${{source}}`,
+            `Processor · local DGX / ${{String(processor.model || "resident Qwen").trim()}}`,
+            "Cloud fallback · disabled",
+            stale ? "Source data is stale." : "",
+          ].filter(Boolean).join(" · "),
+          action: "system",
+        }};
+      }}).filter(Boolean).slice(0, 4);
     }}
 
     function normalizeBbsTone(value) {{
@@ -76695,7 +78970,8 @@ class Handler(BaseHTTPRequestHandler):
         action: issue ? "system" : "notices",
       }});
 
-      const adapterCapsules = normalizeResourceKpiMeters(snapshot);
+      const topKpis = normalizeTopKpiMeters(snapshot);
+      const adapterCapsules = topKpis.length ? topKpis : normalizeResourceKpiMeters(snapshot);
       if (adapterCapsules.length) {{
         const adapterIds = new Set(adapterCapsules.map((item) => String(item.id || "")));
         const fallbackCapsules = capsules.filter((item) => !adapterIds.has(String(item.id || "")));
@@ -79481,7 +81757,11 @@ class Handler(BaseHTTPRequestHandler):
       if (!text) {{
         return false;
       }}
-      return looksLikeLowValueRawError(text) || text.length > 220 || /\\r?\\n/.test(text);
+      return containsCodexAuthFailure(text) || containsRateLimitError(text)
+        || containsUsageLimitError(text) || containsCodexRouteMismatchError(text)
+        || containsCodexCliUpgradeError(text) || containsCertWorkflowError(text)
+        || containsOpenAITransportError(text)
+        || looksLikeLowValueRawError(text) || text.length > 220 || /\\r?\\n/.test(text);
     }}
 
     function renderErrorMarkup(value) {{
@@ -79499,7 +81779,7 @@ class Handler(BaseHTTPRequestHandler):
       return `
         <div class="error-inline-summary">${{escapeHtml(summarizeErrorText(text))}}</div>
         <details class="error-details">
-          <summary>Raw</summary>
+          <summary>Technical details</summary>
           <pre>${{escapeHtml(text)}}</pre>
         </details>
       `;
@@ -80584,7 +82864,7 @@ class Handler(BaseHTTPRequestHandler):
           : liveProfile;
         const liveAgentLabel = String(AGENT_LABEL || "Assistant").trim() || "Assistant";
         const elapsed = activityElapsed(snapshot);
-        const modelState = snapshot.model_process_alive ? "model process alive" : "waiting for model process";
+        const modelState = liveProgressStageCopy(snapshot);
         const usageCopy = usageSummaryForActiveWork(snapshot);
         const workingRecap = workingRecapForSnapshot(snapshot);
         const liveExpanded = liveStatusExpanded(snapshot, elapsed)
@@ -80817,6 +83097,17 @@ class Handler(BaseHTTPRequestHandler):
 
     function sentenceFragment(value, limit = 150) {{
       return summarizePrompt(String(value || "").replace(/[.。]+$/g, ""), limit);
+    }}
+
+    function liveProgressStageCopy(snapshot) {{
+      if (!snapshot?.pending) return "";
+      const live = liveTurnForSnapshot(snapshot);
+      const current = Number(live.started_at || 0) >= Number(snapshot.last_started_at || 0);
+      const phase = current ? String(live.phase || "") : "";
+      if (phase === "checking_runtime") return "Checking runtime readiness";
+      if (phase === "preparing_context") return "Preparing conversation context";
+      if (phase === "waiting_model") return "Waiting for the model’s next update";
+      return "Request accepted; waiting for a progress update";
     }}
 
     function liveStatusExpanded(snapshot, elapsed) {{
@@ -82189,6 +84480,10 @@ class Handler(BaseHTTPRequestHandler):
       const attachmentBusy = state.attachmentBusy || hasActiveUploadTrayItems();
       const busy = Boolean(isBusy) || attachmentBusy || state.promptSubmitInFlight;
       const replyActive = webReplyActive(state.snapshot);
+      const receipt = loadPromptSubmission();
+      const checkingDelivery = receipt
+        && ["sending", "reconciling"].includes(String(receipt.state || ""))
+        && promptReceiptMatches(el.promptInput.value, receipt.value);
       el.askButton.disabled = busy;
       if (el.interruptSubmitButton) {{
         el.interruptSubmitButton.disabled = busy || !replyActive;
@@ -82212,9 +84507,9 @@ class Handler(BaseHTTPRequestHandler):
         setAskButtonState(
           state.snapshot.pending
             ? "Queue next prompt behind the current reply. Active work continues above the input."
-            : "Queue prompt. Press Enter to queue and Shift+Enter for a new line.",
+            : "Send message. Press Enter to send and Shift+Enter for a new line.",
           "→",
-          state.snapshot.pending ? "Queue" : "Queue prompt"
+          checkingDelivery ? "Check delivery" : state.snapshot.pending ? "Queue" : "Send"
         );
         setInterruptSubmitState(
           interruptConfirming
@@ -82327,15 +84622,29 @@ class Handler(BaseHTTPRequestHandler):
         : "Preparing live console state. Detailed local health and service state is loading.";
     }}
 
+    function sendingPromptPhase(receipt, now = Date.now()) {{
+      const submittedAt = Number(receipt?.submittedAt || 0);
+      const elapsed = submittedAt > 0 ? Math.max(0, now - submittedAt) : 0;
+      return {{
+        meta: "Waiting for confirmation",
+        body: elapsed >= 10000
+          ? "Confirmation is taking longer than usual. Your message is kept here while we wait; you don’t need to send it again."
+          : "Your message is being sent. Waiting for the server to confirm it was accepted.",
+      }};
+    }}
+
+    function scheduleSubmissionFeedback(submissionId) {{
+      return window.setTimeout(() => {{
+        const receipt = loadPromptSubmission();
+        if (state.promptSubmitInFlight && receipt?.submissionId === submissionId && receipt.state === "sending") {{
+          setOperatorReceipt(sendingPromptPhase(receipt).body, "info", {{ timeoutMs: ACTION_REQUEST_TIMEOUT_MS + 3000 }});
+        }}
+      }}, 10000);
+    }}
+
     function routePreparationReceipt(runtime, model, serviceTier, queued = false) {{
-      const route = [
-        String(runtime || "").trim(),
-        String(serviceTier || "").trim(),
-        String(model || "").trim(),
-      ].filter(Boolean).join(" · ");
       return [
-        `Preparing route: ${{route || "selected runtime"}}.`,
-        "Applying route policy before acceptance.",
+        "Sending your message. Waiting for confirmation.",
         queued ? "Current work continues while this prompt waits." : "",
       ].filter(Boolean).join(" ");
     }}
@@ -82737,7 +85046,6 @@ class Handler(BaseHTTPRequestHandler):
       renderSystemRuntimeMetrics(snapshot);
       renderConnectorAccess(snapshot);
 
-      hydrateControlTooltips();
       observeControlTooltips();
       scheduleComposerReserve();
       setBusyButtons(false);
@@ -82763,7 +85071,17 @@ class Handler(BaseHTTPRequestHandler):
         controller.abort();
       }}, Math.max(1000, Number(timeoutMs) || ACTION_REQUEST_TIMEOUT_MS));
       try {{
-        return await fetch(url, {{ ...options, signal: controller.signal }});
+        const response = await fetch(url, {{ ...options, signal: controller.signal }});
+        // These callers consume finite API replies, never event streams. Keep the
+        // deadline active until the entire reply arrives, including submission receipts.
+        const body = await response.arrayBuffer();
+        const buffered = new Response([204, 205, 304].includes(response.status) ? null : body, {{
+          status: response.status, statusText: response.statusText, headers: response.headers,
+        }});
+        Object.defineProperties(buffered, {{
+          url: {{ value: response.url }}, redirected: {{ value: response.redirected }},
+        }});
+        return buffered;
       }} catch (err) {{
         if (timedOut) {{
           throw new Error(`request timed out after ${{Math.ceil(timeoutMs / 1000)}}s`);
@@ -82777,7 +85095,16 @@ class Handler(BaseHTTPRequestHandler):
       }}
     }}
 
-    async function fetchStatus() {{
+    let statusRequest = null;
+
+    function fetchStatus() {{
+      if (!statusRequest) {{
+        statusRequest = fetchStatusOnce().finally(() => {{ statusRequest = null; }});
+      }}
+      return statusRequest;
+    }}
+
+    async function fetchStatusOnce() {{
       const res = await fetchWithDeadline(
         `${{clientPath("/api/status")}}?token=${{encodeURIComponent(TOKEN)}}`,
         {{ cache: "no-store" }},
@@ -82978,7 +85305,10 @@ class Handler(BaseHTTPRequestHandler):
         throw new Error("authentication required");
       }}
       if (!res.ok) {{
-        throw new Error(data.error || `request failed (${{res.status}})`);
+        const error = new Error(data.error || `request failed (${{res.status}})`);
+        error.httpStatus = res.status;
+        error.responseData = data;
+        throw error;
       }}
       return data;
     }}
@@ -84804,7 +87134,20 @@ class Handler(BaseHTTPRequestHandler):
       state.pollTimer = window.setTimeout(refreshStatus, nextDelay);
     }}
 
+    function armStreamWatchdog(stream) {{
+      clearTimeout(state.streamWatchdogTimer);
+      state.streamWatchdogTimer = window.setTimeout(() => {{
+        if (state.stream !== stream) return;
+        disconnectStream();
+        setTransportState("Reconnecting · checking status…", false);
+        schedulePoll(1);
+        scheduleStreamReconnect(1800);
+      }}, Math.max(45000, Number("{STREAM_IDLE_SECONDS}") * 3000));
+    }}
+
     function disconnectStream() {{
+      clearTimeout(state.streamWatchdogTimer);
+      state.streamWatchdogTimer = 0;
       clearTimeout(state.streamReconnectTimer);
       state.streamReconnectTimer = 0;
       if (state.stream) {{
@@ -84857,11 +87200,17 @@ class Handler(BaseHTTPRequestHandler):
       state.streamReconnectTimer = 0;
       const stream = new EventSource(`${{clientPath("/api/stream")}}?token=${{encodeURIComponent(TOKEN)}}`);
       state.stream = stream;
+      armStreamWatchdog(stream);
+      stream.addEventListener("heartbeat", () => {{
+        if (state.stream === stream) armStreamWatchdog(stream);
+      }});
       setTransportState("Connecting…", false);
 
       stream.addEventListener("snapshot", (event) => {{
+        if (state.stream !== stream) return;
         try {{
           const snapshot = JSON.parse(event.data);
+          armStreamWatchdog(stream);
           state.streamConnected = true;
           setTransportState(snapshot.pending ? "Live · waiting" : "Live", true);
           if (!state.transportAcknowledged) {{
@@ -84873,11 +87222,15 @@ class Handler(BaseHTTPRequestHandler):
           clearTimeout(state.pollTimer);
           render(snapshot);
         }} catch (_) {{
-          // Ignore malformed event payloads and let the fallback polling recover.
+          disconnectStream();
+          setTransportState("Reconnecting · checking status…", false);
+          schedulePoll(1);
+          scheduleStreamReconnect(1800);
         }}
       }});
 
       stream.onerror = () => {{
+        if (state.stream !== stream) return;
         disconnectStream();
         setTransportState(document.hidden ? "Background" : "Reconnecting…", false);
         if (!document.hidden) {{
@@ -85195,10 +87548,13 @@ class Handler(BaseHTTPRequestHandler):
       persistPromptSubmission(message, {{
         state: "sending",
         submissionId,
-        submittedAt: priorReceipt?.submittedAt || Date.now(),
+        submittedAt: priorReceipt?.submissionId === submissionId
+          ? priorReceipt.submittedAt || Date.now()
+          : Date.now(),
       }});
       clearSubmittedComposer();
       render(state.snapshot);
+      const submissionFeedbackTimer = scheduleSubmissionFeedback(submissionId);
       try {{
         const result = await postForm("/api/ask", {{
           message,
@@ -85271,12 +87627,32 @@ class Handler(BaseHTTPRequestHandler):
           render(state.snapshot);
         }}
       }} catch (err) {{
+        const knownRejection = Number(err?.httpStatus || 0) >= 400
+          && Number(err?.httpStatus || 0) < 500
+          && err?.responseData
+          && typeof err.responseData === "object";
+        if (knownRejection) {{
+          clearPromptSubmission();
+          restoreRejectedPrompt(draftValue);
+          const rejectionSnapshot = err.responseData.snapshot;
+          const rejectedText = err.responseData.error || err.message || "Prompt was rejected.";
+          setOperatorReceipt(rejectedText, "warning");
+          playFeedbackTone("blocked");
+          pulseComposerShell("soft");
+          render(rejectionSnapshot && typeof rejectionSnapshot === "object"
+            ? rejectionSnapshot
+            : state.snapshot);
+          return;
+        }}
         persistPromptSubmission(message, {{
           state: "reconciling",
           submissionId,
-          submittedAt: priorReceipt?.submittedAt || Date.now(),
+          submittedAt: priorReceipt?.submissionId === submissionId
+          ? priorReceipt.submittedAt || Date.now()
+          : Date.now(),
         }});
-        const unknownText = "Submit outcome unknown. Checking whether the console accepted it; do not resend yet.";
+        restoreRejectedPrompt(draftValue);
+        const unknownText = "Delivery is unconfirmed. Your draft is saved. Check delivery retries the same submission safely.";
         setOperatorReceipt(unknownText, "warning", {{ timeoutMs: 15000 }});
         playFeedbackTone("blocked");
         pulseComposerShell("soft");
@@ -85288,6 +87664,7 @@ class Handler(BaseHTTPRequestHandler):
         }}, 650);
         setBusyButtons(false);
       }} finally {{
+        window.clearTimeout(submissionFeedbackTimer);
         state.promptSubmitInFlight = false;
         state.promptSubmitSignature = "";
         setBusyButtons(false);
@@ -86214,6 +88591,12 @@ class Handler(BaseHTTPRequestHandler):
         void submitStatusAction("handle");
       }});
     }}
+    const consoleDetailsToggle = document.getElementById("console-details-toggle");
+    consoleDetailsToggle.addEventListener("click", () => {{
+      const expanded = document.body.classList.toggle("console-details-open");
+      consoleDetailsToggle.setAttribute("aria-expanded", String(expanded));
+      window.dispatchEvent(new Event("resize"));
+    }});
     el.topbarMenuButton.addEventListener("click", () => {{
       setSwitcherOpen(false);
       setTopbarMenuOpen(!document.body.classList.contains("topbar-menu-open"));
@@ -86605,10 +88988,13 @@ class Handler(BaseHTTPRequestHandler):
       if (event.key !== "Escape") {{
         return false;
       }}
+      const headerMenuWasOpen = document.body.classList.contains("topbar-menu-open");
       if (dismissTransientChrome()) {{
         event.preventDefault();
         event.stopPropagation();
-        focusPromptInputAtEnd();
+        if (!headerMenuWasOpen) {{
+          focusPromptInputAtEnd();
+        }}
         return true;
       }}
       const submission = loadPromptSubmission();
@@ -86800,17 +89186,28 @@ class Handler(BaseHTTPRequestHandler):
     el.interruptLatestButton.addEventListener("click", () => fireAction("/api/queue/interrupt-latest", "Upgrading latest queued prompt to interruption…"));
     el.interruptButton.addEventListener("click", () => fireAction("/api/interrupt", "Interrupting tmux session…"));
     el.restartButton.addEventListener("click", () => fireAction("/api/restart", "Restarting the interactive session…"));
+    let composerInputFrame = 0;
+    let composerInputDetailsTimer = 0;
     el.promptInput.addEventListener("input", () => {{
       playInteractionTone("type");
       clearInterruptSubmitConfirm();
-      autoresize(el.promptInput);
-      updateComposerToolbar(state.snapshot);
-      renderOperatorFocus(state.snapshot);
-      renderSuggestions(state.snapshot);
-      renderPromptSafetyRail();
-      renderPromptCostEstimate(state.snapshot);
       persistPromptDraft(el.promptInput.value);
-      scheduleComposerReserve();
+      if (!composerInputFrame) {{
+        composerInputFrame = window.requestAnimationFrame(() => {{
+          composerInputFrame = 0;
+          autoresize(el.promptInput);
+          updateComposerToolbar(state.snapshot);
+          renderPromptSafetyRail();
+          scheduleComposerReserve();
+        }});
+      }}
+      window.clearTimeout(composerInputDetailsTimer);
+      composerInputDetailsTimer = window.setTimeout(() => {{
+        composerInputDetailsTimer = 0;
+        renderOperatorFocus(state.snapshot);
+        renderSuggestions(state.snapshot);
+        renderPromptCostEstimate(state.snapshot);
+      }}, 120);
     }});
     el.tmuxInput.addEventListener("keydown", (event) => {{
       maybeKillInputLine(event);

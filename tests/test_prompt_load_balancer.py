@@ -1502,7 +1502,7 @@ def test_openai_compat_responses_streams_incremental_sse_with_admission_feedback
     )
 
     assert result.status_code == 200
-    assert result.headers["cache-control"] == "no-cache"
+    assert result.headers["cache-control"] == "no-store"
     assert result.headers["x-accel-buffering"] == "no"
     events = _response_sse_events(result.text)
     event_types = [event for event, _data in events]

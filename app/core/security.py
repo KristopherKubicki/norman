@@ -7,12 +7,15 @@ import jwt
 from app.core.config import settings
 from jwt import PyJWTError
 from pwdlib import PasswordHash
+from pwdlib.exceptions import UnknownHashError
 
 password_hash = PasswordHash.recommended()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify current Argon2 hashes and existing bcrypt hashes."""
+    if not isinstance(plain_password, str) or not isinstance(hashed_password, str):
+        return False
     try:
         if hashed_password.startswith(("$2a$", "$2b$", "$2y$")):
             return bcrypt.checkpw(
@@ -20,7 +23,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
                 hashed_password.encode("utf-8"),
             )
         return password_hash.verify(plain_password, hashed_password)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, UnknownHashError):
         return False
 
 

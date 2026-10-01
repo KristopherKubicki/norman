@@ -450,6 +450,81 @@ def test_queue_reauthorization_denial_does_not_auto_rollover(monkeypatch, tmp_pa
     assert meta["last_session_admission"]["reason_code"] == "reauthorization_required"
 
 
+def test_stale_idle_provider_thread_rotates_without_erasing_web_history(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    module.SESSION_BUDGET_POLICY = module.SessionBudgetPolicy(
+        enabled=True,
+        checkpoint_tokens=100,
+        reauthorization_tokens=200,
+        max_age_seconds=60,
+        max_tool_calls=100,
+        require_named_escalation=False,
+    )
+    module.write_text(module.THREAD_ID_PATH, "stale-provider-thread")
+    module.write_text(module.THREAD_SCOPE_PATH, "profile-v2:work")
+    module.write_text(module.HISTORY_PATH, '{"prompt":"prior","response":"kept"}\n')
+    module.update_status_meta(pending=False, state="ok", queued_prompts=[])
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    decision = {
+        "allowed": False,
+        "reason_code": "reauthorization_required",
+        "usage": {"age_seconds": 120, "total_tokens": 243_631},
+    }
+
+    rotation = module.rotate_idle_provider_thread_for_operator_prompt(
+        decision,
+        prompt="answer this standalone budget question",
+        source="operator",
+        actor_ip="127.0.0.1",
+    )
+
+    assert rotation["reason"] == "stale_idle_provider_thread"
+    assert rotation["prior_thread_id"] == "stale-provider-thread"
+    assert module.read_text(module.THREAD_ID_PATH) == ""
+    assert module.read_text(module.THREAD_SCOPE_PATH) == ""
+    assert '"response":"kept"' in module.read_text(module.HISTORY_PATH)
+
+
+def test_recent_or_busy_provider_thread_does_not_rotate(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    module.SESSION_BUDGET_POLICY = module.SessionBudgetPolicy(
+        enabled=True,
+        checkpoint_tokens=100,
+        reauthorization_tokens=200,
+        max_age_seconds=60,
+        max_tool_calls=100,
+        require_named_escalation=False,
+    )
+    module.write_text(module.THREAD_ID_PATH, "active-provider-thread")
+    module.update_status_meta(pending=False, state="ok", queued_prompts=[])
+    decision = {
+        "allowed": False,
+        "reason_code": "checkpoint_required",
+        "usage": {"age_seconds": 120, "total_tokens": 150},
+    }
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: True)
+
+    assert not module.rotate_idle_provider_thread_for_operator_prompt(
+        decision,
+        prompt="continue the current investigation",
+        source="operator",
+    )
+    assert module.read_text(module.THREAD_ID_PATH) == "active-provider-thread"
+
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    decision["usage"]["age_seconds"] = 30
+    assert not module.rotate_idle_provider_thread_for_operator_prompt(
+        decision,
+        prompt="continue the current investigation",
+        source="operator",
+    )
+    assert module.read_text(module.THREAD_ID_PATH) == "active-provider-thread"
+
+
 def test_successful_compact_rollover_clears_thread_and_runs_original_once(
     monkeypatch, tmp_path
 ):
@@ -936,6 +1011,46 @@ def test_live_status_snapshot_bounds_cached_diagnostics(monkeypatch, tmp_path):
     assert "recent" not in snapshot["usage"]
     assert snapshot["snapshot_cached"] is True
     assert snapshot["route_bootstrap"]["details_ready"] is True
+
+
+def test_history_hides_legacy_diagnostics_and_internal_continuations(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    entries = module.finalize_history_entries(
+        [
+            {
+                "prompt": "quick status",
+                "response": "State: idle",
+                "model": "deterministic-status",
+                "usage": {},
+            },
+            {
+                "prompt": "[auto-continuation: next-action-plan]\nContinue.",
+                "response": "Planning the next action.",
+                "model": "openai.gpt-5.6-terra",
+                "usage": {},
+            },
+            {
+                "prompt": "show the image",
+                "response": (
+                    "Prior Bridge status\n"
+                    "This diagnostic reply has been superseded by the live route."
+                ),
+                "model": "openai.gpt-5.6-terra",
+                "usage": {},
+            },
+            {
+                "prompt": "show the image",
+                "response": "The image is attached below.",
+                "model": "openai.gpt-5.6-terra",
+                "usage": {},
+            },
+        ],
+        limit=10,
+    )
+
+    assert [entry["response"] for entry in entries] == ["The image is attached below."]
 
 
 def test_console_runtime_bridge_posts_audit_events(monkeypatch, tmp_path):
@@ -2617,6 +2732,29 @@ def test_bedrock_profile_routes_omit_openai_service_tier_config(monkeypatch, tmp
     assert module.service_tier_config_args("bedrock-failover") == []
 
 
+def test_subscription_flex_can_use_supported_default_wire_tier(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "CODEX_STANDARD_PROFILE_V2", "")
+    monkeypatch.setattr(module, "CODEX_FLEX_PROFILE_V2", "")
+    monkeypatch.setattr(module, "CODEX_PRIORITY_PROFILE_V2", "")
+    monkeypatch.setenv("NORMAN_CODEX_FLEX_EXECUTION_TIER", "default")
+
+    assert module.service_tier_config_args("flex") == [
+        "-c",
+        'model_provider="openai"',
+        "-c",
+        'service_tier="default"',
+    ]
+    assert module.service_tier_config_args("priority")[-1] == 'service_tier="priority"'
+    monkeypatch.setenv("NORMAN_CODEX_FLEX_EXECUTION_TIER", "invalid")
+    assert module.service_tier_config_args("flex")[-1] == 'service_tier="flex"'
+    monkeypatch.delenv("NORMAN_CODEX_FLEX_EXECUTION_TIER")
+    assert module.service_tier_config_args("flex")[-1] == 'service_tier="flex"'
+    monkeypatch.setenv("NORMAN_CODEX_FLEX_EXECUTION_TIER", "default")
+    monkeypatch.setattr(module, "CODEX_FLEX_PROFILE_V2", "custom-profile")
+    assert module.service_tier_config_args("flex") == []
+
+
 def test_profile_flag_uses_profile_v2_for_pre_0134_codex_with_both_flags(
     monkeypatch, tmp_path
 ):
@@ -2717,34 +2855,6 @@ def test_localllm_runtime_rejects_legacy_qwen3_text_model(monkeypatch, tmp_path)
     assert module._qwen_below_floor("qwen3:8b") is True
     assert module._local_llm_model_allowed("qwen3:8b") is False
     assert module.LOCAL_LLM_DEFAULT_MODEL == "local-llm"
-    assert module.runtime_can_execute("localllm") is True
-
-
-def test_localllm_runtime_accepts_qwen35_plus_model(monkeypatch, tmp_path):
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.5:27b-q4_K_M")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.5:27b-q4_K_M")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "1")
-
-    module = _load_agent_console_web(monkeypatch, tmp_path)
-
-    assert module._qwen_below_floor("qwen3.5:27b-q4_K_M") is False
-    assert module._local_llm_model_allowed("qwen3.5:27b-q4_K_M") is True
-    assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3.5:27b-q4_K_M"
-    assert module.runtime_can_execute("localllm") is True
-
-
-def test_localllm_runtime_accepts_qwen3_coder_benchmark_lane(monkeypatch, tmp_path):
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3-coder:30b-a3b-q4_K_M")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3-coder:30b-a3b-q4_K_M")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
-    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "1")
-
-    module = _load_agent_console_web(monkeypatch, tmp_path)
-
-    assert module._qwen_below_floor("qwen3-coder:30b-a3b-q4_K_M") is False
-    assert module._local_llm_model_allowed("qwen3-coder:30b-a3b-q4_K_M") is True
-    assert "qwen3-coder:30b-a3b-q4_K_M" in module.local_llm_preferred_models()
     assert module.runtime_can_execute("localllm") is True
 
 
@@ -3146,17 +3256,11 @@ def test_deterministic_status_prompt_completes_without_model_call(
 
     assert snapshot["pending"] is False
     assert snapshot["state"] == "ok"
-    assert "deterministic TUI state" in snapshot["last_response"]
-    assert "Local lane availability:" in snapshot["last_response"]
-    assert "Local proof:" not in snapshot["last_response"]
-    history = module.load_history(limit=1)
-    assert history[-1]["runtime"] == "localllm"
-    assert history[-1]["model"] == "deterministic-status"
-    assert history[-1]["usage"]["route_execution"] == "deterministic_tui_status"
-    assert history[-1]["usage"]["total_tokens"] == 0
-    assert history[-1]["work_classification"]["work_class"] == "deterministic"
-    assert history[-1]["route_rationale"] == "deterministic: trusted status handler."
-    assert history[-1]["usage"]["work_classification"]["work_class"] == "deterministic"
+    assert "Bridge status" in snapshot["last_response"]
+    assert "instant local status check" in snapshot["last_response"]
+    assert "Selected route:" not in snapshot["last_response"]
+    # Ephemeral status checks must not pollute the next prompt's conversation context.
+    assert module.load_history(limit=1) == []
     receipts = [
         json.loads(line)
         for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
@@ -3522,6 +3626,15 @@ def test_conversational_status_prompt_does_not_bypass_normal_routing(
         is False
     )
     assert module.deterministic_status_prompt_allowed("Status update?", []) is True
+
+
+def test_media_request_never_uses_deterministic_state_read(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "0")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = "Can you show me the images in this session here?"
+
+    assert module.prompt_requests_media_work(prompt) is True
+    assert module.deterministic_status_prompt_allowed(prompt, []) is False
 
 
 def test_investigative_status_runs_local_route_preflight_instead_of_zero_token_reply(
@@ -5565,6 +5678,94 @@ def test_agent_template_stale_personal_bedrock_usage_reprices_as_usd(
     assert estimate["usd"] > 0
 
 
+def test_context_preflight_uses_inherited_thread_pressure_for_cloud_gate(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CODEX_CLOUD_CONTEXT_GATE_TOKENS", "80000")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    inherited_context = {
+        "thread_tokens": 1_216_915,
+        "thread_uncached_input_tokens": 120_626,
+        "hard_cap_exceeded": True,
+        "context_pack_applied": True,
+        "saved_tokens": 1_100_000,
+        "reason": "hard-cloud-context-cap",
+    }
+    payload = {
+        "runtime": "codex",
+        "prompt_estimated_tokens": 30,
+        "inherited_context": inherited_context,
+        "memory_refs": [],
+    }
+    gate = module.cloud_context_gate_accounting(
+        payload,
+        saved_tokens=0,
+        offline={"used": False},
+        planner={"used": True},
+    )
+    planner_prompt = module.local_planner_preflight_prompt(payload)
+
+    assert gate["active"] is True
+    assert gate["status"] == "preflighted"
+    assert gate["effective_context_tokens"] == 1_216_915
+    assert gate["inherited_context_tokens"] == 1_216_915
+    assert "inherited thread ceiling 1,216,915 tokens" in "\n".join(gate["reasons"])
+    assert "hard-cloud-context-cap" in planner_prompt
+    assert '"thread_tokens": 1216915' in planner_prompt
+
+
+def test_operator_prompt_context_offloads_large_request_to_authoritative_source(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "OPERATOR_PROMPTS_DIR", tmp_path / "operator-prompts")
+    monkeypatch.setattr(module, "OPERATOR_PROMPT_INLINE_CHARS", 40)
+    monkeypatch.setattr(module, "OPERATOR_PROMPT_HEAD_CHARS", 24)
+    monkeypatch.setattr(module, "OPERATOR_PROMPT_TAIL_CHARS", 12)
+
+    original = "begin-" + ("middle-" * 1_200) + "end"
+    rendered, metadata = module.operator_prompt_context(original)
+
+    assert metadata["mode"] == "path_backed_preview"
+    assert metadata["saved_tokens"] > 0
+    assert metadata["path"]
+    assert Path(metadata["path"]).read_text(encoding="utf-8") == original
+    assert "Operator request (authoritative source):" in rendered
+    assert "Read the source file before relying on omitted details." in rendered
+    assert "begin-" in rendered
+    assert "end" in rendered
+    assert original not in rendered
+
+
+def test_local_planner_task_brief_is_bounded_and_preserves_constraints(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    brief, constraints = module.local_planner_task_brief(
+        {
+            "task_brief": "Inspect the camera event and return the newest matching image.",
+            "task_constraints": [
+                "Do not change device settings.",
+                "Use local evidence.",
+            ],
+        }
+    )
+
+    assert brief == "Inspect the camera event and return the newest matching image."
+    assert constraints == ["Do not change device settings.", "Use local evidence."]
+    planner_prompt = module.local_planner_preflight_prompt(
+        {
+            "prompt_preview": "Show the newest door image.",
+            "runtime": "codex",
+            "model": "openai.gpt-5.6-terra",
+        }
+    )
+    assert "task_brief" in planner_prompt
+    assert "task_constraints" in planner_prompt
+
+
 def test_agent_template_mixed_unpriced_direct_and_bedrock_history_prefers_usd_display(
     monkeypatch, tmp_path
 ):
@@ -7119,4 +7320,53 @@ def test_interactive_kernel_transport_failures_fall_back_to_codex(
     assert module.TUI_KERNEL_OWNED_TURN_ENABLED is False
     assert all(
         event["event_type"] != "chat.kernel-owned-turn-blocked" for event in events
+    )
+
+
+def test_queued_owner_request_rotates_spent_thread_and_rechecks_policy(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    _queue_rollover_candidate(module, prompt="Check HAL driver without rebooting")
+    module.write_text(module.THREAD_ID_PATH, "spent-thread")
+    module.update_status_meta(pending=False, state="ok")
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    calls = []
+
+    def admission(**kwargs):
+        thread = module.read_text(module.THREAD_ID_PATH)
+        calls.append(thread)
+        if thread:
+            return {
+                "allowed": False,
+                "reason_code": "reauthorization_required",
+                "thread_id": thread,
+            }
+        return {"allowed": True, "action": "allow", "reason_code": "within_budget"}
+
+    monkeypatch.setattr(module, "session_budget_admission", admission)
+    result = module.start_next_queued_prompt()
+    assert result is not None
+    assert result[0] == "Check HAL driver without rebooting"
+    assert calls == ["spent-thread", ""]
+    assert module.normalize_queue(module.load_status_meta()["queued_prompts"]) == []
+
+
+def test_submission_receipt_does_not_wait_for_remote_read(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError(
+            "Submission acknowledgement must not contact the coordinator"
+        )
+
+    monkeypatch.setattr(module, "_console_runtime_json_request", unexpected_request)
+    receipt = module.console_runtime_job_visibility("turn/accepted", probe=False)
+    assert receipt["state"] == "pending"
+    assert receipt["receipt_url"].endswith("/turn%2Faccepted")
+    assert receipt["error"] == ""
+    assert (
+        module.console_runtime_job_visibility("", probe=False)["state"] == "unavailable"
     )

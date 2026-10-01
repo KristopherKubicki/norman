@@ -9,6 +9,7 @@ from starlette.responses import RedirectResponse
 
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from pydantic import ValidationError
 
 from app.schemas import Token
 from app.schemas.user import UserAuthenticate, UserCreate
@@ -16,6 +17,7 @@ from app.schemas.bot import Bot, BotCreate, BotOut, BotUpdate
 from app.schemas.message import Message, MessageUpdate
 from app.schemas.interaction import InteractionCreate
 from app.core.config import active_config_file_path, settings
+from app.core.navigation import safe_local_return_to
 from app.core.safety_controls import (
     clamp_kill_switch_level,
     current_kill_switch_level,
@@ -105,6 +107,7 @@ from .views import (
     bots,
     systems,
     messages,
+    bridge,
     consoles,
     captions,
     login,
@@ -233,7 +236,26 @@ async def favicon():
 
 @app_routes.get("/")
 async def home_endpoint(request: Request, db: Session = Depends(get_async_db)):
-    return RedirectResponse(url=_norman_chat_redirect_url(request), status_code=307)
+    request_host = (request.headers.get("host") or "").split(":", 1)[0].strip().lower()
+    if request_host in {"switchboard.home.arpa", "switchboard.norman.home.arpa"}:
+        return RedirectResponse(url="/dashboard.html?view=switchboard", status_code=307)
+    return await bridge(request)
+
+
+@app_routes.get("/bridge")
+async def bridge_endpoint(request: Request):
+    return await bridge(request)
+
+
+@app_routes.get("/bridge.html")
+async def bridge_html_endpoint(request: Request):
+    return await bridge(request)
+
+
+@app_routes.get("/cockpit")
+@app_routes.get("/cockpit.html")
+async def legacy_cockpit_endpoint():
+    return RedirectResponse(url="/bridge", status_code=307)
 
 
 @app_routes.get("/index.html")
@@ -787,6 +809,7 @@ async def token(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
+@app_routes.get("/login")
 @app_routes.get("/login.html")
 async def login_endpoint(request: Request):
     return await login(request)
@@ -1654,14 +1677,14 @@ async def setup_post(
         username=form_data.username.split("@")[0],
     )
     _bootstrap_user_workspace(db, user)
-    response = _set_login_cookie(user.email)
+    response = _set_login_cookie(user.email, secure=request.url.scheme == "https")
     return response
 
 
 @app_routes.get("/logout", response_class=HTMLResponse)
 async def logout_endpoint(request: Request, response: Response):
-    clear_access_token_cookie(response)
-    return await logout(request)
+    response = await logout(request)
+    return clear_access_token_cookie(response)
 
 
 # @app_routes.post("/login", response_class=HTMLResponse)
@@ -1673,30 +1696,41 @@ async def logout_endpoint(request: Request, response: Response):
 async def login_post(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
+    return_to: str = Form("/", alias="next"),
+    remember_me: bool = Form(False),
     db: Session = Depends(get_async_db),
 ):
-    user_auth = UserAuthenticate(email=form_data.username, password=form_data.password)
-    user = authenticate_user(db, user_auth)
-    if not user:
+    async def rejected_login():
+        """Keep browser failures on the form; preserve JSON errors for API clients."""
+        if "text/html" in request.headers.get("accept", ""):
+            return await login(
+                request,
+                error="Email or password was not recognized. Please try again.",
+                username=form_data.username,
+                return_to=return_to,
+                remember_me=remember_me,
+                status_code=400,
+            )
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
-    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
-    )
+    try:
+        user_auth = UserAuthenticate(
+            email=form_data.username,
+            password=form_data.password,
+        )
+    except ValidationError:
+        return await rejected_login()
+    user = authenticate_user(db, user_auth)
+    if not user:
+        return await rejected_login()
 
     _bootstrap_user_workspace(db, user)
-
-    response = RedirectResponse(url="/", status_code=303)
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        max_age=settings.access_token_expire_minutes * 60,
-        samesite="lax",
-        path="/",
+    return _set_login_cookie(
+        user.email,
+        return_to,
+        remember_me=remember_me,
+        secure=request.url.scheme == "https",
     )
-    return response
 
 
 def _random_password() -> str:
@@ -1770,17 +1804,29 @@ def _bootstrap_user_workspace(db: Session, user: User) -> None:
         logger.exception("Failed to bootstrap workspace for user %s", user.id)
 
 
-def _set_login_cookie(user_email: str) -> Response:
-    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+def _set_login_cookie(
+    user_email: str,
+    return_to: str = "/",
+    *,
+    remember_me: bool = False,
+    secure: bool = True,
+) -> Response:
+    """Issue a bounded browser login, with persistence explicitly opted into."""
+    access_token_expires = (
+        timedelta(days=30)
+        if remember_me
+        else timedelta(minutes=settings.access_token_expire_minutes)
+    )
     access_token = create_access_token(
         data={"sub": user_email}, expires_delta=access_token_expires
     )
-    response = RedirectResponse(url="/", status_code=303)
+    response = RedirectResponse(url=safe_local_return_to(return_to), status_code=303)
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
-        max_age=settings.access_token_expire_minutes * 60,
+        max_age=int(access_token_expires.total_seconds()) if remember_me else None,
+        secure=secure,
         samesite="lax",
         path="/",
     )
@@ -1809,12 +1855,24 @@ def _set_oauth_cookies(response: Response, provider: str, state: str, nonce: str
             httponly=True,
             max_age=600,
             samesite="lax",
+            path="/",
         )
 
 
+def _set_oauth_return_cookie(response: Response, provider: str, return_to: str):
+    response.set_cookie(
+        key=_oauth_cookie_name(provider, "return"),
+        value=safe_local_return_to(return_to),
+        httponly=True,
+        max_age=600,
+        samesite="lax",
+        path="/",
+    )
+
+
 def _clear_oauth_cookies(response: Response, provider: str):
-    for kind in ("state", "nonce"):
-        response.delete_cookie(_oauth_cookie_name(provider, kind))
+    for kind in ("state", "nonce", "return"):
+        response.delete_cookie(_oauth_cookie_name(provider, kind), path="/")
 
 
 def _require_oauth_cookie(request: Request, provider: str, kind: str) -> str:
@@ -1925,10 +1983,11 @@ def _build_connector_diagnosis(connector):
             "token_field": token_field,
             "connected": bool(provider and config.get(token_field)),
             "expires_at": expires_at,
-            "scopes": config.get("oauth_scopes")
-            or oauth.scopes_by_provider.get(provider, [])
-            if provider and oauth.scopes_by_provider
-            else config.get("oauth_scopes") or [],
+            "scopes": (
+                config.get("oauth_scopes") or oauth.scopes_by_provider.get(provider, [])
+                if provider and oauth.scopes_by_provider
+                else config.get("oauth_scopes") or []
+            ),
         }
 
     connectivity = "unknown"
@@ -2000,6 +2059,7 @@ async def google_login(request: Request):
     url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
     response = RedirectResponse(url)
     _set_oauth_cookies(response, "google", state, nonce)
+    _set_oauth_return_cookie(response, "google", request.query_params.get("next", "/"))
     return response
 
 
@@ -2037,7 +2097,10 @@ async def google_callback(request: Request, db: Session = Depends(get_async_db))
             db, UserCreate(email=email, username=username, password=_random_password())
         )
     _bootstrap_user_workspace(db, user)
-    response = _set_login_cookie(user.email)
+    return_to = request.cookies.get(_oauth_cookie_name("google", "return"), "/")
+    response = _set_login_cookie(
+        user.email, return_to, secure=request.url.scheme == "https"
+    )
     _clear_oauth_cookies(response, "google")
     return response
 
@@ -2061,7 +2124,11 @@ async def microsoft_login(request: Request):
     url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?" + urlencode(
         params
     )
-    return RedirectResponse(url)
+    response = RedirectResponse(url)
+    _set_oauth_return_cookie(
+        response, "microsoft", request.query_params.get("next", "/")
+    )
+    return response
 
 
 @app_routes.get("/auth/microsoft/callback")
@@ -2096,4 +2163,9 @@ async def microsoft_callback(request: Request, db: Session = Depends(get_async_d
             db, UserCreate(email=email, username=username, password=_random_password())
         )
     _bootstrap_user_workspace(db, user)
-    return _set_login_cookie(user.email)
+    return_to = request.cookies.get(_oauth_cookie_name("microsoft", "return"), "/")
+    response = _set_login_cookie(
+        user.email, return_to, secure=request.url.scheme == "https"
+    )
+    _clear_oauth_cookies(response, "microsoft")
+    return response

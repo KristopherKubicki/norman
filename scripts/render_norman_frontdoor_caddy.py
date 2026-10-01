@@ -73,6 +73,22 @@ def render_frontdoor_snippet() -> str:
 (norman_frontdoor) {
     encode gzip zstd
 
+    @bridge_document path /bridge /bridge.html
+    header @bridge_document Cache-Control "no-store, max-age=0"
+
+    @bridge_live_assets path /static/css/bridge.css /static/js/bridge.js
+    handle @bridge_live_assets {
+        reverse_proxy 127.0.0.1:8000 {
+            header_down Cache-Control "no-store, max-age=0"
+        }
+    }
+
+    handle_path /static/* {
+        root * /var/www/norman-static
+        header Cache-Control "public, max-age=300, stale-while-revalidate=86400"
+        file_server
+    }
+
     redir /host /host/ 308
     handle_path /host/* {
         root * /var/www/host-home
@@ -81,7 +97,9 @@ def render_frontdoor_snippet() -> str:
 
     redir /codex /codex/ 308
     handle_path /codex/* {
-        reverse_proxy 127.0.0.1:8788
+        reverse_proxy 127.0.0.1:8788 {
+            header_up X-Forwarded-Prefix /codex
+        }
     }
 
     redir /bot /bot/ 308
@@ -104,7 +122,7 @@ def render_frontdoor_snippet() -> str:
 
     @norman_root path /
     handle @norman_root {
-        redir * /bot/norman/ 302
+        redir * /bridge 302
     }
 
     handle {
