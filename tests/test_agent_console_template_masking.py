@@ -1263,10 +1263,7 @@ def test_file_raw_endpoint_supports_byte_ranges_for_lightweight_previews() -> No
     assert 're.fullmatch(r"bytes=(\\d*)-(\\d*)", range_header)' in source
     assert "HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE" in source
     assert 'self.send_header("Accept-Ranges", "bytes")' in source
-    assert (
-        'self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")'
-        in source
-    )
+    assert 'safe_header_value(f"bytes {start}-{end}/{file_size}")' in source
     assert "handle.seek(start)" in source
     assert "handle.read(min(64 * 1024, remaining))" in source
 

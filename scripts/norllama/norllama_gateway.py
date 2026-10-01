@@ -8,6 +8,7 @@ import html
 import json
 import mimetypes
 import os
+import re
 import socketserver
 import sys
 import threading
@@ -5563,14 +5564,23 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
     request_queue_size = 128
 
 
+def safe_header_value(value: object) -> str:
+    """Strip HTTP line delimiters before handing metadata to the HTTP server."""
+    return str(value).replace("\r", "").replace("\n", "")
+
+
+def safe_header_name(value: str) -> str:
+    """Validate upstream header names before they reach a response sink."""
+    clean = safe_header_value(value)
+    if clean != value or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", clean):
+        raise ValueError("invalid HTTP response header name")
+    return clean
+
+
 class Handler(BaseHTTPRequestHandler):
     def send_header(self, keyword: str, value: str) -> None:
         """Keep untrusted metadata inside a single HTTP response header."""
-        if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", keyword):
-            raise ValueError("invalid HTTP response header name")
-        # Upstreams and filenames can contain line breaks; never emit a new header.
-        clean_value = str(value).replace("\r", "").replace("\n", "")
-        super().send_header(keyword, clean_value)
+        super().send_header(safe_header_name(keyword), safe_header_value(value))
 
     protocol_version = "HTTP/1.1"
     server_version = "Norllama/0.1"
@@ -5776,14 +5786,17 @@ class Handler(BaseHTTPRequestHandler):
             self._activity_extra = activity_extra
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
         self.send_header(
-            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
+        )
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
         )
         for key, value in (extra_headers or {}).items():
             if key.lower() not in {"content-length", "content-type"}:
-                self.send_header(key, value)
-        self.send_header("Content-Length", str(len(body)))
+                self.send_header(safe_header_name(key), safe_header_value(value))
+        self.send_header("Content-Length", safe_header_value(str(len(body))))
         self.end_headers()
         self.wfile.write(body)
         self.emit_request_log(
@@ -5809,11 +5822,14 @@ class Handler(BaseHTTPRequestHandler):
         body = body_text.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
         self.send_header(
-            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
         )
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
+        )
+        self.send_header("Content-Length", safe_header_value(str(len(body))))
         self.end_headers()
         self.wfile.write(body)
         self.emit_request_log(
@@ -5840,10 +5856,13 @@ class Handler(BaseHTTPRequestHandler):
                 )
             ):
                 continue
-            self.send_header(key, value)
-        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
+            self.send_header(safe_header_name(key), safe_header_value(value))
         self.send_header(
-            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
+        )
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
         )
         if self.app.expose_upstream_details:
             worker_endpoint = ""
@@ -5859,7 +5878,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.app.self_base_urls[0] if self.app.self_base_urls else ""
                 )
             if worker_endpoint:
-                self.send_header("X-Norllama-Worker-Endpoint", worker_endpoint)
+                self.send_header(
+                    "X-Norllama-Worker-Endpoint", safe_header_value(worker_endpoint)
+                )
         if extra_headers:
             for key, value in extra_headers.items():
                 if not self.app.expose_upstream_details and key in {
@@ -5867,8 +5888,8 @@ class Handler(BaseHTTPRequestHandler):
                     "X-Norllama-Attempts",
                 }:
                     continue
-                self.send_header(key, value)
-        self.send_header("Content-Length", str(len(body)))
+                self.send_header(safe_header_name(key), safe_header_value(value))
+        self.send_header("Content-Length", safe_header_value(str(len(body))))
         self.end_headers()
         self.wfile.write(body)
         upstream = ""
@@ -5916,10 +5937,13 @@ class Handler(BaseHTTPRequestHandler):
                 )
             ):
                 continue
-            self.send_header(key, value)
-        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
+            self.send_header(safe_header_name(key), safe_header_value(value))
         self.send_header(
-            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
+        )
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
         )
         if self.app.expose_upstream_details:
             worker_endpoint = ""
@@ -5937,7 +5961,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.app.self_base_urls[0] if self.app.self_base_urls else ""
                 )
             if worker_endpoint:
-                self.send_header("X-Norllama-Worker-Endpoint", worker_endpoint)
+                self.send_header(
+                    "X-Norllama-Worker-Endpoint", safe_header_value(worker_endpoint)
+                )
         if extra_headers:
             for key, value in extra_headers.items():
                 if not self.app.expose_upstream_details and key in {
@@ -5945,7 +5971,7 @@ class Handler(BaseHTTPRequestHandler):
                     "X-Norllama-Attempts",
                 }:
                     continue
-                self.send_header(key, value)
+                self.send_header(safe_header_name(key), safe_header_value(value))
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Accel-Buffering", "no")
         self.send_header("Connection", "close")
@@ -6000,12 +6026,15 @@ class Handler(BaseHTTPRequestHandler):
         self, status: int, *, content_type: str, content_length: int
     ) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
+        self.send_header("Content-Type", safe_header_value(content_type))
         self.send_header(
-            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
         )
-        self.send_header("Content-Length", str(content_length))
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
+        )
+        self.send_header("Content-Length", safe_header_value(str(content_length)))
         self.end_headers()
         self.emit_request_log(
             status=status, content_length=content_length, content_type=content_type
@@ -6015,14 +6044,17 @@ class Handler(BaseHTTPRequestHandler):
         self, status: int, *, extra_headers: dict[str, str] | None = None
     ) -> None:
         self.send_response(status)
-        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
         self.send_header(
-            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            "X-Norllama-Request-Id", safe_header_value(getattr(self, "_request_id", ""))
+        )
+        self.send_header(
+            "X-Norllama-Priority-Applied",
+            safe_header_value(getattr(self, "_priority", "normal")),
         )
         self.send_header("Content-Length", "0")
         if extra_headers:
             for key, value in extra_headers.items():
-                self.send_header(key, value)
+                self.send_header(safe_header_name(key), safe_header_value(value))
         self.end_headers()
         self.emit_request_log(status=status, content_length=0, content_type="")
 
@@ -6330,15 +6362,21 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
-            self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
             self.send_header(
-                "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+                "X-Norllama-Request-Id",
+                safe_header_value(getattr(self, "_request_id", "")),
+            )
+            self.send_header(
+                "X-Norllama-Priority-Applied",
+                safe_header_value(getattr(self, "_priority", "normal")),
             )
             for key, value in admission_headers.items():
-                self.send_header(key, value)
+                self.send_header(safe_header_name(key), safe_header_value(value))
             if self.app.expose_upstream_details:
-                self.send_header("X-Norllama-Upstream", base_url)
-                self.send_header("X-Norllama-Attempts", ",".join(attempts))
+                self.send_header("X-Norllama-Upstream", safe_header_value(base_url))
+                self.send_header(
+                    "X-Norllama-Attempts", safe_header_value(",".join(attempts))
+                )
             self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("Connection", "close")
