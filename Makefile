@@ -16,6 +16,8 @@ BEDROCK_REGION_SMOKE_SINCE_HOURS ?= 24
 lint:
 	./.venv/bin/ruff format --check .
 	./.venv/bin/ruff check app main.py setup.py
+	./.venv/bin/ruff check --select F821 scripts/norllama/norllama_gateway.py \
+		scripts/norman_codex_web.py scripts/agent_console_template/agent_console_web.py
 
 format:
 	./.venv/bin/ruff format .

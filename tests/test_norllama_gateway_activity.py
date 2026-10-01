@@ -1382,3 +1382,13 @@ def test_gateway_warm_policy_blocks_qwen_without_production_gate(monkeypatch):
     assert entry["contract_status"] == "production_gate_required"
     assert entry["benchmark_quality"]["benchmark_gate"]["gate"] == "smoke"
     assert entry["benchmark_quality"]["promotion_authoritative"] is False
+
+
+def test_gateway_response_headers_use_the_real_module_dependencies():
+    module = load_gateway_module()
+    handler = object.__new__(module.Handler)
+    handler.request_version = "HTTP/1.1"
+    handler.send_header("X-Upstream", "peer\r\nSet-Cookie: forged=1")
+    assert handler._headers_buffer == [b"X-Upstream: peerSet-Cookie: forged=1\r\n"]
+    with pytest.raises(ValueError, match="invalid HTTP response header name"):
+        handler.send_header("X-Upstream\nSet-Cookie", "forged=1")
