@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import ipaddress
 import json
 import os
@@ -284,27 +285,46 @@ def _runtime_temp_dir() -> Path:
 
 @contextmanager
 def _ssh_askpass(password: str) -> Iterator[tuple[Path, dict[str, str]]]:
-    """Expose a password only to a one-shot SSH_ASKPASS process."""
-    with tempfile.TemporaryDirectory(
-        prefix="norman_frontdoor_dns_", dir=_runtime_temp_dir()
-    ) as temporary_dir:
-        root = Path(temporary_dir)
-        password_path = root / "password"
-        askpass_path = root / "askpass.sh"
-        password_path.write_text(password + "\n", encoding="utf-8")
-        password_path.chmod(0o600)
-        askpass_path.write_text('#!/bin/sh\ncat "$ASKPASS_FILE"\n', encoding="utf-8")
-        askpass_path.chmod(0o700)
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "ASKPASS_FILE": str(password_path),
-                "DISPLAY": ":0",
-                "SSH_ASKPASS": str(askpass_path),
-                "SSH_ASKPASS_REQUIRE": "force",
-            }
+    """Supply SSH's one-shot password through a sealed anonymous memory file."""
+    if not hasattr(os, "memfd_create"):
+        raise RuntimeError("SSH password transport requires Linux memfd support")
+    descriptor = os.memfd_create(
+        "norman-ssh-askpass", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+        pending = memoryview((password + "\n").encode("utf-8"))
+        while pending:
+            pending = pending[os.write(descriptor, pending) :]
+        # Linux UAPI values also support Python builds that omit the constants.
+        fcntl.fcntl(
+            descriptor,
+            getattr(fcntl, "F_ADD_SEALS", 1033),
+            getattr(fcntl, "F_SEAL_WRITE", 0x0008)
+            | getattr(fcntl, "F_SEAL_GROW", 0x0004)
+            | getattr(fcntl, "F_SEAL_SHRINK", 0x0002)
+            | getattr(fcntl, "F_SEAL_SEAL", 0x0001),
         )
-        yield askpass_path, environment
+        with tempfile.TemporaryDirectory(
+            prefix="norman_frontdoor_dns_", dir=_runtime_temp_dir()
+        ) as temporary_dir:
+            askpass_path = Path(temporary_dir) / "askpass.sh"
+            askpass_path.write_text(
+                '#!/bin/sh\ncat "$ASKPASS_FILE"\n', encoding="utf-8"
+            )
+            askpass_path.chmod(0o700)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "ASKPASS_FILE": f"/proc/{os.getpid()}/fd/{descriptor}",
+                    "DISPLAY": ":0",
+                    "SSH_ASKPASS": str(askpass_path),
+                    "SSH_ASKPASS_REQUIRE": "force",
+                }
+            )
+            yield askpass_path, environment
+    finally:
+        os.close(descriptor)
 
 
 def _php_apply_code(records: dict[str, str]) -> str:

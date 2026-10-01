@@ -312,3 +312,49 @@ def test_systemd_reconciler_uses_encrypted_credential_and_tls_guard_waits() -> N
     assert "norman/keys-service-token" in wrapper
     assert "NORMAN_KEYS_TOKEN" in wrapper
     assert "NORMAN_CONFIG_SECRET_CMD" in wrapper
+
+
+def test_askpass_uses_sealed_memory_and_cleans_up_on_failure(tmp_path, monkeypatch):
+    import os
+    import pytest
+
+    module = _load_reconciler()
+    monkeypatch.setattr(module, "_runtime_temp_dir", lambda: tmp_path)
+    secret = "synthetic-password-for-test-only"
+    with pytest.raises(RuntimeError, match="simulated SSH failure"):
+        with module._ssh_askpass(secret) as (helper, environment):
+            memory_path = Path(environment["ASKPASS_FILE"])
+            assert os.readlink(memory_path).startswith("/memfd:norman-ssh-askpass")
+            assert memory_path.stat().st_mode & 0o777 == 0o600
+            assert list(helper.parent.iterdir()) == [helper]
+            assert secret not in helper.read_text()
+            assert secret not in environment.values()
+            for _ in range(2):
+                result = subprocess.run(
+                    [str(helper)],
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                assert result.stdout == secret + "\n"
+                assert result.stderr == ""
+            with pytest.raises(OSError):
+                with memory_path.open("wb") as target:
+                    target.write(b"modified")
+            raise RuntimeError("simulated SSH failure")
+    assert not memory_path.exists()
+    assert not helper.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_askpass_requires_memory_transport_without_disk_fallback(tmp_path, monkeypatch):
+    import pytest
+
+    module = _load_reconciler()
+    monkeypatch.setattr(module, "_runtime_temp_dir", lambda: tmp_path)
+    monkeypatch.delattr(module.os, "memfd_create")
+    with pytest.raises(RuntimeError, match="memfd support"):
+        with module._ssh_askpass("synthetic-only"):
+            pytest.fail("missing memory transport must fail closed")
+    assert list(tmp_path.iterdir()) == []

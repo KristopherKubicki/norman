@@ -148,6 +148,8 @@ def provision_route_aliases() -> int:
 
 
 def get_route_token(secret_name: str) -> int:
+    if sys.stdout.isatty():
+        raise BrokerError("credential output requires a non-interactive consumer")
     token = _read_secret(secret_name)
     _audit("issued", secret_name)
     print(token)
