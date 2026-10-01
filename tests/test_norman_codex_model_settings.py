@@ -6488,7 +6488,11 @@ def test_prompt_worker_does_not_handoff_locked_terra_after_side_effects(
 
 
 def test_bbs_relay_prompt_starts_when_console_is_idle(monkeypatch, tmp_path) -> None:
-    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    # Recap generation has its own tests and HTTP traffic. Keep this mock
+    # exclusively about the relay's running/closed callback contract.
+    module = _load_norman_codex_web(
+        monkeypatch, tmp_path, NORMAN_CODEX_WORKING_RECAP_ENABLED="0"
+    )
     requests = []
 
     class FakeResponse:
@@ -6560,7 +6564,9 @@ def test_bbs_relay_prompt_starts_when_console_is_idle(monkeypatch, tmp_path) -> 
 
 
 def test_bbs_relay_prompt_queues_when_console_is_busy(monkeypatch, tmp_path) -> None:
-    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    module = _load_norman_codex_web(
+        monkeypatch, tmp_path, NORMAN_CODEX_WORKING_RECAP_ENABLED="0"
+    )
     requests = []
 
     class FakeResponse:
