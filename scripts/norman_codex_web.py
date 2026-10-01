@@ -37189,6 +37189,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path in {"/auth/browser/callback", "/api/auth/browser/callback"}:
+            if not (self.is_trusted_client() or token_ok(params, cookie_token)):
+                self.deny_access(api_path=api_path)
+                return
             followup_href = build_console_href(
                 token=TOKEN,
                 profile=normalize_profile_name((params.get("profile") or [""])[0]),
