@@ -499,7 +499,10 @@ def test_mantle_dedicated_broker_precedes_generic_secret_resolvers(monkeypatch):
     )
 
     api_key = bedrock_module.resolve_bedrock_mantle_api_key(
-        {"bedrock_mantle_api_key_secret": "networking/bedrock-mantle"},
+        {
+            "bedrock_mantle_api_key_secret": "networking/bedrock-mantle",
+            "aws_region": "us-east-2",
+        },
         timeout_seconds=12,
     )
 

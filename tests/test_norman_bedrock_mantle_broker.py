@@ -214,6 +214,7 @@ def test_broker_error_does_not_disclose_credentials_or_token(
 
 
 def test_personal_alias_uses_separate_credentials(monkeypatch):
+    monkeypatch.setenv("NORMAN_BEDROCK_MANTLE_REGION", "us-west-2")
     module = _load_broker_module()
     reads = []
     monkeypatch.setattr(
