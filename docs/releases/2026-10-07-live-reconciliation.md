@@ -24,7 +24,7 @@ It is local evidence, not a remote backup or authorization to delete the live ch
 | Malformed tool envelopes | PR #398 is merged into staging; a tested narrow backport is live. |
 | Signed Keys transport and AWS readiness/rotation | Reconciled here from five existing source commits, with tests. |
 | Astra, regional bearer tokens, personal billing | Separate `reconcile/norman-gateway-20261007` review candidate. |
-| Password vault and Keys owner authorization | Existing `fix/keys-security-20261006` checkout has active follow-up edits. |
+| Password vault and Keys owner authorization | `fix/keys-security-20261006` has active follow-up edits. |
 | VPN, Synology, printer and HP executors | Live-only operational helpers still need scoped source review and tests. |
 | Dated Ubuntu maintenance executor | Temporary operation; preserve its owner receipt and establish retirement scope. |
 | Estate observation scripts and fleet inventory | Independent operational changes still need source reconciliation. |
