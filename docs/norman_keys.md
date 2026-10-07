@@ -397,6 +397,12 @@ Use this as the direct build brief:
 
 ## Estate Capability Delivery (Hal, Norman, and NetOps)
 
+**September 25 implementation update:** enrolled hosts now use application-verified OpenSSH-signed
+requests over HTTPS. See [Signed Host Authentication](keys_host_auth.md). This replaces the proposed
+mTLS gateway assertion below; a bearer token plus a caller-supplied fingerprint is not accepted for
+capability requests or invocations. Raw-secret compatibility endpoints remain separate.
+
+
 The fleet transition must use **capability delivery**, not the legacy raw-secret
 compatibility route. A TUI/CLI requests a named server-side capability, receives
 an opaque short-lived lease, then submits that lease to the approved executor.

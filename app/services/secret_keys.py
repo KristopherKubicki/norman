@@ -15,7 +15,17 @@ from sqlalchemy.orm import Session
 
 from app import crud
 from app.core.encryption import EncryptionManager
-from app.models import SecretAlias, SecretLease, SecretPolicy, SecretRequest
+from app.models import (
+    User,
+    SecretAlias,
+    SecretLease,
+    SecretPolicy,
+    SecretRequest,
+    KeysCapability,
+    KeysCapabilityRequest,
+    KeysCapabilityLease,
+    KeysHostEnrollment,
+)
 from app.schemas.secret_keys import SecretRequestCreate, SecretStashCreate
 
 
@@ -336,6 +346,13 @@ def create_secret_request(
     return request, lease, secret_value, provider.kind, warnings
 
 
+def _can_manage_request(db: Session, owner_id: int, actor_id: int) -> bool:
+    """Owners manage their own requests; only explicit administrators cross owners."""
+    if owner_id == actor_id:
+        return True
+    return db.query(User).filter_by(id=actor_id, is_superuser=True).first() is not None
+
+
 def approve_secret_request(
     db: Session,
     *,
@@ -345,7 +362,7 @@ def approve_secret_request(
     ttl_override_seconds: Optional[int] = None,
 ) -> tuple[SecretRequest, Optional[SecretLease], Optional[str], str]:
     request = crud.secret_keys.get_request(db, request_id=request_id)
-    if not request:
+    if not request or not _can_manage_request(db, request.user_id, decided_by):
         raise HTTPException(status_code=404, detail="Secret request not found")
     if request.status != "pending":
         raise HTTPException(status_code=400, detail="Secret request is not pending")
@@ -355,7 +372,23 @@ def approve_secret_request(
     provider = crud.secret_keys.get_provider(db, provider_id=alias.provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="Secret provider not found")
+    policy = (
+        db.query(SecretPolicy).filter_by(id=request.policy_id, enabled=True).first()
+    )
+    if (
+        not policy
+        or request.requested_mode not in (policy.allowed_modes or [])
+        or not _host_allowed(policy, request.target_host)
+        or (
+            request.requested_mode == "read"
+            and not (policy.raw_reveal_allowed and alias.allow_raw_reveal)
+        )
+    ):
+        raise HTTPException(
+            status_code=403, detail="Secret authorization is no longer active"
+        )
     ttl_seconds = min(
+        policy.max_ttl_seconds,
         ttl_override_seconds or request.requested_ttl_seconds,
         request.requested_ttl_seconds,
     )
@@ -381,7 +414,7 @@ def reject_secret_request(
     db: Session, *, request_id: int, decided_by: int, reason: str = ""
 ) -> SecretRequest:
     request = crud.secret_keys.get_request(db, request_id=request_id)
-    if not request:
+    if not request or not _can_manage_request(db, request.user_id, decided_by):
         raise HTTPException(status_code=404, detail="Secret request not found")
     if request.status != "pending":
         raise HTTPException(status_code=400, detail="Secret request is not pending")
@@ -409,10 +442,28 @@ def renew_secret_lease(
     db: Session, *, lease_id: int, ttl_seconds: int, actor_id: int
 ) -> SecretLease:
     lease = crud.secret_keys.get_lease(db, lease_id=lease_id)
-    if not lease:
+    request = (
+        crud.secret_keys.get_request(db, request_id=lease.request_id) if lease else None
+    )
+    if (
+        not lease
+        or not request
+        or not _can_manage_request(db, request.user_id, actor_id)
+    ):
         raise HTTPException(status_code=404, detail="Secret lease not found")
-    if lease.status != "active":
+    if (
+        lease.status != "active"
+        or lease.expires_at.replace(tzinfo=None) <= datetime.utcnow()
+    ):
         raise HTTPException(status_code=400, detail="Secret lease is not active")
+    if not lease.renewable:
+        raise HTTPException(status_code=400, detail="Secret lease is not renewable")
+    policy = (
+        db.query(SecretPolicy).filter_by(id=request.policy_id, enabled=True).first()
+    )
+    if not policy:
+        raise HTTPException(status_code=403, detail="Secret policy is no longer active")
+    ttl_seconds = min(ttl_seconds, policy.max_ttl_seconds, lease.granted_ttl_seconds)
     lease = crud.secret_keys.update_lease(
         db,
         lease=lease,
@@ -433,7 +484,14 @@ def renew_secret_lease(
 
 def revoke_secret_lease(db: Session, *, lease_id: int, actor_id: int) -> SecretLease:
     lease = crud.secret_keys.get_lease(db, lease_id=lease_id)
-    if not lease:
+    request = (
+        crud.secret_keys.get_request(db, request_id=lease.request_id) if lease else None
+    )
+    if (
+        not lease
+        or not request
+        or not _can_manage_request(db, request.user_id, actor_id)
+    ):
         raise HTTPException(status_code=404, detail="Secret lease not found")
     if lease.status == "revoked":
         return lease
@@ -768,7 +826,7 @@ def approve_capability_request(
     ttl_seconds: int | None,
 ):
     request = crud.secret_keys.get_capability_request(db, request_id=request_id)
-    if not request:
+    if not request or not _can_manage_request(db, request.user_id, decided_by):
         raise HTTPException(status_code=404, detail="Capability request not found")
     if request.status != "pending":
         raise HTTPException(status_code=400, detail="Capability request is not pending")
@@ -831,7 +889,7 @@ def reject_capability_request(
     db: Session, *, request_id: int, decided_by: int, reason: str
 ):
     request = crud.secret_keys.get_capability_request(db, request_id=request_id)
-    if not request:
+    if not request or not _can_manage_request(db, request.user_id, decided_by):
         raise HTTPException(status_code=404, detail="Capability request not found")
     if request.status != "pending":
         raise HTTPException(status_code=400, detail="Capability request is not pending")
@@ -852,6 +910,127 @@ def reject_capability_request(
         metadata_json={},
     )
     return request
+
+
+def _revalidate_capability_authorization(
+    db: Session,
+    *,
+    request: KeysCapabilityRequest,
+    capability: KeysCapability,
+    enrollment: KeysHostEnrollment,
+) -> None:
+    """Check current policy and enrollment, including revocations since issuance."""
+    from app.models import KeysCapabilityPolicy
+
+    policy = db.get(KeysCapabilityPolicy, request.policy_id)
+    valid = (
+        capability.enabled
+        and request.capability_id == capability.id
+        and request.host_enrollment_id == enrollment.id
+        and request.status == "issued"
+        and policy is not None
+        and policy.enabled
+        and policy.capability_id == capability.id
+        and request.requested_ttl_seconds <= policy.max_ttl_seconds
+        and policy.requester_type in ("*", request.requester_type)
+        and (not policy.requester_id or policy.requester_id == request.requester_id)
+        and (not policy.lane or policy.lane == request.lane)
+        and request.action in (policy.allowed_actions or [])
+        and (not policy.approval_required or request.decided_by is not None)
+        and (
+            not policy.allowed_target_hosts
+            or _contains_normalized(policy.allowed_target_hosts, request.target_host)
+        )
+        and (
+            not enrollment.requester_ids
+            or request.requester_id in enrollment.requester_ids
+        )
+        and (
+            not enrollment.capability_names
+            or capability.name in enrollment.capability_names
+        )
+        and (not enrollment.lanes or request.lane in enrollment.lanes)
+    )
+    if not valid:
+        raise HTTPException(
+            status_code=403, detail="Capability authorization is no longer active"
+        )
+
+
+def _claim_capability_lease(
+    db: Session,
+    *,
+    lease: KeysCapabilityLease,
+    receipt_uuid: str,
+) -> None:
+    """Atomically claim a lease before execution; concurrent invocations lose."""
+    from app.models import KeysCapabilityLease
+
+    now = datetime.utcnow()
+    query = db.query(KeysCapabilityLease).filter(
+        KeysCapabilityLease.id == lease.id,
+        KeysCapabilityLease.status == "active",
+        KeysCapabilityLease.expires_at > now,
+    )
+    if lease.single_use:
+        query = query.filter(KeysCapabilityLease.used_at.is_(None))
+    changed = query.update(
+        {
+            "status": "executing",
+            "used_at": now,
+            "invocation_receipt_uuid": receipt_uuid,
+        },
+        synchronize_session=False,
+    )
+    db.commit()
+    if changed != 1:
+        raise HTTPException(status_code=409, detail="Capability lease is not active")
+    db.refresh(lease)
+
+
+def _execute_capability(
+    db: Session,
+    *,
+    lease: KeysCapabilityLease,
+    request: KeysCapabilityRequest,
+    capability: KeysCapability,
+    parameters: dict,
+) -> dict[str, str | bool] | None:
+    """Dispatch only fixed executors and audit failures without SDK material."""
+    from app.services.aws_keys_readiness import AWSReadinessError, execute_readiness
+    from app.services.aws_rotation_executor import execute_rotation
+    from app.services.aws_rotation_store import RotationError
+
+    if capability.executor_kind == CAPABILITY_RECEIPT_EXECUTOR:
+        return None
+    try:
+        if capability.executor_kind == "aws-rotation-v1":
+            return execute_rotation(
+                db,
+                executor_ref=capability.executor_ref,
+                action=request.action,
+                parameters=parameters,
+            )
+        return execute_readiness(
+            executor_ref=capability.executor_ref,
+            action=request.action,
+            parameters=parameters,
+        )
+    except (AWSReadinessError, RotationError):
+        crud.secret_keys.update_capability_lease(db, lease=lease, status="failed")
+        crud.secret_keys.create_capability_audit_event(
+            db,
+            request_id=request.id,
+            lease_id=lease.id,
+            event_type="capability_failed",
+            actor_type=request.requester_type,
+            actor_id=request.requester_id,
+            summary="AWS capability operation failed",
+            metadata_json={"error": "aws_check_failed"},
+        )
+        raise HTTPException(
+            status_code=502, detail="AWS capability operation failed"
+        ) from None
 
 
 def invoke_capability_lease(
@@ -908,21 +1087,61 @@ def invoke_capability_lease(
         raise HTTPException(
             status_code=403, detail="Capability parameters did not match lease"
         )
+    _revalidate_capability_authorization(
+        db, request=request, capability=capability, enrollment=enrollment
+    )
     # Executor bindings are server-side.  The receipt executor is intentionally
     # side-effect-free for enrollment and policy rollout; real executors must be
     # installed behind the same binding rather than returning credentials.
-    if capability.executor_kind != CAPABILITY_RECEIPT_EXECUTOR:
+    if capability.executor_kind not in (
+        CAPABILITY_RECEIPT_EXECUTOR,
+        "aws-readiness-v1",
+        "aws-rotation-v1",
+    ):
         raise HTTPException(
             status_code=501, detail="Capability executor is not installed"
         )
+    if (
+        capability.executor_kind == "aws-readiness-v1"
+        and os.environ.get("NORMAN_KEYS_AWS_EXECUTOR_ENABLED", "") != "1"
+    ):
+        raise HTTPException(
+            status_code=503, detail="AWS executor activation is disabled"
+        )
+    if (
+        capability.executor_kind == "aws-rotation-v1"
+        and os.environ.get("NORMAN_KEYS_AWS_ROTATION_ENABLED") != "1"
+    ):
+        raise HTTPException(
+            status_code=503, detail="AWS rotation activation is disabled"
+        )
+    if (
+        capability.executor_kind in ("aws-readiness-v1", "aws-rotation-v1")
+        and not lease.single_use
+    ):
+        raise HTTPException(
+            status_code=403, detail="AWS checks require a single-use lease"
+        )
     receipt_uuid = str(uuid.uuid4())
-    lease = crud.secret_keys.update_capability_lease(
+    _claim_capability_lease(db, lease=lease, receipt_uuid=receipt_uuid)
+    result = _execute_capability(
         db,
         lease=lease,
-        used_at=datetime.utcnow(),
-        status="used" if lease.single_use else "active",
-        invocation_receipt_uuid=receipt_uuid,
+        request=request,
+        capability=capability,
+        parameters=body.parameters,
     )
+    from app.models import KeysCapabilityLease
+
+    # Never overwrite a revocation that arrived while the executor was running.
+    db.query(KeysCapabilityLease).filter(
+        KeysCapabilityLease.id == lease.id,
+        KeysCapabilityLease.status == "executing",
+    ).update(
+        {"status": "used" if lease.single_use else "active"}, synchronize_session=False
+    )
+    db.commit()
+    db.refresh(lease)
     crud.secret_keys.create_capability_audit_event(
         db,
         request_id=request.id,
@@ -945,12 +1164,22 @@ def invoke_capability_lease(
         "host_id": enrollment.host_id,
         "status": "completed",
         "completed_at": datetime.utcnow(),
+        "result": result,
     }
 
 
 def revoke_capability_lease(db: Session, *, lease_uuid: str, actor_id: int):
     lease = crud.secret_keys.get_capability_lease(db, lease_uuid=lease_uuid)
-    if not lease:
+    request = (
+        crud.secret_keys.get_capability_request(db, request_id=lease.request_id)
+        if lease
+        else None
+    )
+    if (
+        not lease
+        or not request
+        or not _can_manage_request(db, request.user_id, actor_id)
+    ):
         raise HTTPException(status_code=404, detail="Capability lease not found")
     if lease.status == "revoked":
         return lease

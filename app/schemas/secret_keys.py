@@ -296,6 +296,21 @@ class KeysCapabilityInvoke(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 
+class AWSReadinessResult(BaseModel):
+    """Only these AWS metadata fields may leave the executor."""
+
+    account_id: str
+    identity_verified: bool
+    root_mfa_enabled: bool
+
+
+class AWSRotationResult(BaseModel):
+    """Only rotation state and account identifier may leave the executor."""
+
+    account_id: str
+    rotation_state: str
+
+
 class KeysCapabilityReceipt(BaseModel):
     receipt_id: str
     lease_id: str
@@ -305,6 +320,7 @@ class KeysCapabilityReceipt(BaseModel):
     host_id: str
     status: str
     completed_at: datetime
+    result: Optional[AWSReadinessResult | AWSRotationResult] = None
 
 
 class KeysCapabilityAuditEventOut(KeysOrmResponseModel):

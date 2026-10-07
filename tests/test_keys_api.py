@@ -454,3 +454,81 @@ def test_compat_secret_get_requires_service_token_and_returns_value(
             app.dependency_overrides[get_current_user] = saved_current_override
         if saved_keys_override is not None:
             app.dependency_overrides[get_keys_service_user] = saved_keys_override
+
+
+def test_keys_requests_and_leases_reject_other_user(test_app, db, tmp_path):
+    """Knowing an ID must not grant another user's approvals or lease control."""
+    from app.models import SecretRequest
+
+    _, alias = _seed_file_alias(db, tmp_path, suffix="-owner-boundary")
+    _seed_policy(
+        db,
+        name="owner-boundary",
+        approval_required=True,
+        raw_reveal_allowed=True,
+        allowed_modes=["read"],
+    )
+    response = test_app.post(
+        "/api/v1/keys/requests",
+        json={
+            "name": alias.name,
+            "requested_mode": "read",
+            "requester_type": "agent",
+            "requester_id": "norman-prime",
+            "lane": "shared_infra",
+        },
+    )
+    request_id = response.json()["request"]["id"]
+    row = db.query(SecretRequest).filter_by(id=request_id).one()
+    original_owner = row.user_id
+    row.user_id = original_owner + 1000
+    db.commit()
+    for action in ("approve", "reject"):
+        assert (
+            test_app.post(
+                f"/api/v1/keys/requests/{request_id}/{action}", json={}
+            ).status_code
+            == 404
+        )
+    row.user_id = original_owner
+    db.commit()
+    issued = test_app.post(
+        f"/api/v1/keys/requests/{request_id}/approve", json={}
+    ).json()
+    lease_id = issued["lease"]["id"]
+    row.user_id = original_owner + 1000
+    db.commit()
+    for action in ("renew", "revoke"):
+        assert (
+            test_app.post(
+                f"/api/v1/keys/leases/{lease_id}/{action}", json={}
+            ).status_code
+            == 404
+        )
+    row.user_id = original_owner
+    db.commit()
+    renewed = test_app.post(
+        f"/api/v1/keys/leases/{lease_id}/renew", json={"ttl_seconds": 86400}
+    )
+    assert renewed.status_code == 200
+    from datetime import datetime, timedelta
+
+    lease = db.query(SecretLease).filter_by(id=lease_id).one()
+    db.refresh(lease)
+    assert lease.expires_at < datetime.utcnow() + timedelta(seconds=901)
+    lease.expires_at = datetime.utcnow() - timedelta(seconds=1)
+    db.commit()
+    assert (
+        test_app.post(f"/api/v1/keys/leases/{lease_id}/renew", json={}).status_code
+        == 400
+    )
+
+
+def test_regular_user_cannot_change_shared_keys_policy(test_app):
+    for path in (
+        "enrollments",
+        "capabilities",
+        "capability-policies",
+        "capability-audit",
+    ):
+        assert test_app.get("/api/v1/keys/" + path).status_code == 403
