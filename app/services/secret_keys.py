@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app import crud
 from app.core.encryption import EncryptionManager
 from app.models import (
+    User,
     SecretAlias,
     SecretLease,
     SecretPolicy,
@@ -345,6 +346,13 @@ def create_secret_request(
     return request, lease, secret_value, provider.kind, warnings
 
 
+def _can_manage_request(db: Session, owner_id: int, actor_id: int) -> bool:
+    """Owners manage their own requests; only explicit administrators cross owners."""
+    if owner_id == actor_id:
+        return True
+    return db.query(User).filter_by(id=actor_id, is_superuser=True).first() is not None
+
+
 def approve_secret_request(
     db: Session,
     *,
@@ -354,7 +362,7 @@ def approve_secret_request(
     ttl_override_seconds: Optional[int] = None,
 ) -> tuple[SecretRequest, Optional[SecretLease], Optional[str], str]:
     request = crud.secret_keys.get_request(db, request_id=request_id)
-    if not request:
+    if not request or not _can_manage_request(db, request.user_id, decided_by):
         raise HTTPException(status_code=404, detail="Secret request not found")
     if request.status != "pending":
         raise HTTPException(status_code=400, detail="Secret request is not pending")
@@ -364,7 +372,23 @@ def approve_secret_request(
     provider = crud.secret_keys.get_provider(db, provider_id=alias.provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="Secret provider not found")
+    policy = (
+        db.query(SecretPolicy).filter_by(id=request.policy_id, enabled=True).first()
+    )
+    if (
+        not policy
+        or request.requested_mode not in (policy.allowed_modes or [])
+        or not _host_allowed(policy, request.target_host)
+        or (
+            request.requested_mode == "read"
+            and not (policy.raw_reveal_allowed and alias.allow_raw_reveal)
+        )
+    ):
+        raise HTTPException(
+            status_code=403, detail="Secret authorization is no longer active"
+        )
     ttl_seconds = min(
+        policy.max_ttl_seconds,
         ttl_override_seconds or request.requested_ttl_seconds,
         request.requested_ttl_seconds,
     )
@@ -390,7 +414,7 @@ def reject_secret_request(
     db: Session, *, request_id: int, decided_by: int, reason: str = ""
 ) -> SecretRequest:
     request = crud.secret_keys.get_request(db, request_id=request_id)
-    if not request:
+    if not request or not _can_manage_request(db, request.user_id, decided_by):
         raise HTTPException(status_code=404, detail="Secret request not found")
     if request.status != "pending":
         raise HTTPException(status_code=400, detail="Secret request is not pending")
@@ -418,10 +442,28 @@ def renew_secret_lease(
     db: Session, *, lease_id: int, ttl_seconds: int, actor_id: int
 ) -> SecretLease:
     lease = crud.secret_keys.get_lease(db, lease_id=lease_id)
-    if not lease:
+    request = (
+        crud.secret_keys.get_request(db, request_id=lease.request_id) if lease else None
+    )
+    if (
+        not lease
+        or not request
+        or not _can_manage_request(db, request.user_id, actor_id)
+    ):
         raise HTTPException(status_code=404, detail="Secret lease not found")
-    if lease.status != "active":
+    if (
+        lease.status != "active"
+        or lease.expires_at.replace(tzinfo=None) <= datetime.utcnow()
+    ):
         raise HTTPException(status_code=400, detail="Secret lease is not active")
+    if not lease.renewable:
+        raise HTTPException(status_code=400, detail="Secret lease is not renewable")
+    policy = (
+        db.query(SecretPolicy).filter_by(id=request.policy_id, enabled=True).first()
+    )
+    if not policy:
+        raise HTTPException(status_code=403, detail="Secret policy is no longer active")
+    ttl_seconds = min(ttl_seconds, policy.max_ttl_seconds, lease.granted_ttl_seconds)
     lease = crud.secret_keys.update_lease(
         db,
         lease=lease,
@@ -442,7 +484,14 @@ def renew_secret_lease(
 
 def revoke_secret_lease(db: Session, *, lease_id: int, actor_id: int) -> SecretLease:
     lease = crud.secret_keys.get_lease(db, lease_id=lease_id)
-    if not lease:
+    request = (
+        crud.secret_keys.get_request(db, request_id=lease.request_id) if lease else None
+    )
+    if (
+        not lease
+        or not request
+        or not _can_manage_request(db, request.user_id, actor_id)
+    ):
         raise HTTPException(status_code=404, detail="Secret lease not found")
     if lease.status == "revoked":
         return lease
@@ -777,7 +826,7 @@ def approve_capability_request(
     ttl_seconds: int | None,
 ):
     request = crud.secret_keys.get_capability_request(db, request_id=request_id)
-    if not request:
+    if not request or not _can_manage_request(db, request.user_id, decided_by):
         raise HTTPException(status_code=404, detail="Capability request not found")
     if request.status != "pending":
         raise HTTPException(status_code=400, detail="Capability request is not pending")
@@ -840,7 +889,7 @@ def reject_capability_request(
     db: Session, *, request_id: int, decided_by: int, reason: str
 ):
     request = crud.secret_keys.get_capability_request(db, request_id=request_id)
-    if not request:
+    if not request or not _can_manage_request(db, request.user_id, decided_by):
         raise HTTPException(status_code=404, detail="Capability request not found")
     if request.status != "pending":
         raise HTTPException(status_code=400, detail="Capability request is not pending")
@@ -1121,7 +1170,16 @@ def invoke_capability_lease(
 
 def revoke_capability_lease(db: Session, *, lease_uuid: str, actor_id: int):
     lease = crud.secret_keys.get_capability_lease(db, lease_uuid=lease_uuid)
-    if not lease:
+    request = (
+        crud.secret_keys.get_capability_request(db, request_id=lease.request_id)
+        if lease
+        else None
+    )
+    if (
+        not lease
+        or not request
+        or not _can_manage_request(db, request.user_id, actor_id)
+    ):
         raise HTTPException(status_code=404, detail="Capability lease not found")
     if lease.status == "revoked":
         return lease

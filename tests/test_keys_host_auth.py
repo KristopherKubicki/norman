@@ -102,8 +102,23 @@ def test_unsigned_api_cannot_use_fingerprint_header(test_app):
     assert response.status_code == 401
 
 
+@pytest.fixture
+def policy_operator(test_app, db):
+    """Provision signed-host policy with an administrator, restoring its role."""
+    from app.crud.user import get_user_by_email
+
+    test_app.get("/api/v1/keys/requests")
+    user = get_user_by_email(db, email="test@example.com")
+    previous = user.is_superuser
+    user.is_superuser = True
+    db.commit()
+    yield user
+    user.is_superuser = previous
+    db.commit()
+
+
 def test_signed_api_roundtrip_uses_verified_identity(
-    test_app, db, proof, tmp_path, monkeypatch
+    test_app, db, proof, tmp_path, monkeypatch, policy_operator
 ):
     import json
     from app.api import keys_auth

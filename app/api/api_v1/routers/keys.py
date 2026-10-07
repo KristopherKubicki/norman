@@ -49,6 +49,14 @@ from app.services.secret_keys import (
     revoke_capability_lease,
 )
 
+
+def get_keys_operator(current_user=Depends(get_current_user)):
+    """Shared host enrollment and broker policy changes require an administrator."""
+    if not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Keys administrator required")
+    return current_user
+
+
 router = APIRouter(prefix="/keys", tags=["keys"])
 compat_router = APIRouter(tags=["keys_compat"])
 
@@ -263,7 +271,7 @@ def get_secret_compat(
 @router.get("/enrollments", response_model=list[KeysHostEnrollmentOut])
 def list_keys_host_enrollments(
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_keys_operator),
 ):
     return crud.secret_keys.list_host_enrollments(db)
 
@@ -272,7 +280,7 @@ def list_keys_host_enrollments(
 def enroll_keys_host(
     body: KeysHostEnrollmentCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_keys_operator),
 ):
     if crud.secret_keys.get_host_enrollment(db, host_id=body.host_id):
         raise HTTPException(status_code=409, detail="Host is already enrolled")
@@ -292,7 +300,7 @@ def enroll_keys_host(
 @router.get("/capabilities", response_model=list[KeysCapabilityOut])
 def list_keys_capabilities(
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_keys_operator),
 ):
     return crud.secret_keys.list_capabilities(db)
 
@@ -301,7 +309,7 @@ def list_keys_capabilities(
 def create_keys_capability(
     body: KeysCapabilityCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_keys_operator),
 ):
     if crud.secret_keys.get_capability(db, name=body.name, active_only=False):
         raise HTTPException(status_code=409, detail="Capability already exists")
@@ -311,7 +319,7 @@ def create_keys_capability(
 @router.get("/capability-policies", response_model=list[KeysCapabilityPolicyOut])
 def list_keys_capability_policies(
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_keys_operator),
 ):
     return crud.secret_keys.list_capability_policies(db)
 
@@ -322,7 +330,7 @@ def list_keys_capability_policies(
 def create_keys_capability_policy(
     body: KeysCapabilityPolicyCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_keys_operator),
 ):
     capability = crud.secret_keys.get_capability(
         db, name=body.capability_name, active_only=False
@@ -341,7 +349,7 @@ def create_keys_capability_policy(
 def list_keys_capability_audit(
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_keys_operator),
 ):
     return crud.secret_keys.list_capability_audit_events(db, limit=limit)
 

@@ -23,8 +23,9 @@ It is local evidence, not a remote backup or authorization to delete the live ch
 | Bridge conversation API, app routes, views | Three-way comparison resolves to existing staging content. |
 | Malformed tool envelopes | PR #398 is merged into staging; a tested narrow backport is live. |
 | Signed Keys transport and AWS readiness/rotation | Reconciled here from five existing source commits, with tests. |
-| Astra, regional bearer tokens, personal billing | Separate `reconcile/norman-gateway-20261007` review candidate. |
-| Password vault and Keys owner authorization | `fix/keys-security-20261006` has active follow-up edits. |
+| Astra, regional bearer tokens, personal billing | PR #400, `reconcile/norman-gateway-20261007`. |
+| Keys owner authorization | Ported here from `7277087`, with cross-user denial and administrator tests. |
+| Password vault | `fix/keys-security-20261006` has active follow-up edits. |
 | VPN, Synology, printer and HP executors | Live-only operational helpers still need scoped source review and tests. |
 | Dated Ubuntu maintenance executor | Temporary operation; preserve its owner receipt and establish retirement scope. |
 | Estate observation scripts and fleet inventory | Independent operational changes still need source reconciliation. |
@@ -47,8 +48,10 @@ Execution stays gated by the existing readiness and rotation environment flags. 
 leases, enrollments, receiver configuration or production database state are copied into source.
 Integration does not authorize enabling either executor or rotating any account's keys.
 
-Validation: format and lint pass; 103 focused tests pass; the full Python suite reports
-3,217 passed and one skipped. Tests exercise signatures, replay rejection, revoked authorization,
+Owner/admin checks require privileged policy management and constrain request and lease operations to owners or admins.
+Renewal revalidates expiry, renewability, and policy. Signed host transport remains independently authenticated.
+
+Validation: format and lint pass; the final full Python suite reports 3,219 passed and one skipped. Tests exercise signatures, replay rejection, revoked authorization,
 single-use lease claims, encrypted transport and rotation failure handling with synthetic data.
 
 ## Release Acceptance

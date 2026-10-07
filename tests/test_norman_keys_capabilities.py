@@ -3,6 +3,21 @@ import pytest
 
 from fastapi import Request
 from app.api.keys_auth import get_keys_capability_user
+
+
+@pytest.fixture(autouse=True)
+def keys_operator(test_app, db):
+    """Existing scenarios exercise an explicitly privileged broker operator."""
+    test_app.get("/api/v1/keys/requests")
+    user = get_user_by_email(db, email="test@example.com")
+    previous = user.is_superuser
+    user.is_superuser = True
+    db.commit()
+    yield
+    user.is_superuser = previous
+    db.commit()
+
+
 from app.crud.user import create_user, get_user_by_email
 from app.main import app
 from app.schemas.user import UserCreate
