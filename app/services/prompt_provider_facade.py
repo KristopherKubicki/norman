@@ -2465,7 +2465,8 @@ _TOOL_CONTINUATION_REPAIR_MESSAGE = (
 
 
 _MALFORMED_TOOL_REPAIR_MESSAGE = (
-    "Your previous response contained malformed tool-call JSON and no tool was "
+    "Your previous response contained malformed tool-call JSON or bare tool "
+    "arguments without a tool name, and no tool was "
     "executed from that response. If a tool is needed, emit exactly one complete "
     'JSON object: {"tool_call":{"name":"tool_name","arguments":{}}} or '
     '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
@@ -2473,6 +2474,37 @@ _MALFORMED_TOOL_REPAIR_MESSAGE = (
     "calls, and put no prose before or after the JSON. Otherwise return the "
     "substantive final answer using only evidence already obtained."
 )
+
+
+_BARE_TOOL_ARGUMENT_KEYS = frozenset(
+    {
+        "cmd",
+        "workdir",
+        "yield_time_ms",
+        "max_output_tokens",
+        "tty",
+        "shell",
+        "login",
+        "sandbox_permissions",
+        "justification",
+        "prefix_rule",
+        "session_id",
+        "chars",
+    }
+)
+
+
+def _is_bare_tool_arguments(value: Any) -> bool:
+    """Recognize shell-protocol arguments, without guessing or executing a call."""
+    if not isinstance(value, dict) or not value.keys() <= _BARE_TOOL_ARGUMENT_KEYS:
+        return False
+    execution = isinstance(value.get("cmd"), str) and bool(
+        value.keys() & {"workdir", "yield_time_ms", "max_output_tokens", "tty"}
+    )
+    continuation = type(value.get("session_id")) is int and isinstance(
+        value.get("chars"), str
+    )
+    return execution or continuation
 
 
 def _has_malformed_tool_envelope(text: str) -> bool:
@@ -2488,12 +2520,14 @@ def _has_malformed_tool_envelope(text: str) -> bool:
             cursor = start + 1
             continue
         try:
-            _, length = decoder.raw_decode(text[start:])
+            value, length = decoder.raw_decode(text[start:])
         except ValueError:
             if re.match(r'\{\s*"tool_calls?"\s*:', text[start:]):
                 return True
             cursor = start + 1
         else:
+            if _is_bare_tool_arguments(value):
+                return True
             # Skip whole valid objects, including strings containing examples.
             cursor = start + length
     return False
@@ -2692,7 +2726,11 @@ class ResponsesStreamNormalizer:
             return "pending"
         if not object_prefix.startswith('"'):
             return "text"
-        candidate_keys = self._TOOL_ENVELOPE_KEYS | self._NATIVE_FUNCTION_CALL_KEYS
+        candidate_keys = (
+            self._TOOL_ENVELOPE_KEYS
+            | self._NATIVE_FUNCTION_CALL_KEYS
+            | _BARE_TOOL_ARGUMENT_KEYS
+        )
         for key in candidate_keys:
             encoded_key = json.dumps(key)
             if encoded_key.startswith(object_prefix):
@@ -2724,7 +2762,12 @@ class ResponsesStreamNormalizer:
                 if len(text) < self._MAX_PENDING_NATIVE_FUNCTION_CALL_CHARS
                 else "text"
             )
-        return "tool" if _tool_calls_from_envelope_payload(payload) else "text"
+        return (
+            "tool"
+            if _tool_calls_from_envelope_payload(payload)
+            or _is_bare_tool_arguments(payload)
+            else "text"
+        )
 
     def _fenced_candidate_state(self, text: str) -> str:
         match = re.match(r"```(?i:json)?[ \t]*\r?\n", text)
