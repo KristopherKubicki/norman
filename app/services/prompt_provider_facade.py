@@ -4118,8 +4118,13 @@ def _resolve_tool_continuation_response(
     """Apply one bounded repair for malformed or repeated tool calls."""
 
     resolved = dict(chat_response)
-    if not prepared.native_responses_transport and _has_malformed_tool_envelope(
-        _choice_text(resolved)
+    if (
+        not prepared.native_responses_transport
+        and (
+            "tools" not in prepared.provider_payload
+            or _tools(prepared.provider_payload)
+        )
+        and _has_malformed_tool_envelope(_choice_text(resolved))
     ):
         return _repair_malformed_tool_response(prepared=prepared, request_id=request_id)
     repeats_successful_call = _repeats_successful_tool_call(

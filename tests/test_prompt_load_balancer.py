@@ -6424,3 +6424,27 @@ def test_malformed_tool_prefix_after_json_is_buffered_at_every_split():
         normalizer = facade.ResponsesStreamNormalizer()
         deltas = normalizer.feed(text[:split]) + normalizer.feed(text[split:])
         assert '"tool_call"' not in "".join(deltas), split
+
+
+def test_malformed_tool_example_without_tools_remains_text(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": _BROKEN_REPAIR_TOOL}}]
+        }
+
+    monkeypatch.setattr(norllama_gateway, "invoke_text_chat", fake_chat)
+    result = execute_openai_responses_facade(
+        {"model": "norman-code", "input": "Show malformed JSON.", "tools": []}
+    )
+    assert len(invocations) == 1
+    assert result["output_text"] == _BROKEN_REPAIR_TOOL
+    assert result["output"][0]["type"] == "message"
