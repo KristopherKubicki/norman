@@ -76,6 +76,8 @@ run_guarded_codex() {
   if [[ "${CODEX_WORK_PROVIDER:-}" =~ ^(norman|gateway)$ ]] \
     && [[ "${uses_work_profile:-0}" == "1" ]] \
     && ! is_help_request "$@"; then
+    python3 "$(dirname "$ROUTER_SCRIPT")/codex_work_gateway.py" \
+      --profile-file "$CODEX_WORK_HOME/work.config.toml" || return 1
     python3 "$(dirname "$ROUTER_SCRIPT")/codex_gateway_status.py" \
       --profile-file "$CODEX_WORK_HOME/work.config.toml" --wait 120 || return 1
   fi

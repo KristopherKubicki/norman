@@ -650,12 +650,33 @@ deployment preferences.
 
 ## Gateway outages and local rescue
 
-Generic `codex-work` uses the Keystone hostname as an authenticated **work model
-route** to Norman CT241. It is not invoking the Keystone application. Mapped
-checkouts use their own route hostname and billing identity. Do not replace a
-work route with the personal Norman route to get around an outage.
+Generic `codex-work` uses `https://norman.home.arpa/work/v1`, an explicit
+**work model route** on Norman CT241. Its trusted gateway identity is `work`;
+it does not depend on Keystone's hostname or application identity. Keystone
+checkouts retain their own `compere` route. Other mapped checkouts also retain
+their application routes. Never replace a work route with Norman's personal
+`/v1` route to bypass an outage.
 
-Caddy serves `/_gateway/status` from a small watchdog receipt independently of
+Before switching clients, register `gateway_routes.work = "work"` in the
+server-owned AWS account registry, verify the `work` binding's owner and allowed
+regions, and enable `work` in the backend route allowlist. The registry is read
+on each binding check and unknown routes fail closed when account routing is
+required. Preserve all existing bindings. The Caddy `/work/*` handler uses an
+explicit client allowlist, strips the prefix, and overwrites the route header;
+it exposes only model API and status handlers, not application pages. On an
+existing host, preserve its current work client allowlist during migration.
+
+`scripts/codex_work_gateway.py` atomically updates just the generic work
+provider's transport/auth fields. It preserves the selected model, MCP settings
+and session history. Run it after any older profile generator until that
+runtime generator has been reconciled. The gateway currently uses one shared
+brokered bearer credential (`norman/prompt-proxy-token`); route aliases are not
+independent credentials. The trusted front door and server account registry
+establish ownership. This migration does not claim credential isolation or a
+second backend. The backend's Responses continuation cache remains in memory;
+restarts can lose `previous_response_id` state even when local history survives.
+
+Caddy serves `/_gateway/status` (and `/work/_gateway/status`) from a small watchdog receipt independently of
 the Python API. It reports `ready`, `recovering`, `restarting`, `recovery_stalled`,
 `restart_requested`, `unavailable`, or `maintenance`, with a timestamp, outage
 age and suggested polling interval. `ready` means backend HTTP health only;

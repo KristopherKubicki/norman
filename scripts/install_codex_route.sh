@@ -41,6 +41,7 @@ done
 
 for source in \
   "$SCRIPT_DIR/codex_gateway_status.py" \
+  "$SCRIPT_DIR/codex_work_gateway.py" \
   "$SCRIPT_DIR/codex_rescue.py" \
   "$SCRIPT_DIR/codex_route.py" \
   "$SCRIPT_DIR/codex_session_pressure.py" \
@@ -59,6 +60,7 @@ for source in \
 done
 
 install -d -m 0700 "$BIN_DIR" "$LIB_DIR"
+install -m 0700 "$SCRIPT_DIR/codex_work_gateway.py" "$LIB_DIR/codex_work_gateway.py"
 install -m 0700 "$SCRIPT_DIR/codex_gateway_status.py" "$LIB_DIR/codex_gateway_status.py"
 install -m 0700 "$SCRIPT_DIR/codex_gateway_status.py" "$BIN_DIR/codex-gateway-status"
 install -m 0700 "$SCRIPT_DIR/codex_rescue.py" "$BIN_DIR/codex-rescue"

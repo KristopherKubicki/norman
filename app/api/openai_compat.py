@@ -57,6 +57,7 @@ GATEWAY_ROUTE_IDS = frozenset(
         "parkergale",
         "theseus",
         "tmi-dashboards",
+        "work",
     }
 )
 

@@ -14,11 +14,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from caddy_gateway_policy import gateway_error_lines
+from caddy_gateway_policy import gateway_error_lines, work_gateway_lines
 from render_norman_bot_proxy_caddy import _gateway_proxy_lines
 from render_norman_frontdoor_caddy import render_frontdoor_snippet
 
@@ -29,14 +30,21 @@ def _port():
         return sock.getsockname()[1]
 
 
-@pytest.fixture
-def proxy(tmp_path):
+@pytest.fixture(params=["compere", "work"])
+def proxy(tmp_path, request):
     binary = shutil.which("caddy")
     if not binary:
         pytest.skip("Caddy integration test requires the caddy executable")
     frontend, backend = _port(), _port()
     # Shorten only the timeout for the outage test; retain production semantics.
-    handlers = "\n".join(_gateway_proxy_lines("compere") + gateway_error_lines())
+    handlers = "\n".join(
+        (
+            work_gateway_lines(("127.0.0.1/32",))
+            if request.param == "work"
+            else _gateway_proxy_lines("compere")
+        )
+        + gateway_error_lines()
+    )
     handlers = handlers.replace(":8000", f":{backend}").replace("120s", "2s")
     handlers = handlers.replace("/var/lib/norman/gateway-health", str(tmp_path))
     (tmp_path / "status.json").write_text('{"phase":"restarting"}')
@@ -67,7 +75,11 @@ def proxy(tmp_path):
                         log.seek(0)
                         pytest.fail(log.read())
                     time.sleep(0.02)
-            yield f"http://127.0.0.1:{frontend}", backend
+            yield (
+                f"http://127.0.0.1:{frontend}"
+                + ("/work" if request.param == "work" else ""),
+                backend,
+            )
         finally:
             process.terminate()
             try:
@@ -78,7 +90,7 @@ def proxy(tmp_path):
 
 
 @contextlib.contextmanager
-def _backend(port, *, drop=False):
+def _backend(port, *, drop=False, expected_route=None):
     received = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -91,6 +103,10 @@ def _backend(port, *, drop=False):
                 self.rfile.read(2)
             else:
                 body = self.rfile.read(int(self.headers["Content-Length"]))
+            assert self.path in {"/v1/responses", "/v1/responses/compact"}
+            assert self.headers["X-Norman-Gateway-Route"] in {"compere", "work"}
+            if expected_route is not None:
+                assert self.headers["X-Norman-Gateway-Route"] == expected_route
             received.append(body)
             if drop:
                 self.close_connection = True
@@ -184,10 +200,15 @@ def test_unknown_length_body_keeps_existing_delivery(proxy):
     url, port = proxy
     # Chunked uploads have no Content-Length and must bypass retry buffering.
     with _backend(port) as received:
-        connection = http.client.HTTPConnection(url.removeprefix("http://"), timeout=6)
+        connection = http.client.HTTPConnection(
+            urllib.parse.urlsplit(url).netloc, timeout=6
+        )
         try:
             connection.request(
-                "POST", "/v1/responses", body=iter([b"test"]), encode_chunked=True
+                "POST",
+                urllib.parse.urlsplit(url).path + "/v1/responses",
+                body=iter([b"test"]),
+                encode_chunked=True,
             )
             assert connection.getresponse().status == 200
             assert received == [b"test"]
@@ -211,3 +232,34 @@ def test_exhausted_dial_returns_retry_after(proxy):
         )
     assert caught.value.code == 503
     assert caught.value.headers["Retry-After"] == "10"
+
+
+def test_work_path_rejects_unlisted_client(proxy):
+    url, _ = proxy
+    if not url.endswith("/work"):
+        return
+    parsed = urllib.parse.urlsplit(url)
+    connection = http.client.HTTPConnection(
+        parsed.netloc, timeout=3, source_address=("127.0.0.2", 0)
+    )
+    try:
+        connection.request("GET", "/work/_gateway/status")
+        assert connection.getresponse().status == 403
+    finally:
+        connection.close()
+
+
+def test_frontdoor_overwrites_client_route_identity(proxy):
+    url, port = proxy
+    with _backend(
+        port, expected_route="work" if url.endswith("/work") else "compere"
+    ) as received:
+        request = urllib.request.Request(
+            url + "/v1/responses",
+            data=b"test",
+            headers={"X-Norman-Gateway-Route": "norman"},
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            assert response.status == 200
+            response.read()
+        assert received == [b"test"]

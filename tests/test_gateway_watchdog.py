@@ -232,3 +232,15 @@ def test_http_status_access_denial_is_actionable_and_not_retried(monkeypatch):
     monkeypatch.setattr(client.urllib.request, "urlopen", denied)
     assert client.get_status("https://example.test/v1")["phase"] == "access_denied"
     assert not client.wait_for_gateway("https://example.test/v1", 120)
+
+
+def test_work_status_uses_the_work_frontdoor_path(monkeypatch):
+    seen = []
+
+    def offline(url, **kwargs):
+        seen.append(url)
+        raise OSError("offline")
+
+    monkeypatch.setattr(client.urllib.request, "urlopen", offline)
+    client.get_status("https://norman.home.arpa/work/v1/")
+    assert seen == ["https://norman.home.arpa/work/_gateway/status"]

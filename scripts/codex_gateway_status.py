@@ -16,7 +16,13 @@ import urllib.request
 def get_status(endpoint: str, timeout: float = 3) -> dict:
     url = urllib.parse.urlsplit(endpoint)
     target = urllib.parse.urlunsplit(
-        (url.scheme, url.netloc, "/_gateway/status", "", "")
+        (
+            url.scheme,
+            url.netloc,
+            url.path.removesuffix("/").removesuffix("/v1") + "/_gateway/status",
+            "",
+            "",
+        )
     )
     try:
         with urllib.request.urlopen(target, timeout=timeout) as response:
@@ -53,7 +59,7 @@ def get_status(endpoint: str, timeout: float = 3) -> dict:
 
 def wait_for_gateway(endpoint: str, wait_seconds: float = 120) -> bool:
     deadline = time.monotonic() + wait_seconds
-    host = urllib.parse.urlsplit(endpoint).netloc
+    host = endpoint
     print(f"Codex route: {host} -> Norman model gateway.", file=sys.stderr, flush=True)
     while True:
         remaining = max(0, deadline - time.monotonic())
@@ -83,7 +89,7 @@ def wait_for_gateway(endpoint: str, wait_seconds: float = 120) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint", default="https://keystone.kris.openbrand.com/v1")
+    parser.add_argument("--endpoint", default="https://norman.home.arpa/work/v1")
     parser.add_argument("--profile-file", type=Path)
     parser.add_argument("--wait", type=float, default=0)
     args = parser.parse_args()

@@ -97,6 +97,7 @@ SCRIPT_FILES = (
     "scripts/render_norman_bot_proxy_caddy.py",
     "scripts/caddy_gateway_policy.py",
     "scripts/codex_gateway_status.py",
+    "scripts/codex_work_gateway.py",
     "scripts/codex_rescue.py",
     "scripts/gateway_watchdog.py",
     "scripts/runbook_hybrid_architecture_audit.py",

@@ -50,12 +50,30 @@ def gateway_error_lines(prefix: str = "    ") -> list[str]:
     """Explain a refused backend connection without retrying accepted requests."""
     return [
         f"{prefix}handle_errors {{",
-        f"{prefix}    @gateway_down expression `{{err.status_code}} == 502 && {{http.request.uri.path}}.startsWith('/v1/') && {{err.message}}.contains('connect: connection refused')`",
+        f"{prefix}    @gateway_down expression `{{err.status_code}} == 502 && ({{http.request.uri.path}}.startsWith('/v1/') || {{http.request.uri.path}}.startsWith('/work/v1/')) && {{err.message}}.contains('connect: connection refused')`",
         f"{prefix}    handle @gateway_down {{",
         f"{prefix}        header Content-Type application/json",
         f"{prefix}        header Retry-After 10",
         f"{prefix}        header Cache-Control no-store",
         f'{prefix}        respond `{{"error":{{"type":"gateway_unavailable","code":"backend_connection_refused","message":"Norman backend is unavailable after the recovery wait. Keep your session. Check /_gateway/status; retry after 10 seconds. Local diagnosis: codex-rescue with an explicit work or personal scope."}}}}` 503',
         f"{prefix}    }}",
+        f"{prefix}}}",
+    ]
+
+
+def work_gateway_lines(
+    allowed_clients: tuple[str, ...], *, prefix: str = "    "
+) -> list[str]:
+    """Expose a generic work identity without depending on an application host."""
+    if not allowed_clients:
+        raise ValueError("Work gateway requires an explicit client allowlist")
+    return [
+        f"{prefix}handle_path /work/* {{",
+        f"{prefix}    @work_allowed remote_ip {' '.join(allowed_clients)}",
+        f"{prefix}    handle @work_allowed {{",
+        *gateway_proxy_lines("work", prefix=prefix + "        "),
+        f'{prefix}        respond "not found" 404',
+        f"{prefix}    }}",
+        f'{prefix}    respond "forbidden" 403',
         f"{prefix}}}",
     ]
