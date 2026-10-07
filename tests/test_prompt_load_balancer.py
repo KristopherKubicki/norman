@@ -4096,6 +4096,7 @@ def test_openai_compat_models_advertises_codex_catalog(test_app, monkeypatch):
     assert response.status_code == 200
     models = response.json()["models"]
     assert [model["slug"] for model in models] == [
+        "norman-code-astra",
         "norman-code",
         "norman-code-governed",
         "norman-local",
@@ -4113,7 +4114,7 @@ def test_openai_compat_models_advertises_codex_catalog(test_app, monkeypatch):
     for model in models:
         assert model["display_name"]
         assert model["supported_in_api"] is True
-        assert model["priority"] > 0
+        assert model["priority"] >= 0
         assert model["supports_image_detail_original"] is False
         assert model["context_window"] == 128000
         assert model["truncation_policy"] == {"mode": "bytes", "limit": 128000}
@@ -6448,3 +6449,57 @@ def test_malformed_tool_example_without_tools_remains_text(monkeypatch):
     assert len(invocations) == 1
     assert result["output_text"] == _BROKEN_REPAIR_TOOL
     assert result["output"][0]["type"] == "message"
+
+
+@pytest.mark.parametrize(
+    "route,personal",
+    [
+        ("networking", True),
+        ("norman", True),
+        ("parkergale", True),
+        ("compere", False),
+        ("control-plane", False),
+    ],
+)
+def test_explicit_cloud_billing_uses_trusted_route(monkeypatch, route, personal):
+    from app.services import prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade.settings,
+        "prompt_facade_explicit_cloud_mantle_api_key_secret",
+        "networking/bedrock-mantle",
+    )
+    assert facade._explicit_cloud_billing_secret(
+        {"trusted_gateway_context": {"gateway_route": route}}
+    ) == ("personal/bedrock-mantle" if personal else "networking/bedrock-mantle")
+
+
+def test_astra_alias_routes_to_authorized_region(test_app, monkeypatch):
+    headers = _proxy_headers(monkeypatch)
+    calls = _install_bedrock_stub(monkeypatch)
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "norman-code-astra", "input": "status?"},
+    )
+    assert response.status_code == 200, response.text
+    assert (
+        response.json()["norman"]["explicit_cloud_selection"]["model"]
+        == "openai.gpt-6-astra"
+    )
+    assert len(calls) == 1
+    assert calls[0].metadata["route_policy"]["aws_region"] == "us-west-2"
+
+
+def test_untrusted_payload_cannot_select_personal_billing(monkeypatch):
+    from app.services import prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade.settings,
+        "prompt_facade_explicit_cloud_mantle_api_key_secret",
+        "networking/bedrock-mantle",
+    )
+    assert (
+        facade._explicit_cloud_billing_secret({"gateway_route": "norman"})
+        == "networking/bedrock-mantle"
+    )

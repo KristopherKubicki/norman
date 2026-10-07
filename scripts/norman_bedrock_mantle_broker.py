@@ -18,6 +18,8 @@ from botocore.credentials import Credentials
 DEFAULT_CRED_BIN = Path("/usr/local/bin/cred")
 MANTLE_SECRET_ALIAS = "networking/bedrock-mantle"
 AWS_CREDENTIALS_ALIAS = "norman/bedrock-fallback"
+PERSONAL_MANTLE_SECRET_ALIAS = "personal/bedrock-mantle"
+PERSONAL_AWS_CREDENTIALS_ALIAS = "norman/bedrock-personal"
 
 
 class BrokerError(RuntimeError):
@@ -99,10 +101,10 @@ def _parse_aws_credentials(raw_value: str) -> Credentials:
     return Credentials(access_key_id, secret_access_key, session_token or None)
 
 
-def _read_aws_credentials() -> Credentials:
+def _read_aws_credentials(alias: str = AWS_CREDENTIALS_ALIAS) -> Credentials:
     try:
         result = subprocess.run(
-            _cred_command("get", AWS_CREDENTIALS_ALIAS),
+            _cred_command("get", alias),
             check=True,
             capture_output=True,
             text=True,
@@ -163,6 +165,10 @@ def _audit(action: str, secret_name: str = "") -> None:
 
 
 def get_mantle_token(secret_name: str) -> str:
+    if secret_name == PERSONAL_MANTLE_SECRET_ALIAS:
+        return _mint_token(
+            _read_aws_credentials(PERSONAL_AWS_CREDENTIALS_ALIAS), _region()
+        )
     if secret_name != MANTLE_SECRET_ALIAS:
         raise BrokerError("requested alias is not approved for Bedrock Mantle use")
     return _mint_token(_read_aws_credentials(), _region())

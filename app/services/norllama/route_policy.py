@@ -126,6 +126,12 @@ def _explicit_cloud_models() -> dict[str, dict[str, str]]:
                 "lane": "coder",
                 "role": role,
             }
+    selections["norman-code-astra"] = {
+        "provider": "aws-bedrock",
+        "model": "openai.gpt-6-astra",
+        "lane": "coder",
+        "role": "frontier",
+    }
     return selections
 
 
