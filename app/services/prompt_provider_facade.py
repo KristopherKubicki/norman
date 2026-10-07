@@ -2377,6 +2377,41 @@ _LIVE_OPERATIONAL_FINAL_SYNTHESIS_MESSAGE = (
 _MAX_LIVE_OPERATIONAL_DOMAIN_READS = 3
 
 
+_MALFORMED_TOOL_REPAIR_MESSAGE = (
+    "Your previous response contained malformed tool-call JSON and no tool was "
+    "executed from that response. If a tool is needed, emit exactly one complete "
+    'JSON object: {"tool_call":{"name":"tool_name","arguments":{}}} or '
+    '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
+    "Close every object and array. Use only available tools, do not duplicate "
+    "calls, and put no prose before or after the JSON. Otherwise return the "
+    "substantive final answer using only evidence already obtained."
+)
+
+
+def _has_malformed_tool_envelope(text: str) -> bool:
+    """Recognize broken adapter envelopes without interpreting their arguments."""
+
+    decoder = json.JSONDecoder()
+    cursor = 0
+    while cursor < len(text):
+        start = text.find("{", cursor)
+        if start < 0:
+            break
+        if start and not text[start - 1].isspace():
+            cursor = start + 1
+            continue
+        try:
+            _, length = decoder.raw_decode(text[start:])
+        except ValueError:
+            if re.match(r'\{\s*"tool_calls?"\s*:', text[start:]):
+                return True
+            cursor = start + 1
+        else:
+            # Skip whole valid objects, including strings containing examples.
+            cursor = start + length
+    return False
+
+
 def _tool_continuation_repair_messages(
     messages: list[dict[str, Any]],
     *,
@@ -2403,6 +2438,8 @@ def _tool_intention_without_call(
         implicit_tools=prepared.implicit_tools,
     ):
         return False
+    if _has_malformed_tool_envelope(text):
+        return True
     _, tool_calls = _response_tool_calls(
         text,
         provider_payload=prepared.provider_payload,
@@ -2687,6 +2724,8 @@ class ResponsesStreamNormalizer:
     def _drain_pending(self) -> list[str]:
         deltas: list[str] = []
         while self._pending:
+            if _has_malformed_tool_envelope(self._pending):
+                break
             # Bedrock can deliver the entire assistant message in one fragment.
             # If that fragment mixes an advisory JSON object, one or more tool
             # envelopes, and trailing prose, emitting the first non-tool object
@@ -2718,6 +2757,16 @@ class ResponsesStreamNormalizer:
             state = self._candidate_state(self._pending)
             if state in {"pending", "tool"}:
                 break
+            if self._pending.startswith("{"):
+                try:
+                    _, length = json.JSONDecoder().raw_decode(self._pending)
+                except ValueError:
+                    pass
+                else:
+                    # A normal JSON object may precede a partial tool prefix.
+                    # Classify the remainder separately before releasing it.
+                    deltas.append(self._emit_pending(length))
+                    continue
             deltas.append(self._emit_pending())
         return [delta for delta in deltas if delta]
 
@@ -4399,6 +4448,10 @@ def _resolve_tool_continuation_response(
         repair_message = _NAMESPACE_DISCOVERY_REPAIR_MESSAGE
     elif intention_without_call and _live_operational_status_requested(prepared):
         repair_message = _LIVE_OPERATIONAL_TOOL_REPAIR_MESSAGE
+    elif intention_without_call and _has_malformed_tool_envelope(
+        _choice_text(resolved)
+    ):
+        repair_message = _MALFORMED_TOOL_REPAIR_MESSAGE
     elif intention_without_call:
         repair_message = _TOOL_PROTOCOL_REPAIR_MESSAGE
     else:
