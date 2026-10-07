@@ -592,6 +592,13 @@ def resolve_bedrock_mantle_api_key(
     failures = 0
     dedicated_command = _bedrock_mantle_secret_command(secret_name)
     if dedicated_command:
+        # Token regions belong to this request, never to the shared process.
+        if region := bedrock_region(policy):
+            dedicated_command = [
+                "env",
+                f"NORMAN_BEDROCK_MANTLE_REGION={region}",
+                *dedicated_command,
+            ]
         try:
             raw_value, metadata = _broker_secret_from_command(
                 secret_name,
@@ -1063,6 +1070,8 @@ def build_bedrock_mantle_responses_request(
             _positive_int(max_tokens, 1024),
         ),
     }
+    if clean_model == "openai.gpt-6-astra":
+        payload["reasoning"] = {"effort": "medium"}
     payload.update(_mantle_responses_options(responses_options))
     return payload
 

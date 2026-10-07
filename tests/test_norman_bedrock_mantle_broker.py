@@ -211,3 +211,17 @@ def test_broker_error_does_not_disclose_credentials_or_token(
     assert access_key not in captured.err
     assert secret_key not in captured.err
     assert bearer not in captured.err
+
+
+def test_personal_alias_uses_separate_credentials(monkeypatch):
+    module = _load_broker_module()
+    reads = []
+    monkeypatch.setattr(
+        module,
+        "_read_aws_credentials",
+        lambda alias=module.AWS_CREDENTIALS_ALIAS: reads.append(alias) or alias,
+    )
+    monkeypatch.setattr(module, "_mint_token", lambda creds, region: "synthetic-token")
+    assert module.get_mantle_token("personal/bedrock-mantle") == "synthetic-token"
+    assert module.get_mantle_token("networking/bedrock-mantle") == "synthetic-token"
+    assert reads == ["norman/bedrock-personal", "norman/bedrock-fallback"]

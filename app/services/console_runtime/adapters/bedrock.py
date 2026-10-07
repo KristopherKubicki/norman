@@ -387,7 +387,7 @@ def _uses_bedrock_mantle_responses(
             authorization.get("explicit_cloud_selection_authorized")
             or authorization.get("cloud_fallback_authorized")
         )
-        and _clean(model).lower().startswith("openai.gpt-5.")
+        and _clean(model).lower().startswith(("openai.gpt-5.", "openai.gpt-6-"))
     )
 
 
@@ -611,6 +611,12 @@ class BedrockModelAdapter:
             authorization=authorization,
             credential_metadata=api_key_metadata,
         )
+        responses_options = dict(request.responses_options or {})
+        if model == "openai.gpt-6-astra" and "reasoning" not in responses_options:
+            advisory = metadata.get("codex_reasoning_advisory") or {}
+            responses_options["reasoning"] = {
+                "effort": advisory.get("effort") or "medium"
+            }
         response = invoke_bedrock_mantle_responses(
             model=model,
             messages=request.messages,
@@ -618,7 +624,7 @@ class BedrockModelAdapter:
             system=request.system,
             max_tokens=request.budget.max_output_tokens,
             temperature=_temperature(request, route_policy),
-            responses_options=request.responses_options,
+            responses_options=responses_options,
             region=bedrock_region(route_policy),
             timeout_seconds=timeout_seconds,
         )

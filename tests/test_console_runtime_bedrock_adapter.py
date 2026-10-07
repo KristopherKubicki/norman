@@ -510,7 +510,13 @@ def test_mantle_dedicated_broker_precedes_generic_secret_resolvers(monkeypatch):
     }
     assert calls == [
         (
-            ["mantle-broker", "get", "networking/bedrock-mantle"],
+            [
+                "env",
+                "NORMAN_BEDROCK_MANTLE_REGION=us-east-2",
+                "mantle-broker",
+                "get",
+                "networking/bedrock-mantle",
+            ],
             {
                 "check": True,
                 "capture_output": True,
@@ -1105,3 +1111,48 @@ def test_worker_defaults_to_bedrock_only_for_selected_bedrock_cloud_proxy_route(
     assert isinstance(other_cloud, NorllamaModelAdapter)
     assert isinstance(codex, NorllamaModelAdapter)
     assert isinstance(string_false, NorllamaModelAdapter)
+
+
+@pytest.mark.parametrize("effort", ["", "medium", "high"])
+def test_astra_mantle_reasoning_and_transport(effort):
+    from app.services.console_runtime.adapters.bedrock import (
+        _uses_bedrock_mantle_responses,
+    )
+    from app.services.norllama.route_policy import explicit_cloud_selection_for_model
+
+    selection = explicit_cloud_selection_for_model("norman-code-astra")
+    assert selection["model"] == "openai.gpt-6-astra"
+    assert selection["provider"] == "aws-bedrock"
+    assert _uses_bedrock_mantle_responses(
+        selection["model"], {"explicit_cloud_selection_authorized": True}
+    )
+    assert not _uses_bedrock_mantle_responses(selection["model"], {})
+    payload = bedrock_module.build_bedrock_mantle_responses_request(
+        model=selection["model"],
+        messages=[{"role": "user", "content": "hello"}],
+        responses_options={"reasoning": {"effort": effort}} if effort else None,
+    )
+    assert payload["reasoning"] == {"effort": effort or "medium"}
+
+
+def test_mantle_broker_token_uses_request_region_without_changing_process(monkeypatch):
+    monkeypatch.setenv("NORMAN_BEDROCK_MANTLE_SECRET_CMD", "mantle-broker get {name}")
+    monkeypatch.setenv("NORMAN_BEDROCK_MANTLE_REGION", "us-east-2")
+    calls = []
+
+    class Result:
+        stdout = "test-token"
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return Result()
+
+    monkeypatch.setattr(bedrock_module.subprocess, "run", run)
+    bedrock_module.resolve_bedrock_mantle_api_key(
+        {
+            "bedrock_mantle_api_key_secret": "networking/bedrock-mantle",
+            "aws_region": "us-west-2",
+        }
+    )
+    assert calls[0][:2] == ["env", "NORMAN_BEDROCK_MANTLE_REGION=us-west-2"]
+    assert bedrock_module.os.environ["NORMAN_BEDROCK_MANTLE_REGION"] == "us-east-2"

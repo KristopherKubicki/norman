@@ -433,6 +433,18 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
     return [
         {
             **common,
+            "slug": "norman-code-astra",
+            "display_name": "Norman Code — Astra",
+            "description": "GPT-6 Astra coding with medium reasoning by default.",
+            "default_reasoning_level": "medium",
+            "priority": 0,
+            "apply_patch_tool_type": "freeform",
+            "supports_parallel_tool_calls": True,
+            "include_skills_usage_instructions": True,
+            "include_plugin_usage_instructions": True,
+        },
+        {
+            **common,
             "slug": "norman-code",
             "display_name": "Norman Code",
             "description": "Norman transparent local-first coding route.",

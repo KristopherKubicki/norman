@@ -147,7 +147,7 @@ MODEL_ALIASES = {
 }
 TRANSPARENT_BRIDGE_MODE = "transparent"
 GOVERNED_BRIDGE_MODE = "governed"
-GOVERNED_BRIDGE_MODEL_ALIASES = frozenset({"norman-code-governed"})
+GOVERNED_BRIDGE_MODEL_ALIASES = frozenset({"norman-code-governed", "norman-code-astra"})
 RAW_LOCAL_MODEL_MARKERS = (
     "bge",
     "gemma",
@@ -3013,6 +3013,26 @@ def _looks_like_cloud_model_selection(requested_model: Any) -> bool:
     return requested.startswith("gpt-") or requested.startswith("openai.gpt-")
 
 
+def _explicit_cloud_billing_secret(route_envelope: Mapping[str, Any]) -> str:
+    """Keep authenticated personal TUI requests on the personal AWS account."""
+    context = _mapping(route_envelope.get("trusted_gateway_context"))
+    route = _lower(context.get("gateway_route"))
+    if route in {
+        "autocamera",
+        "cloudagent",
+        "glimpser",
+        "housebot",
+        "networking",
+        "norman",
+        "parkergale",
+        "theseus",
+    }:
+        return "personal/bedrock-mantle"
+    return _clean(
+        getattr(settings, "prompt_facade_explicit_cloud_mantle_api_key_secret", "")
+    )
+
+
 def _explicit_cloud_selection_plan(
     *,
     provider_payload: Mapping[str, Any],
@@ -3085,16 +3105,14 @@ def _explicit_cloud_selection_plan(
         "allow_cloud_proxy": False,
         "cloud_policy": artifact_cloud_policy,
         "route_policy_artifact": artifact,
-        "aws_region": _clean(
-            getattr(settings, "prompt_facade_cloud_fallback_aws_region", "")
-        ),
-        "bedrock_mantle_api_key_secret": _clean(
-            getattr(
-                settings,
-                "prompt_facade_explicit_cloud_mantle_api_key_secret",
-                "",
+        "aws_region": (
+            "us-west-2"
+            if requested_alias == "norman-code-astra"
+            else _clean(
+                getattr(settings, "prompt_facade_cloud_fallback_aws_region", "")
             )
         ),
+        "bedrock_mantle_api_key_secret": _explicit_cloud_billing_secret(route_envelope),
     }
     route = NorllamaRoute(
         lane=lane,
@@ -3187,13 +3205,7 @@ def _cloud_fallback_plan(
         # GPT-5 models use the Bedrock Mantle Responses endpoint rather than
         # the Bedrock Converse API. Reuse the managed facade alias so the
         # adapter never needs a caller-provided credential setting.
-        "bedrock_mantle_api_key_secret": _clean(
-            getattr(
-                settings,
-                "prompt_facade_explicit_cloud_mantle_api_key_secret",
-                "",
-            )
-        ),
+        "bedrock_mantle_api_key_secret": _explicit_cloud_billing_secret(route_envelope),
     }
     route = NorllamaRoute(
         lane=lane,
