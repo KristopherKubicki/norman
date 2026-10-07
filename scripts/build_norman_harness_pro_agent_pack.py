@@ -95,6 +95,7 @@ SCRIPT_FILES = (
     "scripts/norllama/norllama_resident_warmer.py",
     "scripts/agent_console_template/agent_console_web.py",
     "scripts/render_norman_bot_proxy_caddy.py",
+    "scripts/caddy_gateway_policy.py",
     "scripts/runbook_hybrid_architecture_audit.py",
     "scripts/sync_agent_console_template.py",
     "scripts/sync_tui_microtextures.py",

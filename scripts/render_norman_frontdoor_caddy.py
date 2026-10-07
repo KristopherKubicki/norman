@@ -11,6 +11,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from sync_agent_console_template import HOSTS, host_canonical_host, host_frontdoor_hosts
+from caddy_gateway_policy import gateway_proxy_lines
 
 INTERNAL_TLS_SNIPPET_NAME = "norman_internal_tls"
 LOLLIE_ACME_DIRECTORY = "https://ca.home.arpa/acme/acme/directory"
@@ -69,7 +70,7 @@ def _render_site_block(
 
 
 def render_frontdoor_snippet() -> str:
-    return """
+    snippet = """
 (norman_frontdoor) {
     encode gzip zstd
 
@@ -105,20 +106,7 @@ def render_frontdoor_snippet() -> str:
     redir /bot /bot/ 308
     import /etc/caddy/includes/norman-bots.caddy
 
-    handle /v1/responses {
-        reverse_proxy 127.0.0.1:8000 {
-            flush_interval -1
-            header_up X-Norman-Gateway-Route norman
-            header_up X-Forwarded-For 127.0.0.2
-        }
-    }
-
-    handle /v1/* {
-        reverse_proxy 127.0.0.1:8000 {
-            header_up X-Norman-Gateway-Route norman
-            header_up X-Forwarded-For 127.0.0.2
-        }
-    }
+__GATEWAY_HANDLERS__
 
     @norman_root path /
     handle @norman_root {
@@ -130,6 +118,9 @@ def render_frontdoor_snippet() -> str:
     }
 }
 """.strip()
+    return snippet.replace(
+        "__GATEWAY_HANDLERS__", "\n".join(gateway_proxy_lines("norman"))
+    )
 
 
 def render_caddy() -> str:

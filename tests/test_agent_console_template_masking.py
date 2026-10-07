@@ -5160,7 +5160,6 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
         < fallback_position
     )
     assert (
-        "handle /v1/responses {\n"
         "        reverse_proxy 127.0.0.1:8000 {\n"
         "            flush_interval -1\n"
         "            header_up X-Norman-Gateway-Route norman\n"
@@ -5284,7 +5283,7 @@ def test_bot_proxy_caddy_routes_canonical_codex_hosts_to_gateway_before_console(
     for route_key in sorted(module.GATEWAY_ROUTES):
         assert f"header_up X-Norman-Gateway-Route {route_key}" in rendered
     assert rendered.count("header_up X-Forwarded-For 127.0.0.2") == (
-        len(module.GATEWAY_ROUTES) * 2
+        len(module.GATEWAY_ROUTES) * 4
     )
 
     def host_block(host: str) -> str:
