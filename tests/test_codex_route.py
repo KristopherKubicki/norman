@@ -122,7 +122,7 @@ def test_unmapped_checkout_has_the_expected_generic_fallback(route_module, monke
         "regular-default"
     )
     assert route_module.route_payload(None, "work", unknown_root)["fallback"] == (
-        "regular-default"
+        "work-launcher"
     )
 
 

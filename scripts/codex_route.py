@@ -1099,7 +1099,7 @@ def route_payload(route: Route | None, launcher: str, cwd: Path) -> dict[str, ob
             "launcher": launcher,
             "checkout_root": str(root),
             "origin": origin,
-            "fallback": "regular-default",
+            "fallback": "regular-default" if launcher == "regular" else "work-launcher",
         }
     payload = asdict(route)
     payload.update(
