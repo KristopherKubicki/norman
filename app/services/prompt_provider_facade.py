@@ -2464,6 +2464,41 @@ _TOOL_CONTINUATION_REPAIR_MESSAGE = (
 )
 
 
+_MALFORMED_TOOL_REPAIR_MESSAGE = (
+    "Your previous response contained malformed tool-call JSON and no tool was "
+    "executed from that response. If a tool is needed, emit exactly one complete "
+    'JSON object: {"tool_call":{"name":"tool_name","arguments":{}}} or '
+    '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
+    "Close every object and array. Use only available tools, do not duplicate "
+    "calls, and put no prose before or after the JSON. Otherwise return the "
+    "substantive final answer using only evidence already obtained."
+)
+
+
+def _has_malformed_tool_envelope(text: str) -> bool:
+    """Recognize broken adapter envelopes without interpreting their arguments."""
+
+    decoder = json.JSONDecoder()
+    cursor = 0
+    while cursor < len(text):
+        start = text.find("{", cursor)
+        if start < 0:
+            break
+        if start and not text[start - 1].isspace():
+            cursor = start + 1
+            continue
+        try:
+            _, length = decoder.raw_decode(text[start:])
+        except ValueError:
+            if re.match(r'\{\s*"tool_calls?"\s*:', text[start:]):
+                return True
+            cursor = start + 1
+        else:
+            # Skip whole valid objects, including strings containing examples.
+            cursor = start + length
+    return False
+
+
 def _tool_continuation_repair_messages(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -2475,12 +2510,14 @@ def _tool_continuation_repair_messages(
 
 def _tool_continuation_exhausted_error(
     prepared: PreparedResponsesExecution,
+    *,
+    code: str = "tool_continuation_exhausted",
 ) -> FacadeError:
     return FacadeError(
         "Tool continuation remained invalid after the bounded Norman repair.",
         status_code=502,
         error_type="server_error",
-        code="tool_continuation_exhausted",
+        code=code,
         norman={
             "responses_compatibility": {
                 "tool_chain": _tool_chain_telemetry(
@@ -2568,6 +2605,10 @@ class ResponsesStreamNormalizer:
     def _drain_pending(self) -> list[str]:
         deltas: list[str] = []
         while self._pending:
+            # Keep a broken adapter envelope private until the bounded repair
+            # completes, including when ordinary JSON precedes it in a chunk.
+            if _has_malformed_tool_envelope(self._pending):
+                break
             candidate_start = self._candidate_start(self._pending)
             if candidate_start < 0:
                 if not self._emitted_parts and not self._pending.strip():
@@ -2591,6 +2632,16 @@ class ResponsesStreamNormalizer:
             state = self._candidate_state(self._pending)
             if state in {"pending", "tool"}:
                 break
+            if self._pending.startswith("{"):
+                try:
+                    _, length = json.JSONDecoder().raw_decode(self._pending)
+                except ValueError:
+                    pass
+                else:
+                    # A normal JSON object may precede a partial tool prefix.
+                    # Classify the remainder separately before releasing it.
+                    deltas.append(self._emit_pending(length))
+                    continue
             deltas.append(self._emit_pending())
         return [delta for delta in deltas if delta]
 
@@ -4021,15 +4072,61 @@ def _execute_authorized_chat(
         )
 
 
+def _repair_malformed_tool_response(
+    *,
+    prepared: PreparedResponsesExecution,
+    request_id: str,
+) -> tuple[dict[str, Any], str, int]:
+    """Regenerate once on the authorized route; never execute guessed JSON."""
+
+    repaired = _execute_authorized_chat(
+        provider_payload=prepared.route_payload,
+        route_envelope=prepared.route_envelope,
+        messages=[
+            *prepared.messages,
+            {"role": "system", "content": _MALFORMED_TOOL_REPAIR_MESSAGE},
+        ],
+        request_id=f"{request_id}-tool-protocol-repair",
+        native_responses_transport=prepared.native_responses_transport,
+    )
+    text = _choice_text(repaired)
+    _, raw_calls = _trailing_json_tool_call_envelope(text)
+    _, accepted_calls = _response_tool_calls(
+        text, provider_payload=prepared.provider_payload
+    )
+    if (
+        not text.strip()
+        or _has_malformed_tool_envelope(text)
+        or (raw_calls and not accepted_calls)
+        or (
+            prepared.bridge_mode == GOVERNED_BRIDGE_MODE
+            and _repeats_successful_tool_call(text, prepared=prepared)
+        )
+    ):
+        raise _tool_continuation_exhausted_error(
+            prepared, code="tool_protocol_repair_exhausted"
+        )
+    return repaired, "repaired", 1
+
+
 def _resolve_tool_continuation_response(
     *,
     prepared: PreparedResponsesExecution,
     chat_response: Mapping[str, Any],
     request_id: str,
 ) -> tuple[dict[str, Any], str, int]:
-    """Apply one bounded repair when a completed tool call is repeated."""
+    """Apply one bounded repair for malformed or repeated tool calls."""
 
     resolved = dict(chat_response)
+    if (
+        not prepared.native_responses_transport
+        and (
+            "tools" not in prepared.provider_payload
+            or _tools(prepared.provider_payload)
+        )
+        and _has_malformed_tool_envelope(_choice_text(resolved))
+    ):
+        return _repair_malformed_tool_response(prepared=prepared, request_id=request_id)
     repeats_successful_call = _repeats_successful_tool_call(
         _choice_text(resolved),
         prepared=prepared,
@@ -4051,6 +4148,10 @@ def _resolve_tool_continuation_response(
         prepared=prepared,
     ):
         raise _tool_continuation_exhausted_error(prepared)
+    if _has_malformed_tool_envelope(_choice_text(repaired)):
+        raise _tool_continuation_exhausted_error(
+            prepared, code="tool_protocol_repair_exhausted"
+        )
     return repaired, "repaired", 1
 
 

@@ -6278,3 +6278,173 @@ def test_proxy_observability_flags_failed_receipts_and_completion_gates():
     assert summary["release_proof_success_count"] == 0
     assert "proxy_receipt_audit_failed" in kinds
     assert "proxy_completion_gate_failed" in kinds
+
+
+# Sanitized shapes from the 2026-10-06 codex-work failure: missing outer
+# brace, duplicate broken envelopes, and a broken envelope followed by prose.
+_VALID_REPAIR_TOOL = json.dumps(
+    {"tool_call": {"name": "exec_command", "arguments": {"cmd": "pwd"}}}
+)
+_BROKEN_REPAIR_TOOL = _VALID_REPAIR_TOOL[:-1]
+_MALFORMED_SESSION_SHAPES = [
+    _BROKEN_REPAIR_TOOL,
+    _BROKEN_REPAIR_TOOL + "\n" + _BROKEN_REPAIR_TOOL,
+    _BROKEN_REPAIR_TOOL + "\nThe investigation remains incomplete.",
+    '{"status":"checking"}\n' + _BROKEN_REPAIR_TOOL,
+]
+
+
+@pytest.mark.parametrize("broken", _MALFORMED_SESSION_SHAPES)
+@pytest.mark.parametrize("model", ["norman-code", "norman-code-governed"])
+def test_responses_repairs_malformed_session_tool_json(monkeypatch, broken, model):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        text = broken if len(invocations) == 1 else _VALID_REPAIR_TOOL
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": text}}]
+        }
+
+    monkeypatch.setattr(norllama_gateway, "invoke_text_chat", fake_chat)
+    result = execute_openai_responses_facade(
+        {"model": model, "input": "Investigate the failure."}
+    )
+    assert len(invocations) == 2
+    assert invocations[-1]["messages"][-1]["content"] == (
+        facade._MALFORMED_TOOL_REPAIR_MESSAGE
+    )
+    assert result["output_text"] == ""
+    assert len(result["output"]) == 1
+    assert result["output"][0]["type"] == "function_call"
+    assert result["output"][0]["name"] == "exec_command"
+    assert json.loads(result["output"][0]["arguments"]) == {"cmd": "pwd"}
+    assert result["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+    }
+
+
+@pytest.mark.parametrize("repair_succeeds", [True, False])
+@pytest.mark.parametrize("broken", _MALFORMED_SESSION_SHAPES)
+def test_responses_stream_malformed_tool_repair_is_bounded(
+    test_app, monkeypatch, broken, repair_succeeds
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    # Exercise fragments through the actual SSE endpoint, not just the parser.
+    upstream = _MockNativeStreamResponse(
+        [json.dumps({"response": broken[i : i + 7]}) for i in range(0, len(broken), 7)]
+        + [json.dumps({"done": True, "prompt_eval_count": 4, "eval_count": 2})]
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            upstream, model=kwargs["model"]
+        ),
+    )
+
+    def fake_repair(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [
+                {
+                    "message": {
+                        "content": (_VALID_REPAIR_TOOL if repair_succeeds else broken)
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(norllama_gateway, "invoke_text_chat", fake_repair)
+    response = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={"model": "norman-code", "input": "Investigate.", "stream": True},
+    )
+    payloads = [
+        json.loads(data)
+        for event, data in _response_sse_events(response.text)
+        if event and data != "[DONE]"
+    ]
+    assert len(invocations) == 1
+    assert upstream.closed
+    visible_text = "".join(
+        p.get("delta", "")
+        for p in payloads
+        if p["type"] == "response.output_text.delta"
+    )
+    assert '"tool_call"' not in visible_text
+    completed = [p for p in payloads if p["type"] == "response.completed"]
+    if repair_succeeds:
+        assert len(completed) == 1
+        calls = [
+            i
+            for i in completed[0]["response"]["output"]
+            if i["type"] == "function_call"
+        ]
+        assert len(calls) == 1
+        assert calls[0]["name"] == "exec_command"
+    else:
+        assert not completed
+        assert "tool_protocol_repair_exhausted" in response.text
+        assert not any(
+            p.get("item", {}).get("type") == "function_call" for p in payloads
+        )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The command returned a syntax error.",
+        '{"message":"Example: {\\"tool_call\\": unfinished"}',
+        _VALID_REPAIR_TOOL,
+    ],
+)
+def test_malformed_tool_detection_preserves_regular_text_and_valid_json(text):
+    import app.services.prompt_provider_facade as facade
+
+    assert not facade._has_malformed_tool_envelope(text)
+
+
+def test_malformed_tool_prefix_after_json_is_buffered_at_every_split():
+    import app.services.prompt_provider_facade as facade
+
+    text = '{"status":"checking"}\n' + _BROKEN_REPAIR_TOOL
+    for split in range(1, len(text)):
+        normalizer = facade.ResponsesStreamNormalizer()
+        deltas = normalizer.feed(text[:split]) + normalizer.feed(text[split:])
+        assert '"tool_call"' not in "".join(deltas), split
+
+
+def test_malformed_tool_example_without_tools_remains_text(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": _BROKEN_REPAIR_TOOL}}]
+        }
+
+    monkeypatch.setattr(norllama_gateway, "invoke_text_chat", fake_chat)
+    result = execute_openai_responses_facade(
+        {"model": "norman-code", "input": "Show malformed JSON.", "tools": []}
+    )
+    assert len(invocations) == 1
+    assert result["output_text"] == _BROKEN_REPAIR_TOOL
+    assert result["output"][0]["type"] == "message"
