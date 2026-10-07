@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
-from caddy_gateway_policy import gateway_proxy_lines
+from caddy_gateway_policy import gateway_proxy_lines, gateway_error_lines
 
 from app.core.estate_registry import load_fleet_topology
 from sync_agent_console_template import (
@@ -529,6 +529,8 @@ def _host_block(
         if gateway_route or resident_llm_upstreams or asr_upstreams:
             lines.append("    }")
         lines.append("}")
+    if gateway_route:
+        lines[-1:-1] = gateway_error_lines()
     return "\n".join(lines)
 
 

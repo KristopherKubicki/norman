@@ -1261,6 +1261,22 @@ def verify_route_model_contract(_route: Route) -> tuple[bool, str]:
     return True, "managed tool-capable Codex model catalog verified"
 
 
+def gateway_startup_ready(route: Route) -> bool:
+    """Check the independent watchdog before starting a mapped session."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_DIR / "codex_gateway_status.py"),
+            "--endpoint",
+            route.endpoint,
+            "--wait",
+            "120",
+        ],
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def preflight_route_capacity(route: Route) -> tuple[bool, str]:
     """Report local coding capacity before starting a mapped interactive session."""
 
@@ -1763,6 +1779,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"codex-route: {route.key} startup blocked: {contract_detail}.",
                     file=sys.stderr,
                 )
+                return 1
+            if not gateway_startup_ready(route):
                 return 1
             capacity_available, capacity_detail = preflight_route_capacity(route)
             if not capacity_available:

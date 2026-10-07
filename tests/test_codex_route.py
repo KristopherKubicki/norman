@@ -33,7 +33,7 @@ EXPECTED_ROUTES = {
 
 
 @pytest.fixture
-def route_module():
+def route_module(monkeypatch):
     module_name = f"codex_route_test_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, SCRIPT_PATH)
     assert spec and spec.loader
@@ -41,6 +41,7 @@ def route_module():
     sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
+        monkeypatch.setattr(module, "gateway_startup_ready", lambda _route: True)
         yield module
     finally:
         sys.modules.pop(module_name, None)
@@ -1207,3 +1208,24 @@ def test_norman_management_commands_skip_capacity_preflight(
     assert route_module.main(["--launcher", "regular", "--", *arguments]) == 0
     assert preflight_calls == []
     assert fallback_calls == [arguments]
+
+
+def test_unavailable_gateway_blocks_launch_before_capacity_lookup(
+    route_module, monkeypatch
+):
+    route = route_by_key(route_module, "compere")
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
+    monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: route)
+    monkeypatch.setattr(route_module, "gateway_startup_ready", lambda _route: False)
+    monkeypatch.setattr(
+        route_module, "verify_route_model_contract", lambda _route: (True, "")
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail(
+            "An unavailable gateway must not start a session or request credentials"
+        )
+
+    monkeypatch.setattr(route_module, "preflight_route_capacity", forbidden)
+    monkeypatch.setattr(route_module, "exec_work_route", forbidden)
+    assert route_module.main(["--launcher", "work", "--"]) == 1

@@ -647,3 +647,89 @@ If you encounter issues during deployment or operation, consult the following re
 
 Feel free to modify and expand this document to include any additional information or steps specific to your project or
 deployment preferences.
+
+## Gateway outages and local rescue
+
+Generic `codex-work` uses the Keystone hostname as an authenticated **work model
+route** to Norman CT241. It is not invoking the Keystone application. Mapped
+checkouts use their own route hostname and billing identity. Do not replace a
+work route with the personal Norman route to get around an outage.
+
+Caddy serves `/_gateway/status` from a small watchdog receipt independently of
+the Python API. It reports `ready`, `recovering`, `restarting`, `recovery_stalled`,
+`restart_requested`, `unavailable`, or `maintenance`, with a timestamp, outage
+age and suggested polling interval. `ready` means backend HTTP health only;
+model readiness is separate. Clients reject receipts older than 45 seconds.
+A host/network failure can make the status endpoint unreachable too; that is
+unknown readiness, never an optimistic healthy result.
+
+Install `scripts/deploy_gateway_watchdog.sh` **on Norman**. Its ten-second timer
+records phase changes in the journal and atomically updates
+`/var/lib/norman/gateway-health/status.json`. Existing systemd `Restart=always`
+handles process exits. The watchdog additionally allows one `try-restart` only
+when the sole enabled, running production unit has returned no HTTP response
+for at least 180 seconds and has itself been running for 180 seconds. It never
+restarts for an HTTP error, a cloud/model failure, an intentionally stopped
+service, an ambiguous unit selection, or an active deployment transition.
+Recovery attempts have a fifteen-minute cooldown and a maximum of two per hour.
+A failed restart request consumes that budget. A persistent failure requires an
+operator; neither the watchdog nor the model may repeatedly bounce the service.
+
+For deliberate maintenance, create `/run/norman-gateway-maintenance.json` as
+root with `{"until": <future Unix timestamp>}` before changing the backend.
+Remove it after verification. An invalid marker suspends automatic recovery
+until corrected. This does not stop systemd's own restart policy.
+
+New routed sessions check the independent status and visibly wait up to 120
+seconds. They stop before launching if readiness does not return; history is
+preserved. Existing sessions benefit from Caddy's refused-connection wait.
+After an exhausted refused dial, Caddy returns structured HTTP 503 with
+`Retry-After: 10` and the status URL. It does not replay a POST already accepted
+by the backend. It cannot guarantee continuity after an interrupted response.
+
+Operator commands installed by `scripts/install_codex_route.sh`:
+
+```sh
+codex-gateway-status
+codex-gateway-status --endpoint https://cp.kris.openbrand.com/v1 --wait 120
+codex-rescue --scope work --prompt 'Backend TCP connections are refused during startup; suggest read-only checks.'
+codex-rescue --scope personal --prompt 'Summarize these personal-service outage observations.'
+```
+
+Rescue talks directly to the owning Spark's Norllama gateway (work
+`192.168.42.151:18151`, personal `192.168.40.150:18151`), so it works independently
+of Norman, Keystone, their token broker, and cloud providers. It checks signed
+policy readiness, selects an advertised worker-local Qwen model, disables peer
+spillover, disables HTTP proxies/redirects, limits input/output/time, and sends
+no tools. It reads only explicitly supplied text, not session history or logs.
+Model suggestions are untrusted advisory output; they cannot restart services,
+change billing routes, execute repairs or resume a cloud conversation. A local
+worker or policy failure is reported rather than bypassed. Keep scope explicit.
+
+Networking VM232 remains the owner of Norllama fleet checks and recovery drills;
+do not reactivate migrated HAL copies. Worker readiness is not proof of successful
+inference, so verify a bounded completion as well. Fleet peer failover is not a
+replacement for a second Norman Responses backend. Health-gated production
+cutovers, draining in-flight requests, and compatible shared continuation state
+are still needed before claiming redundant gateway failover.
+
+The separate `norman-gateway-observer.timer` belongs on Networking VM232. It
+polls the independent status every thirty seconds and keeps
+`~/.local/state/norman/gateway-observer.json`, so a Norman host failure is still
+observed. After three minutes unavailable it may request one bounded, tool-free
+Qwen diagnosis on the work worker, no more than once per fifteen minutes. Only
+phase, HTTP code and outage duration are supplied; transcripts and remote status
+messages are excluded. Advice is explicitly advisory and dated, with no restart,
+notification or model-routing authority. It remains inspectable even when
+Norman is down. It does not send Slack, email or SMS notifications.
+
+Use `scripts/deploy_gateway_observer.sh` on Networking to install the observer;
+its status probe targets `https://norman.home.arpa/_gateway/status`, independently
+of work-application access lists. For rollback, stop the corresponding timer
+first (`norman-gateway-watchdog.timer` on Norman or
+`norman-gateway-observer.timer` on Networking); stopping either timer does not
+stop the production API. Restore the recorded Caddy/configuration and launcher
+backups and validate before reloading. Preserve session files and watchdog
+attempt history. Operational receipts for the October 7 installation are under
+`~/.local/state/norman/gateway-outage-recovery-20261007` on Norman and
+`/var/lib/networking/gateway-outage-recovery-20261007` on Networking.

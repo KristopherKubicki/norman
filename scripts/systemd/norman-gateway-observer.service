@@ -1,0 +1,14 @@
+[Unit]
+Description=Observe Norman from Networking and retain bounded local outage advice
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+WorkingDirectory=/opt/hal-services/norman
+ExecStart=/opt/hal-services/venv/bin/python /opt/hal-services/norman/scripts/gateway_observer.py --state /home/kristopher/.local/state/norman/gateway-observer.json --rescue-on-failure
+TimeoutStartSec=120
+UMask=0077
+NoNewPrivileges=true

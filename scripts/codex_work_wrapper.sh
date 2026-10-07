@@ -73,6 +73,12 @@ run_guarded_codex() {
     echo "codex-work: managed Norman credential policy is unavailable. Run sudo -n ~/code/norman/scripts/deploy_codex_tui_secret_guard.sh." >&2
     exit 1
   fi
+  if [[ "${CODEX_WORK_PROVIDER:-}" =~ ^(norman|gateway)$ ]] \
+    && [[ "${uses_work_profile:-0}" == "1" ]] \
+    && ! is_help_request "$@"; then
+    python3 "$(dirname "$ROUTER_SCRIPT")/codex_gateway_status.py" \
+      --profile-file "$CODEX_WORK_HOME/work.config.toml" --wait 120 || return 1
+  fi
   export NORMAN_TUI_NO_DIRECT_VAULT=1
   if [[ "$CODEX_WORK_DISABLE_APPS" == "1" ]]; then
     local codex_bin="${CODEX_REAL_BIN:-codex}"

@@ -1,0 +1,14 @@
+[Unit]
+Description=Observe Norman gateway recovery and recover a persistently unresponsive process
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/norman-gateway-watchdog --repair
+TimeoutStartSec=25
+UMask=0022
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/norman/gateway-health

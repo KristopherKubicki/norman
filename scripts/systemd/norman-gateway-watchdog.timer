@@ -1,0 +1,10 @@
+[Unit]
+Description=Check Norman backend availability every ten seconds
+
+[Timer]
+OnBootSec=20s
+OnUnitInactiveSec=10s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

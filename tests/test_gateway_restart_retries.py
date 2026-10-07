@@ -18,6 +18,7 @@ import urllib.request
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from caddy_gateway_policy import gateway_error_lines
 from render_norman_bot_proxy_caddy import _gateway_proxy_lines
 from render_norman_frontdoor_caddy import render_frontdoor_snippet
 
@@ -35,8 +36,10 @@ def proxy(tmp_path):
         pytest.skip("Caddy integration test requires the caddy executable")
     frontend, backend = _port(), _port()
     # Shorten only the timeout for the outage test; retain production semantics.
-    handlers = "\n".join(_gateway_proxy_lines("compere"))
+    handlers = "\n".join(_gateway_proxy_lines("compere") + gateway_error_lines())
     handlers = handlers.replace(":8000", f":{backend}").replace("120s", "2s")
+    handlers = handlers.replace("/var/lib/norman/gateway-health", str(tmp_path))
+    (tmp_path / "status.json").write_text('{"phase":"restarting"}')
     config = tmp_path / "Caddyfile"
     config.write_text(
         "{\n admin off\n auto_https off\n}\n"
@@ -149,7 +152,9 @@ def test_accepted_post_is_not_replayed_after_disconnect(proxy):
 def test_down_backend_has_bounded_wait(proxy):
     url, _port_number = proxy
     start = time.monotonic()
-    assert _post(url + "/v1/responses", b"test")[0] == 502
+    status, body = _post(url + "/v1/responses", b"test")
+    assert status == 503
+    assert b"backend_connection_refused" in body
     assert 1.5 <= time.monotonic() - start < 5
 
 
@@ -188,3 +193,21 @@ def test_unknown_length_body_keeps_existing_delivery(proxy):
             assert received == [b"test"]
         finally:
             connection.close()
+
+
+def test_status_remains_available_when_backend_is_down(proxy):
+    url, _ = proxy
+    with urllib.request.urlopen(url + "/_gateway/status", timeout=1) as response:
+        assert response.status == 200
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.read() == b'{"phase":"restarting"}'
+
+
+def test_exhausted_dial_returns_retry_after(proxy):
+    url, _ = proxy
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        urllib.request.urlopen(
+            urllib.request.Request(url + "/v1/responses", data=b"test"), timeout=6
+        )
+    assert caught.value.code == 503
+    assert caught.value.headers["Retry-After"] == "10"

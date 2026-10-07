@@ -3,7 +3,14 @@
 
 def gateway_proxy_lines(gateway_route: str, *, prefix: str = "    ") -> list[str]:
     """Retry refused dials only when Caddy can buffer the complete request."""
-    lines = []
+    lines = [
+        f"{prefix}handle /_gateway/status {{",
+        f"{prefix}    root * /var/lib/norman/gateway-health",
+        f"{prefix}    rewrite * /status.json",
+        f"{prefix}    header Cache-Control no-store",
+        f"{prefix}    file_server",
+        f"{prefix}}}",
+    ]
     for path, name in [("/v1/responses", "responses"), ("/v1/*", "api")]:
         lines.extend(
             [
@@ -37,3 +44,18 @@ def gateway_proxy_lines(gateway_route: str, *, prefix: str = "    ") -> list[str
             )
         lines.append(f"{prefix}}}")
     return lines
+
+
+def gateway_error_lines(prefix: str = "    ") -> list[str]:
+    """Explain a refused backend connection without retrying accepted requests."""
+    return [
+        f"{prefix}handle_errors {{",
+        f"{prefix}    @gateway_down expression `{{err.status_code}} == 502 && {{http.request.uri.path}}.startsWith('/v1/') && {{err.message}}.contains('connect: connection refused')`",
+        f"{prefix}    handle @gateway_down {{",
+        f"{prefix}        header Content-Type application/json",
+        f"{prefix}        header Retry-After 10",
+        f"{prefix}        header Cache-Control no-store",
+        f'{prefix}        respond `{{"error":{{"type":"gateway_unavailable","code":"backend_connection_refused","message":"Norman backend is unavailable after the recovery wait. Keep your session. Check /_gateway/status; retry after 10 seconds. Local diagnosis: codex-rescue with an explicit work or personal scope."}}}}` 503',
+        f"{prefix}    }}",
+        f"{prefix}}}",
+    ]
