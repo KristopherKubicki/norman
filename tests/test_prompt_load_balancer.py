@@ -6286,11 +6286,18 @@ _VALID_REPAIR_TOOL = json.dumps(
     {"tool_call": {"name": "exec_command", "arguments": {"cmd": "pwd"}}}
 )
 _BROKEN_REPAIR_TOOL = _VALID_REPAIR_TOOL[:-1]
+_BARE_SESSION_ARGUMENTS = [
+    '{"cmd":"pwd","max_output_tokens":4000,"yield_time_ms":1000}',
+    '{"session_id":26931,"yield_time_ms":1000,"chars":"","max_output_tokens":4000}',
+    '{"chars":"","max_output_tokens":4000,"session_id":26931}',
+]
 _MALFORMED_SESSION_SHAPES = [
     _BROKEN_REPAIR_TOOL,
     _BROKEN_REPAIR_TOOL + "\n" + _BROKEN_REPAIR_TOOL,
     _BROKEN_REPAIR_TOOL + "\nThe investigation remains incomplete.",
     '{"status":"checking"}\n' + _BROKEN_REPAIR_TOOL,
+    *_BARE_SESSION_ARGUMENTS,
+    "\n".join(_BARE_SESSION_ARGUMENTS) + "\nPlease complete AWS sign-in.",
 ]
 
 
@@ -6384,6 +6391,8 @@ def test_responses_stream_malformed_tool_repair_is_bounded(
         if p["type"] == "response.output_text.delta"
     )
     assert '"tool_call"' not in visible_text
+    for arguments in _BARE_SESSION_ARGUMENTS:
+        assert arguments not in visible_text
     completed = [p for p in payloads if p["type"] == "response.completed"]
     if repair_succeeds:
         assert len(completed) == 1
@@ -6408,6 +6417,9 @@ def test_responses_stream_malformed_tool_repair_is_bounded(
         "The command returned a syntax error.",
         '{"message":"Example: {\\"tool_call\\": unfinished"}',
         _VALID_REPAIR_TOOL,
+        '{"cmd":"example"}',
+        '{"session_id":26931,"status":"done"}',
+        '{"message":"Example: {\\"cmd\\":\\"pwd\\",\\"yield_time_ms\\":1000}"}',
     ],
 )
 def test_malformed_tool_detection_preserves_regular_text_and_valid_json(text):
@@ -6416,17 +6428,20 @@ def test_malformed_tool_detection_preserves_regular_text_and_valid_json(text):
     assert not facade._has_malformed_tool_envelope(text)
 
 
-def test_malformed_tool_prefix_after_json_is_buffered_at_every_split():
+@pytest.mark.parametrize("broken", [_BROKEN_REPAIR_TOOL, *_BARE_SESSION_ARGUMENTS])
+def test_malformed_tool_prefix_after_json_is_buffered_at_every_split(broken):
     import app.services.prompt_provider_facade as facade
 
-    text = '{"status":"checking"}\n' + _BROKEN_REPAIR_TOOL
+    text = '{"status":"checking"}\n' + broken
     for split in range(1, len(text)):
         normalizer = facade.ResponsesStreamNormalizer()
         deltas = normalizer.feed(text[:split]) + normalizer.feed(text[split:])
         assert '"tool_call"' not in "".join(deltas), split
+        assert broken not in "".join(deltas), split
 
 
-def test_malformed_tool_example_without_tools_remains_text(monkeypatch):
+@pytest.mark.parametrize("broken", [_BROKEN_REPAIR_TOOL, *_BARE_SESSION_ARGUMENTS])
+def test_malformed_tool_example_without_tools_remains_text(monkeypatch, broken):
     import app.services.prompt_provider_facade as facade
 
     facade.reset_facade_response_state()
@@ -6438,7 +6453,7 @@ def test_malformed_tool_example_without_tools_remains_text(monkeypatch):
     def fake_chat(**kwargs):
         invocations.append(kwargs)
         return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
-            "choices": [{"message": {"content": _BROKEN_REPAIR_TOOL}}]
+            "choices": [{"message": {"content": broken}}]
         }
 
     monkeypatch.setattr(norllama_gateway, "invoke_text_chat", fake_chat)
@@ -6446,5 +6461,5 @@ def test_malformed_tool_example_without_tools_remains_text(monkeypatch):
         {"model": "norman-code", "input": "Show malformed JSON.", "tools": []}
     )
     assert len(invocations) == 1
-    assert result["output_text"] == _BROKEN_REPAIR_TOOL
+    assert result["output_text"] == broken
     assert result["output"][0]["type"] == "message"
