@@ -907,6 +907,72 @@ def refresh_model_catalog_cache(route: Route) -> bool:
     return True
 
 
+def connector_account_policy() -> dict[str, Any]:
+    """Read public identity expectations, never connector credentials or proof."""
+    result: dict[str, Any] = {
+        "status": "missing",
+        "google": {},
+        "authenticated_identity_verified": False,
+        "automatic_account_switching": False,
+    }
+    path = HOME / ".config/norman/codex-connector-accounts.json"
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(4097)
+        if len(raw) > 4096:
+            raise ValueError("oversized policy")
+        value = json.loads(raw)
+        if not isinstance(value, dict) or set(value) != {"schema_version", "google"}:
+            raise ValueError("invalid policy fields")
+        if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+            raise ValueError("invalid schema")
+        accounts = value["google"]
+        if not isinstance(accounts, dict) or set(accounts) != {"work", "personal"}:
+            raise ValueError("both owners required")
+        for email in accounts.values():
+            if (
+                not isinstance(email, str)
+                or len(email) > 254
+                or not re.fullmatch(
+                    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}", email
+                )
+            ):
+                raise ValueError("invalid email")
+        if accounts["work"].casefold() == accounts["personal"].casefold():
+            raise ValueError("owners must not share an identity")
+    except FileNotFoundError:
+        return result
+    except (OSError, ValueError, RecursionError):
+        result["status"] = "invalid"
+        return result
+    result.update(status="configured", google=accounts)
+    return result
+
+
+def connector_account_instructions() -> str:
+    """Render exact expected identities without claiming a live connection."""
+    policy = connector_account_policy()
+    if policy["status"] != "configured":
+        return (
+            "\n- Expected Google account policy is missing or invalid. Do not use "
+            "Google account data until the intended identity is established. "
+            "A read-only profile check and independent work may continue.\n"
+        )
+    accounts = policy["google"]
+    return (
+        f"\n- Expected work Google identity: `{accounts['work']}`. "
+        f"Expected personal Google identity: `{accounts['personal']}`. "
+        "These are expectations, not proof of authentication. Verify each "
+        "connector's live profile before using its data.\n"
+        "- A work task must not search the personal mailbox to find work material, "
+        "or use personal Calendar/Contacts as fallback (and vice versa). "
+        "An exact email mismatch blocks that connector action. Account aliases "
+        "and delegated mailboxes require explicit user-established scope.\n"
+        "- Google identity does not establish Jira identity. Jira still requires "
+        "its own current-user, site/cloud ID, and project verification.\n"
+    )
+
+
 def write_routed_tui_secret_policy(home: Path) -> Path:
     """Install managed secret rules without discarding route-local instructions."""
     path = home / "AGENTS.md"
@@ -921,6 +987,7 @@ def write_routed_tui_secret_policy(home: Path) -> Path:
 
     managed = (
         f"{ROUTED_TUI_POLICY_BEGIN}\n{ROUTED_TUI_SECRET_POLICY}"
+        f"{connector_account_instructions()}"
         f"{ROUTED_TUI_POLICY_END}\n"
     )
     start = existing.find(ROUTED_TUI_POLICY_BEGIN)
@@ -1108,6 +1175,7 @@ def route_payload(route: Route | None, launcher: str, cwd: Path) -> dict[str, ob
             "checkout_root": str(root),
             "origin": origin,
             "fallback": "regular-default" if launcher == "regular" else "work-launcher",
+            "connector_accounts": connector_account_policy(),
         }
     payload = asdict(route)
     payload.update(
@@ -1117,6 +1185,7 @@ def route_payload(route: Route | None, launcher: str, cwd: Path) -> dict[str, ob
             "profile": route.profile,
             "profile_path": str(profile_path(route)),
             "token_secret": route.resolved_token_secret,
+            "connector_accounts": connector_account_policy(),
         }
     )
     return payload
@@ -1644,11 +1713,24 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
     environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command = [environment["CODEX_REAL_BIN"]]
+    work_apps = None
+    for argument in arguments:
+        if argument in {"--work-apps", "--work-no-apps"}:
+            work_apps = argument == "--work-apps"
+    arguments = [
+        argument
+        for argument in arguments
+        if argument not in {"--work-apps", "--work-no-apps"}
+    ]
     session_start = starts_session(arguments)
     explicit_features = explicit_feature_toggles(arguments)
     if session_start:
+        if work_apps is not None:
+            command.extend(("--enable" if work_apps else "--disable", "apps"))
+        elif "apps" not in explicit_features:
+            command.extend(("--disable", "apps"))
         for feature in route.default_disabled_features:
-            if feature.lower() not in explicit_features:
+            if feature != "apps" and feature.lower() not in explicit_features:
                 command.extend(("--disable", feature))
     if not has_explicit_profile(arguments) and session_start:
         command.extend(("--profile", route.profile))
@@ -1691,6 +1773,23 @@ def exec_regular_fallback(arguments: list[str]) -> None:
         environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command.extend(arguments)
     os.execve(real_codex, command, environment)
+
+
+def exec_work_fallback(reenter: str, arguments: list[str]) -> None:
+    """Keep unmapped work launches inside the original work launcher."""
+    if not reenter:
+        raise RuntimeError("Work fallback requires the original codex-work launcher.")
+    reentry_path = Path(reenter).expanduser().resolve()
+    if not reentry_path.is_file() or not os.access(reentry_path, os.X_OK):
+        raise RuntimeError("Work fallback launcher is not executable.")
+    environment = os.environ.copy()
+    environment["CODEX_ROUTER_RESOLVED"] = "1"
+    environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
+    home = Path(environment.get("CODEX_WORK_HOME", HOME / ".codex-work")).expanduser()
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    write_routed_tui_secret_policy(home)
+    environment["CODEX_HOME"] = str(home)
+    os.execve(str(reentry_path), [str(reentry_path), *arguments], environment)
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -1804,12 +1903,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             exec_regular_route(route, parsed.codex_args)
         return 0
 
-    if parsed.launcher == "work" and starts_session(parsed.codex_args):
-        print(
-            "codex-work: no mapped Norman work route for "
-            f"{cwd}; starting regular Codex.",
-            file=sys.stderr,
-        )
+    if parsed.launcher == "work":
+        exec_work_fallback(parsed.reenter, parsed.codex_args)
+        return 0
     exec_regular_fallback(parsed.codex_args)
     return 0
 

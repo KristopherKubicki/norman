@@ -839,3 +839,39 @@ live connector identity or Jira access. No mailbox contents were read and no
 messages or tickets were changed. Connecting a work Google account or Atlassian
 requires its own authenticated connection; never recover by borrowing the
 personal connection or exposing broker credentials.
+
+The optional local file `~/.config/norman/codex-connector-accounts.json` records
+public Google identity expectations, not credentials or authenticated receipts:
+
+```json
+{
+  "schema_version": 1,
+  "google": {
+    "work": "operator@example.com",
+    "personal": "operator@gmail.com"
+  }
+}
+```
+
+Both distinct identities are required. Missing, malformed, oversized, or
+unreadable policy produces no usable expected identity; generated instructions
+block Google account-data operations until identity is established while
+allowing profile checks and independent work. The router refreshes these
+expectations in managed session instructions and reports them under
+`connector_accounts` in `--print-route`. Its `authenticated_identity_verified`
+and `automatic_account_switching` remain false: a local file cannot certify a
+remote OAuth session. Each Google connector must independently return the
+expected profile. Personal mail containing work messages is not a work-account
+fallback. Jira retains separate current-user/site/project verification.
+
+Only an explicit leading `--work-apps` opts the source wrapper into apps. An
+inherited `CODEX_WORK_DISABLE_APPS=0` cannot enable apps for a child work session.
+The explicit choice survives both router and credential-launcher re-entry. The
+installed HAL wrapper already ignores that ambient variable; preserve its
+other runtime fixes when backporting this change.
+
+Unmapped work sessions and work management commands re-enter `codex-work` and
+retain the work home. A missing work launcher is an error; it must not fall
+through to regular/personal Codex. This also preserves the work boundary for
+`login`, `mcp`, and `resume` outside a mapped checkout. HAL already used this
+work fallback; the source router now does too.

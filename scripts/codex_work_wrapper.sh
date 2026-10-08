@@ -21,7 +21,7 @@ readonly CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS="${CODEX_WORK_PYTEST_XDIST_AUTO_WO
 readonly OPS_OPENBRAND_MCP_LAUNCHER="$HOME/code/control_plane/scripts/with_ops_openbrand_mcp.sh"
 
 # Model routing does not switch connected-app OAuth accounts.
-disable_apps="${CODEX_WORK_DISABLE_APPS:-1}"
+disable_apps=1
 case "${1-}" in
   --work-apps) disable_apps=0; shift ;;
   --work-no-apps) disable_apps=1; shift ;;
@@ -37,11 +37,17 @@ case "${1-}" in
     ;;
 esac
 
+reentry_args=("$@")
+if [[ "$disable_apps" == "1" ]]; then
+  reentry_args=(--work-no-apps "${reentry_args[@]}")
+else
+  reentry_args=(--work-apps "${reentry_args[@]}")
+fi
 if [[ "${CODEX_ROUTER_RESOLVED:-}" != "1" ]]; then
   exec python3 "$ROUTER_SCRIPT" \
     --launcher work \
     --reenter "$0" \
-    -- "$@"
+    -- "${reentry_args[@]}"
 fi
 unset CODEX_ROUTER_RESOLVED
 
@@ -210,7 +216,7 @@ is_help_request() {
 if [[ "${CODEX_WORK_OPS_BINDING_LOADED:-}" != "1" ]]; then
   exec env -u OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY \
     "$OPS_OPENBRAND_MCP_LAUNCHER" \
-    env CODEX_WORK_OPS_BINDING_LOADED=1 "$0" "$@"
+    env CODEX_WORK_OPS_BINDING_LOADED=1 "$0" "${reentry_args[@]}"
 fi
 unset CODEX_WORK_OPS_BINDING_LOADED
 

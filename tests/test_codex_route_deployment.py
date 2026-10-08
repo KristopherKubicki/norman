@@ -339,8 +339,8 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
     )
     _install_test_managed_secret_policy(tmp_path, environment)
 
-    # A fresh work launch must not inherit the personal connected apps default.
-    environment.pop("CODEX_WORK_DISABLE_APPS", None)
+    # An ambient parent setting cannot enable connected apps in a work child.
+    environment["CODEX_WORK_DISABLE_APPS"] = "0"
 
     blocked = subprocess.run(
         [str(WORK_WRAPPER_PATH), "resume", "oversized-session"],

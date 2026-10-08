@@ -757,21 +757,62 @@ def test_every_route_generates_an_isolated_brokered_gateway_profile(
     assert profile_path.stat().st_mode & 0o777 == 0o600
 
 
-def test_unmapped_work_session_uses_regular_codex_without_reentering_wrapper(
-    route_module, monkeypatch, capsys
+@pytest.mark.parametrize(
+    "arguments", ([], ["resume", "session"], ["mcp", "list"], ["login"])
+)
+def test_unmapped_work_session_never_uses_personal_fallback(
+    route_module, monkeypatch, arguments
 ):
-    fallback_calls = []
-
+    calls = []
     monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: None)
     monkeypatch.setattr(
         route_module,
         "exec_regular_fallback",
-        lambda arguments: fallback_calls.append(arguments),
+        lambda _: pytest.fail("personal fallback"),
     )
+    monkeypatch.setattr(
+        route_module,
+        "exec_work_fallback",
+        lambda launcher, args: calls.append((launcher, args)),
+    )
+    assert (
+        route_module.main(
+            ["--launcher", "work", "--reenter", "/work-launcher", "--", *arguments]
+        )
+        == 0
+    )
+    assert calls == [("/work-launcher", arguments)]
 
-    assert route_module.main(["--launcher", "work", "--reenter", "/missing", "--"]) == 0
-    assert fallback_calls == [[]]
-    assert "no mapped Norman work route" in capsys.readouterr().err
+
+def test_work_fallback_sets_work_home_and_preserves_arguments(
+    route_module, tmp_path, monkeypatch
+):
+    launcher = tmp_path / "codex-work"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o700)
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.delenv("CODEX_WORK_HOME", raising=False)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / ".codex"))
+    monkeypatch.setattr(
+        route_module, "resolve_real_codex", lambda: tmp_path / "real-codex"
+    )
+    calls = []
+    monkeypatch.setattr(route_module.os, "execve", lambda *args: calls.append(args))
+    route_module.exec_work_fallback(str(launcher), ["--work-apps", "resume", "session"])
+    executable, arguments, environment = calls[0]
+    assert executable == str(launcher)
+    assert arguments == [str(launcher), "--work-apps", "resume", "session"]
+    assert environment["CODEX_HOME"] == str(tmp_path / ".codex-work")
+    assert environment["CODEX_ROUTER_RESOLVED"] == "1"
+    assert (tmp_path / ".codex-work/AGENTS.md").exists()
+
+
+@pytest.mark.parametrize("launcher", ("", "/missing/work-launcher"))
+def test_work_fallback_missing_launcher_blocks_instead_of_using_personal(
+    route_module, launcher
+):
+    with pytest.raises(RuntimeError, match="Work fallback"):
+        route_module.exec_work_fallback(launcher, [])
 
 
 def test_regular_fallback_executes_the_real_codex_binary(
@@ -1229,3 +1270,122 @@ def test_unavailable_gateway_blocks_launch_before_capacity_lookup(
     monkeypatch.setattr(route_module, "preflight_route_capacity", forbidden)
     monkeypatch.setattr(route_module, "exec_work_route", forbidden)
     assert route_module.main(["--launcher", "work", "--"]) == 1
+
+
+def write_connector_policy(module, tmp_path, monkeypatch, value):
+    monkeypatch.setattr(module, "HOME", tmp_path)
+    path = tmp_path / ".config/norman/codex-connector-accounts.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
+
+
+def test_connector_policy_preserves_exact_owners_without_claiming_auth(
+    route_module, tmp_path, monkeypatch
+):
+    policy = {
+        "schema_version": 1,
+        "google": {"work": "operator@example.com", "personal": "operator@gmail.com"},
+    }
+    write_connector_policy(route_module, tmp_path, monkeypatch, policy)
+    home = tmp_path / "session"
+    home.mkdir()
+    route_module.write_routed_tui_secret_policy(home)
+    instructions = (home / "AGENTS.md").read_text()
+    assert "Expected work Google identity: `operator@example.com`" in instructions
+    assert "Expected personal Google identity: `operator@gmail.com`" in instructions
+    monkeypatch.setattr(route_module, "checkout_identity", lambda _: (tmp_path, ""))
+    for route in (None, route_by_key(route_module, "control-plane")):
+        payload = route_module.route_payload(route, "work", tmp_path)
+        actual = payload["connector_accounts"]
+        assert actual["status"] == "configured"
+        assert actual["google"] == policy["google"]
+        assert actual["authenticated_identity_verified"] is False
+        assert actual["automatic_account_switching"] is False
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [],
+        {},
+        {"schema_version": True, "google": {}},
+        {"schema_version": 2, "google": {}},
+        {"schema_version": 1, "google": {"work": "operator@example.com"}},
+        {
+            "schema_version": 1,
+            "google": {"work": "same@example.com", "personal": "SAME@example.com"},
+        },
+        {
+            "schema_version": 1,
+            "google": {"work": "bad\n@example.com", "personal": "p@gmail.com"},
+        },
+        {"schema_version": 1, "google": {"work": 123, "personal": "p@gmail.com"}},
+        {
+            "schema_version": 1,
+            "google": {"work": "w@example.com", "personal": "p@gmail.com"},
+            "token": "must-not-echo",
+        },
+    ],
+)
+def test_invalid_connector_policy_never_reuses_or_exposes_identity(
+    route_module, tmp_path, monkeypatch, value
+):
+    write_connector_policy(route_module, tmp_path, monkeypatch, value)
+    result = route_module.connector_account_policy()
+    assert result["status"] == "invalid"
+    assert result["google"] == {}
+    assert "must-not-echo" not in json.dumps(result)
+    assert (
+        "Do not use Google account data"
+        in route_module.connector_account_instructions()
+    )
+
+
+def test_connector_policy_missing_corrupt_and_oversized(
+    route_module, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    assert route_module.connector_account_policy()["status"] == "missing"
+    path = write_connector_policy(route_module, tmp_path, monkeypatch, {})
+    for raw in (b"{", b"\xff", b" " * 4097):
+        path.write_bytes(raw)
+        assert route_module.connector_account_policy()["status"] == "invalid"
+    path.unlink()
+    path.mkdir()
+    assert route_module.connector_account_policy()["status"] == "invalid"
+
+
+@pytest.mark.parametrize(
+    "route_key",
+    [
+        "control-plane",
+        "compere",
+        "infra",
+        "earlybird",
+        "gold-book",
+        "market-sizing",
+        "tmi-dashboards",
+    ],
+)
+@pytest.mark.parametrize(
+    "choice,expected",
+    [(None, "--disable"), ("--work-apps", "--enable"), ("--work-no-apps", "--disable")],
+)
+def test_all_work_routes_consume_wrapper_flags_and_default_apps_off(
+    route_module, monkeypatch, tmp_path, route_key, choice, expected
+):
+    route = route_by_key(route_module, route_key)
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
+    monkeypatch.setattr(route_module, "verify_managed_tui_secret_policy", lambda: None)
+    monkeypatch.setattr(route_module, "write_gateway_profile", lambda _: tmp_path)
+    monkeypatch.setattr(route_module, "resolve_real_codex", lambda: tmp_path / "codex")
+    calls = []
+    monkeypatch.setattr(route_module.os, "execve", lambda *args: calls.append(args))
+    arguments = ([choice] if choice else []) + ["exec", "check"]
+    route_module.exec_work_route(route, arguments)
+    command = calls[0][1]
+    assert command[1:3] == [expected, "apps"]
+    assert "--work-apps" not in command
+    assert "--work-no-apps" not in command
+    assert command[-2:] == ["exec", "check"]
