@@ -811,3 +811,31 @@ It applies to new launches only. Killing the supervisor itself with SIGKILL, a h
 failure or a closed terminal can prevent cleanup. Already queued mouse bytes may
 remain because discarding input could also discard the user's keystrokes. This is
 terminal recovery, not a fix for interrupted inference or durable Responses state.
+
+### Connector account verification
+
+Model routing and connector authentication are separate. Selecting the work
+model gateway does not switch Gmail, Calendar, Contacts, Jira, or another
+connected app's OAuth identity. `codex-work` disables connected apps by default;
+`--work-apps` explicitly enables them but does not select or verify an account.
+Custom MCP servers have their own credentials and remain independently scoped.
+The installed work launcher already uses this default; the source wrapper now
+preserves it on reinstall.
+
+Generated route instructions require a read-only identity check before the
+first account-specific operation, and again after reconnecting or changing
+ownership. Verify each Google connector's profile independently. For Jira,
+verify the current user, site/cloud ID, and intended project. Unknown or wrong
+identity blocks that connector operation without stopping unrelated work.
+Instructions guide agent behavior; they are not a server-side authorization
+boundary or automatic OAuth switching. Existing running sessions need these
+instructions explicitly or a new launch.
+
+The October 8 HAL audit verified the current injected Gmail, Calendar, and
+Contacts tools against the same personal account. The Atlassian plugin was
+available but not connected in that tool surface. Work homes separately
+registered Ops Portal and Scout MCP servers; configuration is not evidence of
+live connector identity or Jira access. No mailbox contents were read and no
+messages or tickets were changed. Connecting a work Google account or Atlassian
+requires its own authenticated connection; never recover by borrowing the
+personal connection or exposing broker credentials.

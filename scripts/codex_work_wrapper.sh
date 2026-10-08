@@ -20,11 +20,12 @@ readonly CODEX_WORK_AWS_REGION="${CODEX_WORK_AWS_REGION:-us-east-2}"
 readonly CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS="${CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS:-4}"
 readonly OPS_OPENBRAND_MCP_LAUNCHER="$HOME/code/control_plane/scripts/with_ops_openbrand_mcp.sh"
 
-disable_apps="${CODEX_WORK_DISABLE_APPS:-0}"
-if [[ "${1-}" == "--work-no-apps" ]]; then
-  disable_apps=1
-  shift
-fi
+# Model routing does not switch connected-app OAuth accounts.
+disable_apps="${CODEX_WORK_DISABLE_APPS:-1}"
+case "${1-}" in
+  --work-apps) disable_apps=0; shift ;;
+  --work-no-apps) disable_apps=1; shift ;;
+esac
 readonly CODEX_WORK_DISABLE_APPS="$disable_apps"
 export CODEX_WORK_DISABLE_APPS
 

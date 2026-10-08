@@ -102,6 +102,14 @@ ROUTED_TUI_SECRET_POLICY = """# Norman TUI Secret Policy
 - Before a credentialed action, explain the required capability and logical alias. Use only a task-specific approved executor or an injected tool; if neither is available, report the action blocked with the logical alias or capability needed.
 - Do not directly invoke `cred`, even for reads. Never run `cred init`, bootstrap, migration, rotation, or put/set/remove/rm operations.
 - Never create or migrate a vault, and never ask for, accept, or enter a vault passphrase.
+
+# Connector Account Identity
+
+- Model/provider routing, AWS account selection, and CODEX_HOME do not establish a connector's authenticated account. Never claim Gmail, Jira, or another app switched accounts because the model route changed.
+- Before the first account-specific read or write in a session, use the connector's read-only profile/current-user capability to verify the identity and intended workspace or tenant. Repeat after reconnecting, switching connections, or changing task ownership; check each connector independently.
+- For Gmail verify the mailbox email; for Jira verify both current user and site/cloud ID, then the target project. Do not infer identity from a tool name, available permission, cached note, or a successful server connection.
+- Use work connections for work and personal connections for personal tasks. If the intended identity is unknown or mismatched, stop that connector action and explain the missing connection; continue independent work. Never silently fall back across owners or change OAuth connections to recover from an outage.
+- A profile check authorizes no send, ticket update, or other mutation. Preserve the user's existing authorization scope. Do not fetch tokens to diagnose identity; use injected tools or an approved identity-only executor.
 """
 ROUTED_TUI_POLICY_BEGIN = "<!-- BEGIN NORMAN TUI SECRET POLICY -->"
 ROUTED_TUI_POLICY_END = "<!-- END NORMAN TUI SECRET POLICY -->"
