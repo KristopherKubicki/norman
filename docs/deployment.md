@@ -887,3 +887,19 @@ cross-owner selection, not a complete classification or OAuth isolation system.
 Personal launches also discard the inherited work Ops MCP bearer variable and
 binding-loaded marker from the child environment, preserving the parent and
 work launches. Existing running processes are unchanged.
+
+The boundary audit (`tests/test_codex_boundary_audit.py`) checks all named-home
+owner pairs and all recognized-origin/directory-name pairs. Recognized Git
+origin wins before any folder-name fallback; a renamed clone must not change
+its owner because an earlier route matches the folder. Real temporary Git
+repositories also prove mismatched launchers are rejected before execution or
+credential lookup.
+
+Routing parses attached short options as well as long/value forms, skips option
+values, and respects `--` as the end of options. Literal prompt text cannot
+select a checkout, impersonate help, change a model/profile, or toggle apps.
+Duplicate or empty `-C`/`--cd` is rejected before routing. Work wrapper switches
+are consumed only as switches, preserving literal prompts and option values.
+The audit can target an installed router/wrapper using `CODEX_AUDIT_ROUTER_PATH`
+and `CODEX_AUDIT_WORK_WRAPPER`; its isolated homes and stubbed executors never
+send messages, mutate tickets, retrieve credentials, or launch model sessions.

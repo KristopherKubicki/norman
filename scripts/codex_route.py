@@ -334,6 +334,18 @@ OPTIONS_WITH_VALUE = frozenset(
         "--model",
         "--profile",
         "--profile-v2",
+        "--remote",
+        "--remote-auth-token-env",
+        "--image",
+        "--local-provider",
+        "--sandbox",
+        "--ask-for-approval",
+        "--output-last-message",
+        "--output-schema",
+        "-a",
+        "-i",
+        "-o",
+        "-s",
         "-C",
         "-c",
         "-m",
@@ -386,11 +398,14 @@ def _is_within(path: Path, root: Path) -> bool:
 def resolve_route(cwd: Path) -> Route | None:
     """Resolve a route by Git origin first, then by canonical checkout path."""
     root, origin_name = checkout_identity(cwd)
+    if origin_name:
+        for route in ROUTES:
+            if origin_name in {normalize_name(name) for name in route.repo_names}:
+                return route
     for route in ROUTES:
-        names = {normalize_name(name) for name in route.repo_names}
-        if origin_name and origin_name in names:
-            return route
-        if normalize_name(root.name) in names:
+        if normalize_name(root.name) in {
+            normalize_name(name) for name in route.repo_names
+        }:
             return route
     for route in ROUTES:
         for configured_path in route.root_paths:
@@ -408,35 +423,19 @@ def has_explicit_profile(arguments: Sequence[str]) -> bool:
 
 
 def explicit_profiles(arguments: Sequence[str]) -> list[str]:
-    profiles: list[str] = []
-    for index, argument in enumerate(arguments):
-        if argument in {"--profile", "--profile-v2", "-p"}:
-            value = _value_after(arguments, index)
-            if value:
-                profiles.append(value)
-        elif argument.startswith(("--profile=", "--profile-v2=")):
-            value = argument.split("=", 1)[1]
-            if value:
-                profiles.append(value)
-        if argument.startswith("-p") and len(argument) > 2:
-            profiles.append(argument[2:])
-    return profiles
+    return [
+        value
+        for key, value in routing_tokens(arguments)
+        if key in {"-p", "--profile", "--profile-v2"} and value
+    ]
 
 
 def explicit_models(arguments: Sequence[str]) -> list[str]:
-    models: list[str] = []
-    for index, argument in enumerate(arguments):
-        if argument in {"--model", "-m"}:
-            value = _value_after(arguments, index)
-            if value:
-                models.append(value)
-        elif argument.startswith("--model="):
-            value = argument.split("=", 1)[1]
-            if value:
-                models.append(value)
-        elif argument.startswith("-m") and len(argument) > 2:
-            models.append(argument[2:])
-    return models
+    return [
+        value
+        for key, value in routing_tokens(arguments)
+        if key in {"-m", "--model"} and value
+    ]
 
 
 def has_explicit_model(arguments: Sequence[str]) -> bool:
@@ -444,31 +443,19 @@ def has_explicit_model(arguments: Sequence[str]) -> bool:
 
 
 def explicit_feature_toggles(arguments: Sequence[str]) -> set[str]:
-    features: set[str] = set()
-    for index, argument in enumerate(arguments):
-        if argument in {"--enable", "--disable"}:
-            value = _value_after(arguments, index)
-            if value:
-                features.add(value.strip().lower())
-        elif argument.startswith(("--enable=", "--disable=")):
-            value = argument.split("=", 1)[1].strip().lower()
-            if value:
-                features.add(value)
-    return features
+    return {
+        value.strip().lower()
+        for key, value in routing_tokens(arguments)
+        if key in {"--enable", "--disable"} and value and value.strip()
+    }
 
 
 def config_overrides(arguments: Sequence[str]) -> list[str]:
-    overrides: list[str] = []
-    for index, argument in enumerate(arguments):
-        if argument in {"--config", "-c"}:
-            value = _value_after(arguments, index)
-            if value:
-                overrides.append(value)
-        elif argument.startswith("--config="):
-            overrides.append(argument.split("=", 1)[1])
-        elif argument.startswith("-c") and len(argument) > 2:
-            overrides.append(argument[2:])
-    return overrides
+    return [
+        value
+        for key, value in routing_tokens(arguments)
+        if key in {"--config", "-c"} and value
+    ]
 
 
 def config_key(override: str) -> str:
@@ -533,26 +520,68 @@ def secret_guard_arguments_error(arguments: Sequence[str]) -> str:
     return ""
 
 
+def routing_tokens(arguments: Sequence[str]) -> list[tuple[str, str | None]]:
+    """Separate option values and stop interpreting options at the CLI separator."""
+    tokens: list[tuple[str, str | None]] = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            break
+        value = None
+        if argument in OPTIONS_WITH_VALUE:
+            index += 1
+            value = arguments[index] if index < len(arguments) else None
+        elif argument.startswith("--") and "=" in argument:
+            argument, value = argument.split("=", 1)
+        elif len(argument) > 2 and argument[:2] in {
+            "-C",
+            "-c",
+            "-m",
+            "-p",
+            "-a",
+            "-i",
+            "-o",
+            "-s",
+        }:
+            argument, value = argument[:2], argument[2:].removeprefix("=")
+        tokens.append((argument, value))
+        index += 1
+    return tokens
+
+
+def work_app_arguments(arguments: Sequence[str]) -> tuple[list[str], bool | None]:
+    """Consume wrapper switches without changing option values or literal prompts."""
+    filtered: list[str] = []
+    choice = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            filtered.extend(arguments[index:])
+            break
+        if argument in {"--work-apps", "--work-no-apps"}:
+            choice = argument == "--work-apps"
+        else:
+            filtered.append(argument)
+            if argument in OPTIONS_WITH_VALUE and index + 1 < len(arguments):
+                index += 1
+                filtered.append(arguments[index])
+        index += 1
+    return filtered, choice
+
+
 def codex_cwd(arguments: Sequence[str]) -> Path:
-    for index, argument in enumerate(arguments):
-        if argument in {"-C", "--cd"}:
-            value = _value_after(arguments, index)
-            if value:
-                return Path(value)
-        if argument.startswith("--cd="):
-            return Path(argument.split("=", 1)[1])
-    return Path.cwd()
+    values = [
+        value for key, value in routing_tokens(arguments) if key in {"-C", "--cd"}
+    ]
+    if len(values) > 1 or (values and not values[0]):
+        raise RuntimeError("Specify exactly one non-empty -C/--cd directory.")
+    return Path(values[0]) if values else Path.cwd()
 
 
 def command_name(arguments: Sequence[str]) -> str:
-    skip_next = False
-    for argument in arguments:
-        if skip_next:
-            skip_next = False
-            continue
-        if argument in OPTIONS_WITH_VALUE:
-            skip_next = True
-            continue
+    for argument, _value in routing_tokens(arguments):
         if argument.startswith("-"):
             continue
         return argument
@@ -560,7 +589,9 @@ def command_name(arguments: Sequence[str]) -> str:
 
 
 def starts_session(arguments: Sequence[str]) -> bool:
-    if any(argument in NON_SESSION_FLAGS for argument in arguments):
+    if any(
+        argument in NON_SESSION_FLAGS for argument, _value in routing_tokens(arguments)
+    ):
         return False
     command = command_name(arguments)
     return not command or command not in MANAGEMENT_COMMANDS
@@ -1772,15 +1803,7 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
     environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command = [environment["CODEX_REAL_BIN"]]
-    work_apps = None
-    for argument in arguments:
-        if argument in {"--work-apps", "--work-no-apps"}:
-            work_apps = argument == "--work-apps"
-    arguments = [
-        argument
-        for argument in arguments
-        if argument not in {"--work-apps", "--work-no-apps"}
-    ]
+    arguments, work_apps = work_app_arguments(arguments)
     session_start = starts_session(arguments)
     explicit_features = explicit_feature_toggles(arguments)
     if session_start:
