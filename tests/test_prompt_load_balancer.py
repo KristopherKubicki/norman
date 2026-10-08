@@ -6448,3 +6448,11 @@ def test_malformed_tool_example_without_tools_remains_text(monkeypatch):
     assert len(invocations) == 1
     assert result["output_text"] == _BROKEN_REPAIR_TOOL
     assert result["output"][0]["type"] == "message"
+
+
+def test_openai_compat_generic_work_has_its_own_identity(test_app, monkeypatch):
+    headers = _proxy_headers(monkeypatch)
+    headers["X-Norman-Gateway-Route"] = "work"
+    response = test_app.get("/v1/models", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["norman"]["gateway"]["gateway_route"] == "work"

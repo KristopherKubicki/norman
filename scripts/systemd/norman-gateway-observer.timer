@@ -1,0 +1,10 @@
+[Unit]
+Description=Observe Norman availability from Networking every thirty seconds
+
+[Timer]
+OnBootSec=45s
+OnUnitInactiveSec=30s
+AccuracySec=2s
+
+[Install]
+WantedBy=timers.target

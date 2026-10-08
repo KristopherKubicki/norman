@@ -33,7 +33,7 @@ EXPECTED_ROUTES = {
 
 
 @pytest.fixture
-def route_module():
+def route_module(monkeypatch):
     module_name = f"codex_route_test_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, SCRIPT_PATH)
     assert spec and spec.loader
@@ -41,6 +41,12 @@ def route_module():
     sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
+        monkeypatch.setattr(module, "gateway_startup_ready", lambda _route: True)
+
+        def unexpected_exec(*args, **kwargs):
+            pytest.fail("Router test attempted an unmocked process replacement")
+
+        monkeypatch.setattr(module.os, "execve", unexpected_exec)
         yield module
     finally:
         sys.modules.pop(module_name, None)
@@ -121,7 +127,7 @@ def test_unmapped_checkout_has_the_expected_generic_fallback(route_module, monke
         "regular-default"
     )
     assert route_module.route_payload(None, "work", unknown_root)["fallback"] == (
-        "regular-default"
+        "work-launcher"
     )
 
 
@@ -756,21 +762,62 @@ def test_every_route_generates_an_isolated_brokered_gateway_profile(
     assert profile_path.stat().st_mode & 0o777 == 0o600
 
 
-def test_unmapped_work_session_uses_regular_codex_without_reentering_wrapper(
-    route_module, monkeypatch, capsys
+@pytest.mark.parametrize(
+    "arguments", ([], ["resume", "session"], ["mcp", "list"], ["login"])
+)
+def test_unmapped_work_session_never_uses_personal_fallback(
+    route_module, monkeypatch, arguments
 ):
-    fallback_calls = []
-
+    calls = []
     monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: None)
     monkeypatch.setattr(
         route_module,
         "exec_regular_fallback",
-        lambda arguments: fallback_calls.append(arguments),
+        lambda _: pytest.fail("personal fallback"),
     )
+    monkeypatch.setattr(
+        route_module,
+        "exec_work_fallback",
+        lambda launcher, args: calls.append((launcher, args)),
+    )
+    assert (
+        route_module.main(
+            ["--launcher", "work", "--reenter", "/work-launcher", "--", *arguments]
+        )
+        == 0
+    )
+    assert calls == [("/work-launcher", arguments)]
 
-    assert route_module.main(["--launcher", "work", "--reenter", "/missing", "--"]) == 0
-    assert fallback_calls == [[]]
-    assert "no mapped Norman work route" in capsys.readouterr().err
+
+def test_work_fallback_sets_work_home_and_preserves_arguments(
+    route_module, tmp_path, monkeypatch
+):
+    launcher = tmp_path / "codex-work"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o700)
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.delenv("CODEX_WORK_HOME", raising=False)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / ".codex"))
+    monkeypatch.setattr(
+        route_module, "resolve_real_codex", lambda: tmp_path / "real-codex"
+    )
+    calls = []
+    monkeypatch.setattr(route_module.os, "execve", lambda *args: calls.append(args))
+    route_module.exec_work_fallback(str(launcher), ["--work-apps", "resume", "session"])
+    executable, arguments, environment = calls[0]
+    assert executable == str(launcher)
+    assert arguments == [str(launcher), "--work-apps", "resume", "session"]
+    assert environment["CODEX_HOME"] == str(tmp_path / ".codex-work")
+    assert environment["CODEX_ROUTER_RESOLVED"] == "1"
+    assert (tmp_path / ".codex-work/AGENTS.md").exists()
+
+
+@pytest.mark.parametrize("launcher", ("", "/missing/work-launcher"))
+def test_work_fallback_missing_launcher_blocks_instead_of_using_personal(
+    route_module, launcher
+):
+    with pytest.raises(RuntimeError, match="Work fallback"):
+        route_module.exec_work_fallback(launcher, [])
 
 
 def test_regular_fallback_executes_the_real_codex_binary(
@@ -1204,6 +1251,269 @@ def test_norman_management_commands_skip_capacity_preflight(
         lambda codex_args: fallback_calls.append(codex_args),
     )
 
+    monkeypatch.setattr(
+        route_module,
+        "exec_local_cli_information",
+        lambda launcher, codex_args: fallback_calls.append(codex_args),
+    )
+
     assert route_module.main(["--launcher", "regular", "--", *arguments]) == 0
     assert preflight_calls == []
     assert fallback_calls == [arguments]
+
+
+def test_unavailable_gateway_blocks_launch_before_capacity_lookup(
+    route_module, monkeypatch
+):
+    route = route_by_key(route_module, "compere")
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
+    monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: route)
+    monkeypatch.setattr(route_module, "gateway_startup_ready", lambda _route: False)
+    monkeypatch.setattr(
+        route_module, "verify_route_model_contract", lambda _route: (True, "")
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail(
+            "An unavailable gateway must not start a session or request credentials"
+        )
+
+    monkeypatch.setattr(route_module, "preflight_route_capacity", forbidden)
+    monkeypatch.setattr(route_module, "exec_work_route", forbidden)
+    assert route_module.main(["--launcher", "work", "--"]) == 1
+
+
+def write_connector_policy(module, tmp_path, monkeypatch, value):
+    monkeypatch.setattr(module, "HOME", tmp_path)
+    path = tmp_path / ".config/norman/codex-connector-accounts.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
+
+
+def test_connector_policy_preserves_exact_owners_without_claiming_auth(
+    route_module, tmp_path, monkeypatch
+):
+    policy = {
+        "schema_version": 1,
+        "google": {"work": "operator@example.com", "personal": "operator@gmail.com"},
+    }
+    write_connector_policy(route_module, tmp_path, monkeypatch, policy)
+    home = tmp_path / "session"
+    home.mkdir()
+    route_module.write_routed_tui_secret_policy(home)
+    instructions = (home / "AGENTS.md").read_text()
+    assert "Expected work Google identity: `operator@example.com`" in instructions
+    assert "Expected personal Google identity: `operator@gmail.com`" in instructions
+    monkeypatch.setattr(route_module, "checkout_identity", lambda _: (tmp_path, ""))
+    for route in (None, route_by_key(route_module, "control-plane")):
+        payload = route_module.route_payload(route, "work", tmp_path)
+        actual = payload["connector_accounts"]
+        assert actual["status"] == "configured"
+        assert actual["google"] == policy["google"]
+        assert actual["authenticated_identity_verified"] is False
+        assert actual["automatic_account_switching"] is False
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [],
+        {},
+        {"schema_version": True, "google": {}},
+        {"schema_version": 2, "google": {}},
+        {"schema_version": 1, "google": {"work": "operator@example.com"}},
+        {
+            "schema_version": 1,
+            "google": {"work": "same@example.com", "personal": "SAME@example.com"},
+        },
+        {
+            "schema_version": 1,
+            "google": {"work": "bad\n@example.com", "personal": "p@gmail.com"},
+        },
+        {"schema_version": 1, "google": {"work": 123, "personal": "p@gmail.com"}},
+        {
+            "schema_version": 1,
+            "google": {"work": "w@example.com", "personal": "p@gmail.com"},
+            "token": "must-not-echo",
+        },
+    ],
+)
+def test_invalid_connector_policy_never_reuses_or_exposes_identity(
+    route_module, tmp_path, monkeypatch, value
+):
+    write_connector_policy(route_module, tmp_path, monkeypatch, value)
+    result = route_module.connector_account_policy()
+    assert result["status"] == "invalid"
+    assert result["google"] == {}
+    assert "must-not-echo" not in json.dumps(result)
+    assert (
+        "Do not use Google account data"
+        in route_module.connector_account_instructions()
+    )
+
+
+def test_connector_policy_missing_corrupt_and_oversized(
+    route_module, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    assert route_module.connector_account_policy()["status"] == "missing"
+    path = write_connector_policy(route_module, tmp_path, monkeypatch, {})
+    for raw in (b"{", b"\xff", b" " * 4097):
+        path.write_bytes(raw)
+        assert route_module.connector_account_policy()["status"] == "invalid"
+    path.unlink()
+    path.mkdir()
+    assert route_module.connector_account_policy()["status"] == "invalid"
+
+
+@pytest.mark.parametrize(
+    "route_key",
+    [
+        "control-plane",
+        "compere",
+        "infra",
+        "earlybird",
+        "gold-book",
+        "market-sizing",
+        "tmi-dashboards",
+    ],
+)
+@pytest.mark.parametrize(
+    "choice,expected",
+    [(None, "--disable"), ("--work-apps", "--enable"), ("--work-no-apps", "--disable")],
+)
+def test_all_work_routes_consume_wrapper_flags_and_default_apps_off(
+    route_module, monkeypatch, tmp_path, route_key, choice, expected
+):
+    route = route_by_key(route_module, route_key)
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
+    monkeypatch.setattr(route_module, "verify_managed_tui_secret_policy", lambda: None)
+    monkeypatch.setattr(route_module, "write_gateway_profile", lambda _: tmp_path)
+    monkeypatch.setattr(route_module, "resolve_real_codex", lambda: tmp_path / "codex")
+    calls = []
+    monkeypatch.setattr(route_module.os, "execve", lambda *args: calls.append(args))
+    arguments = ([choice] if choice else []) + ["exec", "check"]
+    route_module.exec_work_route(route, arguments)
+    command = calls[0][1]
+    assert command[1:3] == [expected, "apps"]
+    assert "--work-apps" not in command
+    assert "--work-no-apps" not in command
+    assert command[-2:] == ["exec", "check"]
+
+
+@pytest.mark.parametrize(
+    "owner,other", [("work", ".codex"), ("personal", ".codex-work")]
+)
+@pytest.mark.parametrize("kind", ["exact", "child", "symlink", "symlink_parent"])
+def test_home_owner_rejects_opposite_paths_and_aliases(
+    route_module, tmp_path, monkeypatch, owner, other, kind
+):
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", ())
+    monkeypatch.delenv("CODEX_WORK_HOME", raising=False)
+    opposite = tmp_path / other
+    opposite.mkdir()
+    if kind == "exact":
+        candidate = opposite
+    elif kind == "child":
+        candidate = opposite / "nested"
+    elif kind == "symlink":
+        candidate = tmp_path / "alias"
+        candidate.symlink_to(opposite, target_is_directory=True)
+    else:
+        alias = tmp_path / "alias"
+        alias.symlink_to(tmp_path, target_is_directory=True)
+        candidate = alias / other / "nested"
+    with pytest.raises(RuntimeError, match="opposite-owner"):
+        route_module.validate_codex_home_owner(candidate, owner)
+
+
+def test_named_home_alias_cannot_cross_owners(route_module, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    alias = tmp_path / "work-alias"
+    alias.symlink_to(personal, target_is_directory=True)
+    work = replace(route_by_key(route_module, "control-plane"), codex_home=str(alias))
+    regular = replace(route_by_key(route_module, "norman"), codex_home=str(personal))
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", (work, regular))
+    for route in (work, regular):
+        with pytest.raises(RuntimeError, match="opposite-owner"):
+            route_module.route_home(route)
+
+
+def test_regular_launch_rejects_inherited_custom_work_home(
+    route_module, tmp_path, monkeypatch
+):
+    work = tmp_path / "custom-work"
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", ())
+    monkeypatch.setenv("CODEX_WORK_HOME", str(work))
+    monkeypatch.setenv("CODEX_HOME", str(work))
+    monkeypatch.setattr(route_module, "resolve_real_codex", lambda: tmp_path / "codex")
+    monkeypatch.setattr(
+        route_module.os, "execve", lambda *args: pytest.fail("must not launch")
+    )
+    for arguments in (["login"], ["mcp", "list"], ["resume", "example"]):
+        with pytest.raises(RuntimeError, match="opposite-owner"):
+            route_module.exec_regular_fallback(arguments)
+
+
+def test_work_home_must_not_be_personal_home(route_module, tmp_path, monkeypatch):
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", ())
+    monkeypatch.setenv("CODEX_WORK_HOME", str(tmp_path / ".codex"))
+    with pytest.raises(RuntimeError, match="opposite-owner"):
+        route_module.work_codex_home()
+    assert not (tmp_path / ".codex").exists()
+
+
+@pytest.mark.parametrize(
+    "owner,name",
+    [("work", ".codex-work"), ("personal", ".codex"), ("personal", "custom-personal")],
+)
+def test_home_owner_preserves_nonconflicting_homes(
+    route_module, tmp_path, monkeypatch, owner, name
+):
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", ())
+    monkeypatch.delenv("CODEX_WORK_HOME", raising=False)
+    home = tmp_path / name
+    assert route_module.validate_codex_home_owner(home, owner) == home
+    assert not home.exists()
+
+
+def test_home_owner_symlink_loop_is_not_treated_as_safe(
+    route_module, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", ())
+    link = tmp_path / "loop"
+    link.symlink_to(link)
+    with pytest.raises(RuntimeError, match="resolve Codex home ownership"):
+        route_module.validate_codex_home_owner(link, "work")
+
+
+def test_personal_clients_drop_work_ops_binding_without_changing_parent(
+    route_module, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY", "synthetic-test-binding")
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
+    personal = route_module.route_environment(route_by_key(route_module, "norman"))
+    work = route_module.route_environment(route_by_key(route_module, "control-plane"))
+    assert "OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY" not in personal
+    assert "CODEX_WORK_OPS_BINDING_LOADED" not in personal
+    assert work["OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY"] == "synthetic-test-binding"
+    monkeypatch.setattr(
+        route_module, "generic_codex_home", lambda: tmp_path / "personal"
+    )
+    monkeypatch.setattr(route_module, "resolve_real_codex", lambda: tmp_path / "codex")
+    calls = []
+    monkeypatch.setattr(route_module.os, "execve", lambda *args: calls.append(args))
+    route_module.exec_regular_fallback(["login"])
+    assert "OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY" not in calls[0][2]
+    assert "CODEX_WORK_OPS_BINDING_LOADED" not in calls[0][2]
+    assert os.environ["OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY"] == "synthetic-test-binding"

@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep one terminal supervisor outside router re-entry and the final client.
+if [[ -t 0 && -t 1 && "${NORMAN_CODEX_TERMINAL_GUARD:-}" != "1" ]]; then
+  terminal_guard="${CODEX_TERMINAL_GUARD_SCRIPT:-$HOME/.local/lib/norman-codex-route/codex_terminal_guard.py}"
+  if [[ -r "$terminal_guard" ]]; then
+    exec python3 "$terminal_guard" -- "$0" "$@"
+  fi
+fi
+
 readonly ROUTER_SCRIPT="${CODEX_ROUTER_SCRIPT:-$HOME/.local/lib/norman-codex-route/codex_route.py}"
 readonly CODEX_SESSION_PRESSURE_SCRIPT="${CODEX_SESSION_PRESSURE_SCRIPT:-$HOME/.local/lib/norman-codex-route/codex_session_pressure.py}"
 readonly CODEX_SECRET_GUARD_SCRIPT="${CODEX_SECRET_GUARD_SCRIPT:-$HOME/.local/lib/norman-codex-route/norman_codex_secret_guard.py}"
@@ -12,11 +20,12 @@ readonly CODEX_WORK_AWS_REGION="${CODEX_WORK_AWS_REGION:-us-east-2}"
 readonly CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS="${CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS:-4}"
 readonly OPS_OPENBRAND_MCP_LAUNCHER="$HOME/code/control_plane/scripts/with_ops_openbrand_mcp.sh"
 
-disable_apps="${CODEX_WORK_DISABLE_APPS:-0}"
-if [[ "${1-}" == "--work-no-apps" ]]; then
-  disable_apps=1
-  shift
-fi
+# Model routing does not switch connected-app OAuth accounts.
+disable_apps=1
+case "${1-}" in
+  --work-apps) disable_apps=0; shift ;;
+  --work-no-apps) disable_apps=1; shift ;;
+esac
 readonly CODEX_WORK_DISABLE_APPS="$disable_apps"
 export CODEX_WORK_DISABLE_APPS
 
@@ -28,11 +37,17 @@ case "${1-}" in
     ;;
 esac
 
+reentry_args=("$@")
+if [[ "$disable_apps" == "1" ]]; then
+  reentry_args=(--work-no-apps "${reentry_args[@]}")
+else
+  reentry_args=(--work-apps "${reentry_args[@]}")
+fi
 if [[ "${CODEX_ROUTER_RESOLVED:-}" != "1" ]]; then
   exec python3 "$ROUTER_SCRIPT" \
     --launcher work \
     --reenter "$0" \
-    -- "$@"
+    -- "${reentry_args[@]}"
 fi
 unset CODEX_ROUTER_RESOLVED
 
@@ -73,6 +88,14 @@ run_guarded_codex() {
     echo "codex-work: managed Norman credential policy is unavailable. Run sudo -n ~/code/norman/scripts/deploy_codex_tui_secret_guard.sh." >&2
     exit 1
   fi
+  if [[ "${CODEX_WORK_PROVIDER:-}" =~ ^(norman|gateway)$ ]] \
+    && [[ "${uses_work_profile:-0}" == "1" ]] \
+    && ! is_help_request "$@"; then
+    python3 "$(dirname "$ROUTER_SCRIPT")/codex_work_gateway.py" \
+      --profile-file "$CODEX_WORK_HOME/work.config.toml" || return 1
+    python3 "$(dirname "$ROUTER_SCRIPT")/codex_gateway_status.py" \
+      --profile-file "$CODEX_WORK_HOME/work.config.toml" --wait 120 || return 1
+  fi
   export NORMAN_TUI_NO_DIRECT_VAULT=1
   if [[ "$CODEX_WORK_DISABLE_APPS" == "1" ]]; then
     local codex_bin="${CODEX_REAL_BIN:-codex}"
@@ -102,6 +125,7 @@ resume_target() {
         fi
         return
         ;;
+      --profile-v2|--color|-o|--output-last-message|--output-schema|\
       -c|--config|--enable|--disable|--remote|--remote-auth-token-env|\
       -i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|\
       -C|--cd|--add-dir|-a|--ask-for-approval)
@@ -126,17 +150,26 @@ resume_target() {
 }
 
 guard_resume() {
-  if [[ "${1-}" != "resume" ]]; then
-    return 0
-  fi
-
-  for argument in "$@"; do
-    case "$argument" in
-      --help|-h)
-        return
+  local original_args=("$@")
+  # Global options may precede the subcommand. Consume their values so neither
+  # an option value nor literal prompt text can impersonate `resume`.
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --) return 0 ;;
+      -C|-c|-m|-p|-a|-i|-o|-s|--add-dir|--config|--cd|--color|--disable|--enable|--model|--profile|--profile-v2|--remote|--remote-auth-token-env|--image|--local-provider|--sandbox|--ask-for-approval|--output-last-message|--output-schema)
+        if [[ "$#" -lt 2 ]]; then return 0; fi
+        shift 2
         ;;
+      -*) shift ;;
+      resume) break ;;
+      *) return 0 ;;
     esac
   done
+  if [[ "$#" -eq 0 ]]; then return 0; fi
+
+  if is_help_request "${original_args[@]}"; then
+    return 0
+  fi
 
   case "${CODEX_WORK_ALLOW_OVERSIZE_RESUME:-0}" in
     0)
@@ -179,8 +212,18 @@ EOF
 }
 
 is_help_request() {
+  local argument=""
+  local expect_option_value=0
   for argument in "$@"; do
+    if [[ "$expect_option_value" == "1" ]]; then
+      expect_option_value=0
+      continue
+    fi
     case "$argument" in
+      --) return 1 ;;
+      -C|-c|-m|-p|-a|-i|-o|-s|--add-dir|--config|--cd|--color|--disable|--enable|--model|--profile|--profile-v2|--remote|--remote-auth-token-env|--image|--local-provider|--sandbox|--ask-for-approval|--output-last-message|--output-schema)
+        expect_option_value=1
+        ;;
       --help|-h)
         return 0
         ;;
@@ -193,7 +236,7 @@ is_help_request() {
 if [[ "${CODEX_WORK_OPS_BINDING_LOADED:-}" != "1" ]]; then
   exec env -u OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY \
     "$OPS_OPENBRAND_MCP_LAUNCHER" \
-    env CODEX_WORK_OPS_BINDING_LOADED=1 "$0" "$@"
+    env CODEX_WORK_OPS_BINDING_LOADED=1 "$0" "${reentry_args[@]}"
 fi
 unset CODEX_WORK_OPS_BINDING_LOADED
 
@@ -208,23 +251,39 @@ guard_resume "$@"
 
 profile_name=""
 expect_profile_name=0
+expect_other_value=0
 for arg in "$@"; do
+  if [[ "$expect_other_value" -eq 1 ]]; then
+    expect_other_value=0
+    continue
+  fi
   if [[ "$expect_profile_name" -eq 1 ]]; then
+    if [[ -z "$arg" ]]; then
+      echo "codex-work: --profile requires a profile name." >&2
+      exit 2
+    fi
     profile_name="$arg"
     expect_profile_name=0
     continue
   fi
 
   case "$arg" in
+    --) break ;;
     --profile|--profile-v2|-p)
       expect_profile_name=1
       ;;
-    --profile=*|--profile-v2=*)
-      profile_name="${arg#--profile=}"
-      profile_name="${profile_name#--profile-v2=}"
+    --profile=*|--profile-v2=*|-p?*)
+      case "$arg" in
+        --*) profile_name="${arg#*=}" ;;
+        *) profile_name="${arg#-p}"; profile_name="${profile_name#=}" ;;
+      esac
+      if [[ -z "$profile_name" ]]; then
+        echo "codex-work: --profile requires a profile name." >&2
+        exit 2
+      fi
       ;;
-    -p?*)
-      profile_name="${arg#-p}"
+    -C|-c|-m|-a|-i|-o|-s|--add-dir|--config|--cd|--color|--disable|--enable|--model|--remote|--remote-auth-token-env|--image|--local-provider|--sandbox|--ask-for-approval|--output-last-message|--output-schema)
+      expect_other_value=1
       ;;
   esac
 done

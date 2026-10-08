@@ -334,11 +334,13 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
             "CODEX_TEST_OUTPUT": str(output),
             "CODEX_TEST_WORKERS_OUTPUT": str(worker_output),
             "CODEX_TEST_VAULT_POLICY_OUTPUT": str(vault_output),
-            "CODEX_WORK_DISABLE_APPS": "1",
             "CODEX_WORK_REAL_BIN": str(unexpected_codex),
         }
     )
     _install_test_managed_secret_policy(tmp_path, environment)
+
+    # An ambient parent setting cannot enable connected apps in a work child.
+    environment["CODEX_WORK_DISABLE_APPS"] = "0"
 
     blocked = subprocess.run(
         [str(WORK_WRAPPER_PATH), "resume", "oversized-session"],
@@ -372,6 +374,22 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
     assert not (home / ".codex-work" / "hooks.json").exists()
     assert worker_output.read_text(encoding="utf-8") == "4\n"
     assert vault_output.read_text(encoding="utf-8") == "1\n"
+
+    opted_in = subprocess.run(
+        [str(WORK_WRAPPER_PATH), "--work-apps", "resume", "small-session"],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert opted_in.returncode == 0, opted_in.stderr
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        "--profile",
+        "work",
+        "resume",
+        "small-session",
+    ]
 
     environment["CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS"] = "6"
     overridden = subprocess.run(
@@ -489,6 +507,8 @@ os.execve(
 
     assert result.returncode == 0, result.stderr
     assert output.read_text(encoding="utf-8").splitlines() == [
+        "--disable",
+        "apps",
         "--profile",
         "work",
         "resume",

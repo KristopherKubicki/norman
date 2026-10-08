@@ -5,6 +5,8 @@ import argparse
 import json
 from pathlib import Path
 
+from caddy_gateway_policy import gateway_proxy_lines, gateway_error_lines
+
 from app.core.estate_registry import load_fleet_topology
 from sync_agent_console_template import (
     HOSTS,
@@ -376,22 +378,7 @@ def _reverse_proxy_lines(
 
 
 def _gateway_proxy_lines(gateway_route: str, *, prefix: str = "    ") -> list[str]:
-    return [
-        f"{prefix}handle /v1/responses {{",
-        f"{prefix}    reverse_proxy 127.0.0.1:8000 {{",
-        f"{prefix}        flush_interval -1",
-        f"{prefix}        header_up X-Norman-Gateway-Route {gateway_route}",
-        f"{prefix}        header_up X-Forwarded-For 127.0.0.2",
-        f"{prefix}    }}",
-        f"{prefix}}}",
-        f"{prefix}",
-        f"{prefix}handle /v1/* {{",
-        f"{prefix}    reverse_proxy 127.0.0.1:8000 {{",
-        f"{prefix}        header_up X-Norman-Gateway-Route {gateway_route}",
-        f"{prefix}        header_up X-Forwarded-For 127.0.0.2",
-        f"{prefix}    }}",
-        f"{prefix}}}",
-    ]
+    return gateway_proxy_lines(gateway_route, prefix=prefix)
 
 
 def _asr_proxy_lines(
@@ -542,6 +529,8 @@ def _host_block(
         if gateway_route or resident_llm_upstreams or asr_upstreams:
             lines.append("    }")
         lines.append("}")
+    if gateway_route:
+        lines[-1:-1] = gateway_error_lines()
     return "\n".join(lines)
 
 

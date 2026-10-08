@@ -102,6 +102,14 @@ ROUTED_TUI_SECRET_POLICY = """# Norman TUI Secret Policy
 - Before a credentialed action, explain the required capability and logical alias. Use only a task-specific approved executor or an injected tool; if neither is available, report the action blocked with the logical alias or capability needed.
 - Do not directly invoke `cred`, even for reads. Never run `cred init`, bootstrap, migration, rotation, or put/set/remove/rm operations.
 - Never create or migrate a vault, and never ask for, accept, or enter a vault passphrase.
+
+# Connector Account Identity
+
+- Model/provider routing, AWS account selection, and CODEX_HOME do not establish a connector's authenticated account. Never claim Gmail, Jira, or another app switched accounts because the model route changed.
+- Before the first account-specific read or write in a session, use the connector's read-only profile/current-user capability to verify the identity and intended workspace or tenant. Repeat after reconnecting, switching connections, or changing task ownership; check each connector independently.
+- For Gmail verify the mailbox email; for Jira verify both current user and site/cloud ID, then the target project. Do not infer identity from a tool name, available permission, cached note, or a successful server connection.
+- Use work connections for work and personal connections for personal tasks. If the intended identity is unknown or mismatched, stop that connector action and explain the missing connection; continue independent work. Never silently fall back across owners or change OAuth connections to recover from an outage.
+- A profile check authorizes no send, ticket update, or other mutation. Preserve the user's existing authorization scope. Do not fetch tokens to diagnose identity; use injected tools or an approved identity-only executor.
 """
 ROUTED_TUI_POLICY_BEGIN = "<!-- BEGIN NORMAN TUI SECRET POLICY -->"
 ROUTED_TUI_POLICY_END = "<!-- END NORMAN TUI SECRET POLICY -->"
@@ -326,6 +334,18 @@ OPTIONS_WITH_VALUE = frozenset(
         "--model",
         "--profile",
         "--profile-v2",
+        "--remote",
+        "--remote-auth-token-env",
+        "--image",
+        "--local-provider",
+        "--sandbox",
+        "--ask-for-approval",
+        "--output-last-message",
+        "--output-schema",
+        "-a",
+        "-i",
+        "-o",
+        "-s",
         "-C",
         "-c",
         "-m",
@@ -378,11 +398,14 @@ def _is_within(path: Path, root: Path) -> bool:
 def resolve_route(cwd: Path) -> Route | None:
     """Resolve a route by Git origin first, then by canonical checkout path."""
     root, origin_name = checkout_identity(cwd)
+    if origin_name:
+        for route in ROUTES:
+            if origin_name in {normalize_name(name) for name in route.repo_names}:
+                return route
     for route in ROUTES:
-        names = {normalize_name(name) for name in route.repo_names}
-        if origin_name and origin_name in names:
-            return route
-        if normalize_name(root.name) in names:
+        if normalize_name(root.name) in {
+            normalize_name(name) for name in route.repo_names
+        }:
             return route
     for route in ROUTES:
         for configured_path in route.root_paths:
@@ -400,35 +423,19 @@ def has_explicit_profile(arguments: Sequence[str]) -> bool:
 
 
 def explicit_profiles(arguments: Sequence[str]) -> list[str]:
-    profiles: list[str] = []
-    for index, argument in enumerate(arguments):
-        if argument in {"--profile", "--profile-v2", "-p"}:
-            value = _value_after(arguments, index)
-            if value:
-                profiles.append(value)
-        elif argument.startswith(("--profile=", "--profile-v2=")):
-            value = argument.split("=", 1)[1]
-            if value:
-                profiles.append(value)
-        if argument.startswith("-p") and len(argument) > 2:
-            profiles.append(argument[2:])
-    return profiles
+    return [
+        value
+        for key, value in routing_tokens(arguments)
+        if key in {"-p", "--profile", "--profile-v2"} and value
+    ]
 
 
 def explicit_models(arguments: Sequence[str]) -> list[str]:
-    models: list[str] = []
-    for index, argument in enumerate(arguments):
-        if argument in {"--model", "-m"}:
-            value = _value_after(arguments, index)
-            if value:
-                models.append(value)
-        elif argument.startswith("--model="):
-            value = argument.split("=", 1)[1]
-            if value:
-                models.append(value)
-        elif argument.startswith("-m") and len(argument) > 2:
-            models.append(argument[2:])
-    return models
+    return [
+        value
+        for key, value in routing_tokens(arguments)
+        if key in {"-m", "--model"} and value
+    ]
 
 
 def has_explicit_model(arguments: Sequence[str]) -> bool:
@@ -436,31 +443,19 @@ def has_explicit_model(arguments: Sequence[str]) -> bool:
 
 
 def explicit_feature_toggles(arguments: Sequence[str]) -> set[str]:
-    features: set[str] = set()
-    for index, argument in enumerate(arguments):
-        if argument in {"--enable", "--disable"}:
-            value = _value_after(arguments, index)
-            if value:
-                features.add(value.strip().lower())
-        elif argument.startswith(("--enable=", "--disable=")):
-            value = argument.split("=", 1)[1].strip().lower()
-            if value:
-                features.add(value)
-    return features
+    return {
+        value.strip().lower()
+        for key, value in routing_tokens(arguments)
+        if key in {"--enable", "--disable"} and value and value.strip()
+    }
 
 
 def config_overrides(arguments: Sequence[str]) -> list[str]:
-    overrides: list[str] = []
-    for index, argument in enumerate(arguments):
-        if argument in {"--config", "-c"}:
-            value = _value_after(arguments, index)
-            if value:
-                overrides.append(value)
-        elif argument.startswith("--config="):
-            overrides.append(argument.split("=", 1)[1])
-        elif argument.startswith("-c") and len(argument) > 2:
-            overrides.append(argument[2:])
-    return overrides
+    return [
+        value
+        for key, value in routing_tokens(arguments)
+        if key in {"--config", "-c"} and value
+    ]
 
 
 def config_key(override: str) -> str:
@@ -525,26 +520,68 @@ def secret_guard_arguments_error(arguments: Sequence[str]) -> str:
     return ""
 
 
+def routing_tokens(arguments: Sequence[str]) -> list[tuple[str, str | None]]:
+    """Separate option values and stop interpreting options at the CLI separator."""
+    tokens: list[tuple[str, str | None]] = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            break
+        value = None
+        if argument in OPTIONS_WITH_VALUE:
+            index += 1
+            value = arguments[index] if index < len(arguments) else None
+        elif argument.startswith("--") and "=" in argument:
+            argument, value = argument.split("=", 1)
+        elif len(argument) > 2 and argument[:2] in {
+            "-C",
+            "-c",
+            "-m",
+            "-p",
+            "-a",
+            "-i",
+            "-o",
+            "-s",
+        }:
+            argument, value = argument[:2], argument[2:].removeprefix("=")
+        tokens.append((argument, value))
+        index += 1
+    return tokens
+
+
+def work_app_arguments(arguments: Sequence[str]) -> tuple[list[str], bool | None]:
+    """Consume wrapper switches without changing option values or literal prompts."""
+    filtered: list[str] = []
+    choice = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            filtered.extend(arguments[index:])
+            break
+        if argument in {"--work-apps", "--work-no-apps"}:
+            choice = argument == "--work-apps"
+        else:
+            filtered.append(argument)
+            if argument in OPTIONS_WITH_VALUE and index + 1 < len(arguments):
+                index += 1
+                filtered.append(arguments[index])
+        index += 1
+    return filtered, choice
+
+
 def codex_cwd(arguments: Sequence[str]) -> Path:
-    for index, argument in enumerate(arguments):
-        if argument in {"-C", "--cd"}:
-            value = _value_after(arguments, index)
-            if value:
-                return Path(value)
-        if argument.startswith("--cd="):
-            return Path(argument.split("=", 1)[1])
-    return Path.cwd()
+    values = [
+        value for key, value in routing_tokens(arguments) if key in {"-C", "--cd"}
+    ]
+    if len(values) > 1 or (values and not values[0]):
+        raise RuntimeError("Specify exactly one non-empty -C/--cd directory.")
+    return Path(values[0]) if values else Path.cwd()
 
 
 def command_name(arguments: Sequence[str]) -> str:
-    skip_next = False
-    for argument in arguments:
-        if skip_next:
-            skip_next = False
-            continue
-        if argument in OPTIONS_WITH_VALUE:
-            skip_next = True
-            continue
+    for argument, _value in routing_tokens(arguments):
         if argument.startswith("-"):
             continue
         return argument
@@ -552,7 +589,9 @@ def command_name(arguments: Sequence[str]) -> str:
 
 
 def starts_session(arguments: Sequence[str]) -> bool:
-    if any(argument in NON_SESSION_FLAGS for argument in arguments):
+    if any(
+        argument in NON_SESSION_FLAGS for argument, _value in routing_tokens(arguments)
+    ):
         return False
     command = command_name(arguments)
     return not command or command not in MANAGEMENT_COMMANDS
@@ -565,8 +604,56 @@ def uses_route_scoped_management_command(
     return route.launcher == "work" and command_name(arguments) == "mcp"
 
 
+def resolved_codex_home_path(path: Path) -> Path:
+    """Allow absent homes while rejecting inaccessible paths and symlink loops."""
+    try:
+        path.stat()
+    except FileNotFoundError:
+        pass
+    return path.resolve()
+
+
+def validate_codex_home_owner(home: Path, owner: str) -> Path:
+    """Reject known opposite-owner homes without reading credential files."""
+    if owner not in {"work", "personal"}:
+        raise RuntimeError("Unknown Codex home owner.")
+    candidate = home.expanduser()
+    other_homes = [HOME / (".codex" if owner == "work" else ".codex-work")]
+    other_homes.extend(
+        Path(route.codex_home).expanduser()
+        for route in ROUTES
+        if (route.launcher == "work") != (owner == "work")
+    )
+    if owner == "personal" and os.getenv("CODEX_WORK_HOME", "").strip():
+        other_homes.append(Path(os.environ["CODEX_WORK_HOME"]).expanduser())
+    try:
+        resolved = resolved_codex_home_path(candidate)
+        opposites = [resolved_codex_home_path(other) for other in other_homes]
+        conflict = any(
+            resolved == other or resolved.is_relative_to(other) for other in opposites
+        )
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError("Unable to resolve Codex home ownership safely.") from exc
+    if conflict:
+        raise RuntimeError(
+            f"Refusing {owner} Codex launch in a known opposite-owner home. "
+            "Correct CODEX_HOME/CODEX_WORK_HOME or use the matching launcher."
+        )
+    return candidate
+
+
+def work_codex_home() -> Path:
+    """Resolve the generic work home while preserving the ownership boundary."""
+    configured = os.getenv("CODEX_WORK_HOME", "").strip()
+    return validate_codex_home_owner(
+        Path(configured) if configured else HOME / ".codex-work", "work"
+    )
+
+
 def route_home(route: Route) -> Path:
-    return Path(route.codex_home).expanduser()
+    return validate_codex_home_owner(
+        Path(route.codex_home), "work" if route.launcher == "work" else "personal"
+    )
 
 
 def profile_path(route: Route) -> Path:
@@ -899,6 +986,72 @@ def refresh_model_catalog_cache(route: Route) -> bool:
     return True
 
 
+def connector_account_policy() -> dict[str, Any]:
+    """Read public identity expectations, never connector credentials or proof."""
+    result: dict[str, Any] = {
+        "status": "missing",
+        "google": {},
+        "authenticated_identity_verified": False,
+        "automatic_account_switching": False,
+    }
+    path = HOME / ".config/norman/codex-connector-accounts.json"
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(4097)
+        if len(raw) > 4096:
+            raise ValueError("oversized policy")
+        value = json.loads(raw)
+        if not isinstance(value, dict) or set(value) != {"schema_version", "google"}:
+            raise ValueError("invalid policy fields")
+        if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+            raise ValueError("invalid schema")
+        accounts = value["google"]
+        if not isinstance(accounts, dict) or set(accounts) != {"work", "personal"}:
+            raise ValueError("both owners required")
+        for email in accounts.values():
+            if (
+                not isinstance(email, str)
+                or len(email) > 254
+                or not re.fullmatch(
+                    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}", email
+                )
+            ):
+                raise ValueError("invalid email")
+        if accounts["work"].casefold() == accounts["personal"].casefold():
+            raise ValueError("owners must not share an identity")
+    except FileNotFoundError:
+        return result
+    except (OSError, ValueError, RecursionError):
+        result["status"] = "invalid"
+        return result
+    result.update(status="configured", google=accounts)
+    return result
+
+
+def connector_account_instructions() -> str:
+    """Render exact expected identities without claiming a live connection."""
+    policy = connector_account_policy()
+    if policy["status"] != "configured":
+        return (
+            "\n- Expected Google account policy is missing or invalid. Do not use "
+            "Google account data until the intended identity is established. "
+            "A read-only profile check and independent work may continue.\n"
+        )
+    accounts = policy["google"]
+    return (
+        f"\n- Expected work Google identity: `{accounts['work']}`. "
+        f"Expected personal Google identity: `{accounts['personal']}`. "
+        "These are expectations, not proof of authentication. Verify each "
+        "connector's live profile before using its data.\n"
+        "- A work task must not search the personal mailbox to find work material, "
+        "or use personal Calendar/Contacts as fallback (and vice versa). "
+        "An exact email mismatch blocks that connector action. Account aliases "
+        "and delegated mailboxes require explicit user-established scope.\n"
+        "- Google identity does not establish Jira identity. Jira still requires "
+        "its own current-user, site/cloud ID, and project verification.\n"
+    )
+
+
 def write_routed_tui_secret_policy(home: Path) -> Path:
     """Install managed secret rules without discarding route-local instructions."""
     path = home / "AGENTS.md"
@@ -913,6 +1066,7 @@ def write_routed_tui_secret_policy(home: Path) -> Path:
 
     managed = (
         f"{ROUTED_TUI_POLICY_BEGIN}\n{ROUTED_TUI_SECRET_POLICY}"
+        f"{connector_account_instructions()}"
         f"{ROUTED_TUI_POLICY_END}\n"
     )
     start = existing.find(ROUTED_TUI_POLICY_BEGIN)
@@ -1099,7 +1253,8 @@ def route_payload(route: Route | None, launcher: str, cwd: Path) -> dict[str, ob
             "launcher": launcher,
             "checkout_root": str(root),
             "origin": origin,
-            "fallback": "regular-default",
+            "fallback": "regular-default" if launcher == "regular" else "work-launcher",
+            "connector_accounts": connector_account_policy(),
         }
     payload = asdict(route)
     payload.update(
@@ -1109,6 +1264,7 @@ def route_payload(route: Route | None, launcher: str, cwd: Path) -> dict[str, ob
             "profile": route.profile,
             "profile_path": str(profile_path(route)),
             "token_secret": route.resolved_token_secret,
+            "connector_accounts": connector_account_policy(),
         }
     )
     return payload
@@ -1259,6 +1415,22 @@ def verify_route_model_contract(_route: Route) -> tuple[bool, str]:
     if contract_error:
         return False, contract_error
     return True, "managed tool-capable Codex model catalog verified"
+
+
+def gateway_startup_ready(route: Route) -> bool:
+    """Check the independent watchdog before starting a mapped session."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_DIR / "codex_gateway_status.py"),
+            "--endpoint",
+            route.endpoint,
+            "--wait",
+            "120",
+        ],
+        check=False,
+    )
+    return result.returncode == 0
 
 
 def preflight_route_capacity(route: Route) -> tuple[bool, str]:
@@ -1542,10 +1714,20 @@ def verify_route(route: Route) -> tuple[bool, str]:
     return True, "authenticated Responses gateway and GPT-5.6 Terra route verified"
 
 
+def personal_environment() -> dict[str, str]:
+    """Do not pass the work Ops binding into a personal client process."""
+    environment = os.environ.copy()
+    environment.pop("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY", None)
+    environment.pop("CODEX_WORK_OPS_BINDING_LOADED", None)
+    return environment
+
+
 def route_environment(route: Route) -> dict[str, str]:
     """Build a mapped TUI environment without model-visible secret plumbing."""
 
-    environment = os.environ.copy()
+    environment = (
+        os.environ.copy() if route.launcher == "work" else personal_environment()
+    )
     for name in MODEL_HIDDEN_SECRET_ENVIRONMENT_KEYS:
         environment.pop(name, None)
     return environment
@@ -1595,6 +1777,7 @@ def verify_managed_tui_secret_policy() -> None:
 
 
 def exec_work_route(route: Route, arguments: list[str]) -> None:
+    route_home(route)
     if not os.getenv("CODEX_WORK_OPS_BINDING_LOADED"):
         if not OPS_OPENBRAND_MCP_LAUNCHER.is_file():
             raise RuntimeError(
@@ -1620,11 +1803,16 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
     environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command = [environment["CODEX_REAL_BIN"]]
+    arguments, work_apps = work_app_arguments(arguments)
     session_start = starts_session(arguments)
     explicit_features = explicit_feature_toggles(arguments)
     if session_start:
+        if work_apps is not None:
+            command.extend(("--enable" if work_apps else "--disable", "apps"))
+        elif "apps" not in explicit_features:
+            command.extend(("--disable", "apps"))
         for feature in route.default_disabled_features:
-            if feature.lower() not in explicit_features:
+            if feature != "apps" and feature.lower() not in explicit_features:
                 command.extend(("--disable", feature))
     if not has_explicit_profile(arguments) and session_start:
         command.extend(("--profile", route.profile))
@@ -1652,21 +1840,38 @@ def exec_regular_route(route: Route, arguments: list[str]) -> None:
 
 def generic_codex_home() -> Path:
     configured = os.getenv("CODEX_HOME", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return HOME / ".codex"
+    return validate_codex_home_owner(
+        Path(configured) if configured else HOME / ".codex", "personal"
+    )
 
 
 def exec_regular_fallback(arguments: list[str]) -> None:
     real_codex = str(resolve_real_codex())
-    environment = os.environ.copy()
+    environment = personal_environment()
+    environment["CODEX_HOME"] = str(generic_codex_home())
     command = [real_codex]
     if starts_session(arguments):
         verify_managed_tui_secret_policy()
-        environment["CODEX_HOME"] = str(generic_codex_home())
         environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command.extend(arguments)
     os.execve(real_codex, command, environment)
+
+
+def exec_work_fallback(reenter: str, arguments: list[str]) -> None:
+    """Keep unmapped work launches inside the original work launcher."""
+    if not reenter:
+        raise RuntimeError("Work fallback requires the original codex-work launcher.")
+    reentry_path = Path(reenter).expanduser().resolve()
+    if not reentry_path.is_file() or not os.access(reentry_path, os.X_OK):
+        raise RuntimeError("Work fallback launcher is not executable.")
+    environment = os.environ.copy()
+    environment["CODEX_ROUTER_RESOLVED"] = "1"
+    environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
+    home = work_codex_home()
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    write_routed_tui_secret_policy(home)
+    environment["CODEX_HOME"] = str(home)
+    os.execve(str(reentry_path), [str(reentry_path), *arguments], environment)
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -1683,6 +1888,27 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     if parsed.codex_args[:1] == ["--"]:
         parsed.codex_args = parsed.codex_args[1:]
     return parsed
+
+
+def local_cli_information(arguments: Sequence[str]) -> bool:
+    """Only actual help/version requests bypass credentialed session setup."""
+    return command_name(arguments) == "help" or any(
+        key in {"--help", "-h", "--version", "-V"} and value is None
+        for key, value in routing_tokens(arguments)
+    )
+
+
+def exec_local_cli_information(launcher: str, arguments: list[str]) -> None:
+    # Validate ownership even for local commands; never prepare profiles, contact
+    # gateways, or fetch an optional MCP binding just to print CLI information.
+    home = work_codex_home() if launcher == "work" else generic_codex_home()
+    environment = os.environ.copy()
+    environment.pop("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY", None)
+    environment.pop("CODEX_WORK_OPS_BINDING_LOADED", None)
+    environment["CODEX_HOME"] = str(home)
+    real_codex = str(resolve_real_codex())
+    arguments, _ = work_app_arguments(arguments)
+    os.execve(real_codex, [real_codex, *arguments], environment)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1727,6 +1953,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"{route.key}: {detail}", file=sys.stderr)
         return 0 if success else 1
 
+    if local_cli_information(parsed.codex_args):
+        exec_local_cli_information(parsed.launcher, parsed.codex_args)
+        return 0
+
     if starts_session(parsed.codex_args):
         arguments_error = secret_guard_arguments_error(parsed.codex_args)
         if arguments_error:
@@ -1764,6 +1994,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
+            if not gateway_startup_ready(route):
+                return 1
             capacity_available, capacity_detail = preflight_route_capacity(route)
             if not capacity_available:
                 print(
@@ -1778,12 +2010,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             exec_regular_route(route, parsed.codex_args)
         return 0
 
-    if parsed.launcher == "work" and starts_session(parsed.codex_args):
-        print(
-            "codex-work: no mapped Norman work route for "
-            f"{cwd}; starting regular Codex.",
-            file=sys.stderr,
-        )
+    if parsed.launcher == "work":
+        exec_work_fallback(parsed.reenter, parsed.codex_args)
+        return 0
     exec_regular_fallback(parsed.codex_args)
     return 0
 

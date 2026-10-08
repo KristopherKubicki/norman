@@ -647,3 +647,288 @@ If you encounter issues during deployment or operation, consult the following re
 
 Feel free to modify and expand this document to include any additional information or steps specific to your project or
 deployment preferences.
+
+## Gateway outages and local rescue
+
+Generic `codex-work` uses `https://norman.home.arpa/work/v1`, an explicit
+**work model route** on Norman CT241. Its trusted gateway identity is `work`;
+it does not depend on Keystone's hostname or application identity. Keystone
+checkouts retain their own `compere` route. Other mapped checkouts also retain
+their application routes. Never replace a work route with Norman's personal
+`/v1` route to bypass an outage.
+
+Before switching clients, register `gateway_routes.work = "work"` in the
+server-owned AWS account registry, verify the `work` binding's owner and allowed
+regions, and enable `work` in the backend route allowlist. The registry is read
+on each binding check and unknown routes fail closed when account routing is
+required. Preserve all existing bindings. The Caddy `/work/*` handler uses an
+explicit client allowlist, strips the prefix, and overwrites the route header;
+it exposes only model API and status handlers, not application pages. On an
+existing host, preserve its current work client allowlist during migration.
+
+`scripts/codex_work_gateway.py` atomically updates just the generic work
+provider's transport/auth fields. It preserves the selected model, MCP settings
+and session history. Run it after any older profile generator until that
+runtime generator has been reconciled. The gateway currently uses one shared
+brokered bearer credential (`norman/prompt-proxy-token`); route aliases are not
+independent credentials. The trusted front door and server account registry
+establish ownership. This migration does not claim credential isolation or a
+second backend. The backend's Responses continuation cache remains in memory;
+restarts can lose `previous_response_id` state even when local history survives.
+
+Caddy serves `/_gateway/status` (and `/work/_gateway/status`) from a small watchdog receipt independently of
+the Python API. It reports `ready`, `recovering`, `restarting`, `recovery_stalled`,
+`restart_requested`, `unavailable`, or `maintenance`, with a timestamp, outage
+age and suggested polling interval. `ready` means backend HTTP health only;
+model readiness is separate. Clients reject receipts older than 45 seconds.
+A host/network failure can make the status endpoint unreachable too; that is
+unknown readiness, never an optimistic healthy result.
+
+Install `scripts/deploy_gateway_watchdog.sh` **on Norman**. Its ten-second timer
+records phase changes in the journal and atomically updates
+`/var/lib/norman/gateway-health/status.json`. Existing systemd `Restart=always`
+handles process exits. The watchdog additionally allows one `try-restart` only
+when the sole enabled, running production unit has returned no HTTP response
+for at least 180 seconds and has itself been running for 180 seconds. It never
+restarts for an HTTP error, a cloud/model failure, an intentionally stopped
+service, an ambiguous unit selection, or an active deployment transition.
+Recovery attempts have a fifteen-minute cooldown and a maximum of two per hour.
+A failed restart request consumes that budget. A persistent failure requires an
+operator; neither the watchdog nor the model may repeatedly bounce the service.
+
+For deliberate maintenance, create `/run/norman-gateway-maintenance.json` as
+root with `{"until": <future Unix timestamp>}` before changing the backend.
+Remove it after verification. An invalid marker suspends automatic recovery
+until corrected. This does not stop systemd's own restart policy.
+
+New routed sessions check the independent status and visibly wait up to 120
+seconds. They stop before launching if readiness does not return; history is
+preserved. Existing sessions benefit from Caddy's refused-connection wait.
+After an exhausted refused dial, Caddy returns structured HTTP 503 with
+`Retry-After: 10` and the status URL. It does not replay a POST already accepted
+by the backend. It cannot guarantee continuity after an interrupted response.
+
+Operator commands installed by `scripts/install_codex_route.sh`:
+
+```sh
+codex-gateway-status
+codex-gateway-status --endpoint https://cp.kris.openbrand.com/v1 --wait 120
+codex-rescue --scope work --check
+codex-rescue --scope personal --check
+codex-rescue --scope work --prompt 'Backend TCP connections are refused during startup; suggest read-only checks.'
+codex-rescue --scope personal --prompt 'Summarize these personal-service outage observations.'
+```
+
+Rescue talks directly to the owning Spark's Norllama gateway (work
+`192.168.42.151:18151`, personal `192.168.40.150:18151`), so it works independently
+of Norman, Keystone, their token broker, and cloud providers. It checks signed
+policy readiness and actual model residency, selects an advertised worker-local Qwen model, disables peer
+spillover, disables HTTP proxies/redirects, limits input/output/time, and sends
+no tools. It reads only explicitly supplied text, not session history or logs.
+Model suggestions are untrusted advisory output; they cannot restart services,
+change billing routes, execute repairs or resume a cloud conversation. A local
+worker or policy failure is reported rather than bypassed. Keep scope explicit.
+`--check` performs only readiness/catalog/residency reads: it does not read stdin,
+send a prompt, generate a completion or inspect history. A cold model is reported
+unavailable instead of triggering an implicit load during an outage. The catalog
+may advertise loopback or the selected worker's own LAN address; another worker's
+address is rejected, including catalogs mixing local and cross-owner hosts.
+
+Networking VM232 remains the owner of Norllama fleet checks and recovery drills;
+do not reactivate migrated HAL copies. Worker readiness is not proof of successful
+inference, so verify a bounded completion as well. Fleet peer failover is not a
+replacement for a second Norman Responses backend. Health-gated production
+cutovers, draining in-flight requests, and compatible shared continuation state
+are still needed before claiming redundant gateway failover.
+
+The separate `norman-gateway-observer.timer` belongs on Networking VM232. It
+polls the independent status every thirty seconds and keeps
+`~/.local/state/norman/gateway-observer.json`, so a Norman host failure is still
+observed. After three minutes unavailable it may request one bounded, tool-free
+Qwen diagnosis on the work worker, no more than once per fifteen minutes. Only
+phase, HTTP code and outage duration are supplied; transcripts and remote status
+messages are excluded. Advice is explicitly advisory and dated, with no restart,
+notification or model-routing authority. It remains inspectable even when
+Norman is down. It does not send Slack, email or SMS notifications.
+
+Use `scripts/deploy_gateway_observer.sh` on Networking to install the observer;
+its status probe targets `https://norman.home.arpa/_gateway/status`, independently
+of work-application access lists. For rollback, stop the corresponding timer
+first (`norman-gateway-watchdog.timer` on Norman or
+`norman-gateway-observer.timer` on Networking); stopping either timer does not
+stop the production API. Restore the recorded Caddy/configuration and launcher
+backups and validate before reloading. Preserve session files and watchdog
+attempt history. Operational receipts for the October 7 installation are under
+`~/.local/state/norman/gateway-outage-recovery-20261007` on Norman and
+`/var/lib/networking/gateway-outage-recovery-20261007` on Networking.
+
+
+Recovery receipts are also action budgets. Missing state permits first startup;
+malformed or unreadable state suspends automatic restarts and automatic local
+advice, with `recovery_state_invalid: true`. Health observations continue, including
+reporting a genuinely healthy backend as ready. The invalid-state flag survives
+subsequent writes and healthy periods. Preserve and inspect the damaged receipt,
+then restore a verified receipt or reconcile the previous action timestamps before
+clearing the flag; deleting the file is not a safe way to reset a spent budget.
+Non-finite, negative, boolean and nonnumeric timestamps are invalid. Valid future
+action timestamps remain in the budget so clock rollback cannot unlock retries.
+
+Scheduled and manual runs lock the same state file before reading it. Overlapping
+runs exit without observing or acting. Receipt writes use unique temporary files,
+flush file and directory metadata, and atomically replace the live receipt before
+an automatic action. A failed write stops the action. These locks supplement
+systemd's single-instance scheduling and do not restart the application itself.
+
+
+The status client connects directly to the configured front door, without
+following redirects or consulting HTTP proxy environment variables. Invalid
+endpoints (including embedded credentials, bad ports and control characters)
+stop preflight immediately. Malformed profiles fail with an actionable message.
+A receipt must be bounded, fresh, use a known recovery phase, contain a printable
+message and report a valid backend HTTP code; `ready` requires backend HTTP 200.
+Contradictory or malformed receipts are unavailable, never optimistic readiness.
+These checks describe backend health; model readiness remains a separate probe.
+
+HAL's default status command probes the `/work` front door and its work-client
+access rules. Networking's scheduled observer explicitly probes
+`https://norman.home.arpa/v1`; use that same `--endpoint` for manual checks there.
+An HTTP 403 on the work route from Networking means access is denied, not that
+the backend is down. Keep those access rules intact when diagnosing recovery.
+
+Interactive `codex` and `codex-work` launches keep a small terminal supervisor
+outside router re-entry. It restores the original terminal attributes and disables
+mouse/focus reporting, bracketed paste and alternate-screen mode after the client
+exits, then makes the cursor visible. This limits raw mouse escape sequences leaking
+into the shell after an abnormal client exit. It preserves exit status, leaves the
+child in the foreground job's process group, and propagates child-only suspension
+so shell suspend/resume still works. Ctrl-C is not forwarded twice to the client.
+
+The supervisor never reads or flushes terminal input, copies transcripts, resumes
+sessions or retries requests. Piped/non-TTY commands execute directly, preserving
+machine-readable output. Install `scripts/codex_terminal_guard.py` with the launcher
+installer; narrowly updating existing wrappers preserves their local routing changes.
+It applies to new launches only. Killing the supervisor itself with SIGKILL, a host
+failure or a closed terminal can prevent cleanup. Already queued mouse bytes may
+remain because discarding input could also discard the user's keystrokes. This is
+terminal recovery, not a fix for interrupted inference or durable Responses state.
+
+### Connector account verification
+
+Model routing and connector authentication are separate. Selecting the work
+model gateway does not switch Gmail, Calendar, Contacts, Jira, or another
+connected app's OAuth identity. `codex-work` disables connected apps by default;
+`--work-apps` explicitly enables them but does not select or verify an account.
+Custom MCP servers have their own credentials and remain independently scoped.
+The installed work launcher already uses this default; the source wrapper now
+preserves it on reinstall.
+
+Generated route instructions require a read-only identity check before the
+first account-specific operation, and again after reconnecting or changing
+ownership. Verify each Google connector's profile independently. For Jira,
+verify the current user, site/cloud ID, and intended project. Unknown or wrong
+identity blocks that connector operation without stopping unrelated work.
+Instructions guide agent behavior; they are not a server-side authorization
+boundary or automatic OAuth switching. Existing running sessions need these
+instructions explicitly or a new launch.
+
+The October 8 HAL audit verified the current injected Gmail, Calendar, and
+Contacts tools against the same personal account. The Atlassian plugin was
+available but not connected in that tool surface. Work homes separately
+registered Ops Portal and Scout MCP servers; configuration is not evidence of
+live connector identity or Jira access. No mailbox contents were read and no
+messages or tickets were changed. Connecting a work Google account or Atlassian
+requires its own authenticated connection; never recover by borrowing the
+personal connection or exposing broker credentials.
+
+The optional local file `~/.config/norman/codex-connector-accounts.json` records
+public Google identity expectations, not credentials or authenticated receipts:
+
+```json
+{
+  "schema_version": 1,
+  "google": {
+    "work": "operator@example.com",
+    "personal": "operator@gmail.com"
+  }
+}
+```
+
+Both distinct identities are required. Missing, malformed, oversized, or
+unreadable policy produces no usable expected identity; generated instructions
+block Google account-data operations until identity is established while
+allowing profile checks and independent work. The router refreshes these
+expectations in managed session instructions and reports them under
+`connector_accounts` in `--print-route`. Its `authenticated_identity_verified`
+and `automatic_account_switching` remain false: a local file cannot certify a
+remote OAuth session. Each Google connector must independently return the
+expected profile. Personal mail containing work messages is not a work-account
+fallback. Jira retains separate current-user/site/project verification.
+
+Only an explicit leading `--work-apps` opts the source wrapper into apps. An
+inherited `CODEX_WORK_DISABLE_APPS=0` cannot enable apps for a child work session.
+The explicit choice survives both router and credential-launcher re-entry. The
+installed HAL wrapper already ignores that ambient variable; preserve its
+other runtime fixes when backporting this change.
+
+Unmapped work sessions and work management commands re-enter `codex-work` and
+retain the work home. A missing work launcher is an error; it must not fall
+through to regular/personal Codex. This also preserves the work boundary for
+`login`, `mcp`, and `resume` outside a mapped checkout. HAL already used this
+work fallback; the source router now does too.
+
+Codex home selection rejects known opposite-owner directories before launch or
+profile writes. This covers generic `.codex`/`.codex-work`, named route homes,
+an explicitly configured work home inherited by regular Codex, child paths,
+and symlink aliases. Resolution failures stop the launch. The check reads path
+metadata only; it never reads authentication files. Correct `CODEX_HOME` or
+`CODEX_WORK_HOME`, or use the matching launcher when rejected. An unknown custom
+home is not proven to belong to either owner; this is a guard against known
+cross-owner selection, not a complete classification or OAuth isolation system.
+Personal launches also discard the inherited work Ops MCP bearer variable and
+binding-loaded marker from the child environment, preserving the parent and
+work launches. Existing running processes are unchanged.
+
+The boundary audit (`tests/test_codex_boundary_audit.py`) checks all named-home
+owner pairs and all recognized-origin/directory-name pairs. Recognized Git
+origin wins before any folder-name fallback; a renamed clone must not change
+its owner because an earlier route matches the folder. Real temporary Git
+repositories also prove mismatched launchers are rejected before execution or
+credential lookup.
+
+Routing parses attached short options as well as long/value forms, skips option
+values, and respects `--` as the end of options. Literal prompt text cannot
+select a checkout, impersonate help, change a model/profile, or toggle apps.
+Duplicate or empty `-C`/`--cd` is rejected before routing. Work wrapper switches
+are consumed only as switches, preserving literal prompts and option values.
+The audit can target an installed router/wrapper using `CODEX_AUDIT_ROUTER_PATH`
+and `CODEX_AUDIT_WORK_WRAPPER`; its isolated homes and stubbed executors never
+send messages, mutate tickets, retrieve credentials, or launch model sessions.
+
+Local Codex help and version requests now bypass session preparation, gateway
+preflight, and optional Ops MCP credential loading. They still validate the
+launcher's Codex home against known opposite-owner homes and preserve the pinned
+work CLI selection. Argument values and literal prompts after `--` cannot trigger
+this shortcut. This does not change authentication requirements for sessions or
+connector management. The boundary audit also exercises both work wrapper paths
+with a deliberately failing fake credential loader, asserting that it is never
+called and no work profile directory is created for local CLI information.
+
+The work shell launcher's help scanner also respects option values and the `--`
+separator. Resume pressure checks and gateway preflight use this same scanner, so
+literal `--help`/`-h` prompt text cannot skip startup checks. Regression tests run
+the actual shell functions against a fake pressure guard and check every
+value-taking option declared by the router for scanner consistency.
+
+Work profile selection now stops at `--` and consumes unrelated option values
+before interpreting profile flags. Attached `-p=work` selects the same profile as
+`-p work`; empty or missing names fail explicitly. Resume-target discovery also
+consumes `--profile-v2`, `--color`, and output-file/schema options, preventing their
+values from being checked as session IDs. These are CLI parsing rules, not proof
+of any connector's authenticated identity.
+
+The work resume pressure guard recognizes `resume` after global options, such as
+`codex-work --profile work resume SESSION_ID`, and checks the same target as the
+command-first form. It consumes option values and stops at the literal separator;
+`resume` appearing in a prompt or option value cannot activate the guard. Original
+arguments remain available for help detection, and the pressure limits and
+explicit override are unchanged.
