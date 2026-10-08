@@ -1,0 +1,17 @@
+[Unit]
+Description=Observe and renew the %i worker's approved resident model
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+WorkingDirectory=/opt/hal-services/norman
+ExecStart=/opt/hal-services/venv/bin/python /opt/hal-services/norman/scripts/norllama/resident_prefetch.py --scope %i --topology /opt/hal-services/norman/config/fleet/topology.json --state /home/kristopher/.local/state/norman/resident-prefetch-%i.json
+TimeoutStartSec=180
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/kristopher/.local/state/norman
+UMask=0077

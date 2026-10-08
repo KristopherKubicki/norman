@@ -119,9 +119,10 @@ def test_resident_warmer_skips_manual_only_model_before_any_probe(
     monkeypatch.setattr(module, "_free_mib", unexpected_probe)
     monkeypatch.setattr(module, "_warm_chat_model", unexpected_probe)
 
-    assert module.main() == 0
+    assert module.main() == 1
 
     payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "not_ready"
     assert payload["results"] == [{"model": model, "status": "skipped_manual_only"}]
 
 

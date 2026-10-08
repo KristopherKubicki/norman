@@ -1,0 +1,11 @@
+[Unit]
+Description=Check %i model residency every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30s
+Unit=norllama-resident-prefetch@%i.service
+
+[Install]
+WantedBy=timers.target

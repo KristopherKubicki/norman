@@ -41,6 +41,7 @@ done
 
 for source in \
   "$SCRIPT_DIR/codex_route.py" \
+  "$SCRIPT_DIR/codex_route_policy.sh" \
   "$SCRIPT_DIR/codex_session_pressure.py" \
   "$SCRIPT_DIR/codex_session_prune.py" \
   "$SCRIPT_DIR/norman_codex_secret_guard.py" \
@@ -57,6 +58,7 @@ for source in \
 done
 
 install -d -m 0700 "$BIN_DIR" "$LIB_DIR"
+install -m 0700 "$SCRIPT_DIR/codex_route_policy.sh" "$BIN_DIR/codex-route-policy"
 install -m 0700 "$SCRIPT_DIR/codex_route.py" "$LIB_DIR/codex_route.py"
 install -m 0700 \
   "$SCRIPT_DIR/codex_session_pressure.py" \

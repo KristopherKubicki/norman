@@ -139,7 +139,8 @@ def _poll_prefetch(base_url: str, job_id: str, *, timeout_s: float) -> dict[str,
             latest = {"status": "poll_error", "error": str(exc)[:300]}
         time.sleep(3.0)
     if latest:
-        latest.setdefault("status", "timeout")
+        latest["last_observed_status"] = latest.get("status", "unknown")
+        latest["status"] = "timeout"
         return latest
     return {"status": "timeout", "job_id": job_id}
 
@@ -272,15 +273,13 @@ def main() -> int:
             results.append({"model": model, "status": "skipped_manual_only"})
             continue
         free_mib = _free_mib(media_health_url, health_timeout_s)
-        if (
-            min_free_mib_chat > 0
-            and free_mib is not None
-            and free_mib < min_free_mib_chat
-        ):
+        if min_free_mib_chat > 0 and (free_mib is None or free_mib < min_free_mib_chat):
             results.append(
                 {
                     "model": model,
-                    "status": "skipped_low_gpu_memory",
+                    "status": "skipped_unknown_gpu_memory"
+                    if free_mib is None
+                    else "skipped_low_gpu_memory",
                     "free_mib": free_mib,
                     "min_free_mib": min_free_mib_chat,
                 }
@@ -321,8 +320,13 @@ def main() -> int:
         "embed_models": embed_models,
         "results": results,
     }
+    payload["status"] = (
+        "ok"
+        if results and all(row.get("ok") is True for row in results)
+        else "not_ready"
+    )
     print(json.dumps(payload, sort_keys=True))
-    return 0
+    return 0 if payload["status"] == "ok" else 1
 
 
 if __name__ == "__main__":
