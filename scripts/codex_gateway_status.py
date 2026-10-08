@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sys
 import time
@@ -13,9 +14,30 @@ import urllib.parse
 import urllib.request
 
 
-def get_status(endpoint: str, timeout: float = 3) -> dict:
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
+def status_url(endpoint: str) -> str:
+    if (
+        not isinstance(endpoint, str)
+        or not endpoint
+        or any(ord(c) <= 32 or ord(c) == 127 for c in endpoint)
+    ):
+        raise ValueError("Invalid endpoint")
     url = urllib.parse.urlsplit(endpoint)
-    target = urllib.parse.urlunsplit(
+    if (
+        url.scheme not in {"http", "https"}
+        or not url.hostname
+        or url.username is not None
+        or url.password is not None
+        or url.query
+        or url.fragment
+    ):
+        raise ValueError("Invalid endpoint")
+    url.port  # Validate malformed or out-of-range ports before opening a socket.
+    return urllib.parse.urlunsplit(
         (
             url.scheme,
             url.netloc,
@@ -24,19 +46,64 @@ def get_status(endpoint: str, timeout: float = 3) -> dict:
             "",
         )
     )
+
+
+def display_endpoint(endpoint: str) -> str:
     try:
-        with urllib.request.urlopen(target, timeout=timeout) as response:
-            state = json.loads(response.read(16384))
-        if (
-            not isinstance(state, dict)
-            or state.get("schema") != "norman.gateway-health.v1"
-        ):
-            raise ValueError("unknown status contract")
-        if not isinstance(state.get("phase"), str) or not isinstance(
-            state.get("message"), str
-        ):
-            raise ValueError("invalid status fields")
-        age = time.time() - float(state["checked_at"])
+        status_url(endpoint)
+        return endpoint
+    except (ValueError, TypeError, AttributeError):
+        return "<invalid endpoint>"
+
+
+def open_status(target: str, timeout: float):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    return opener.open(target, timeout=timeout)
+
+
+def validate_status(state: object) -> dict:
+    phases = {
+        "ready",
+        "recovering",
+        "restarting",
+        "restart_requested",
+        "recovery_stalled",
+        "unavailable",
+        "maintenance",
+    }
+    if not isinstance(state, dict) or state.get("schema") != "norman.gateway-health.v1":
+        raise ValueError("Unknown status contract")
+    if not isinstance(state.get("phase"), str) or state["phase"] not in phases:
+        raise ValueError("Unknown recovery phase")
+    message = state.get("message")
+    if not isinstance(message, str) or not message.isprintable() or len(message) > 1024:
+        raise ValueError("Invalid recovery message")
+    stamp = state.get("checked_at")
+    if type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp < 0:
+        raise ValueError("Invalid observation timestamp")
+    code = state.get("backend_http")
+    if type(code) is not int or (code != 0 and not 100 <= code <= 599):
+        raise ValueError("Invalid backend health code")
+    if state["phase"] == "ready" and code != 200:
+        raise ValueError("Ready receipt contradicts backend health")
+    return state
+
+
+def get_status(endpoint: str, timeout: float = 3) -> dict:
+    try:
+        target = status_url(endpoint)
+    except (ValueError, TypeError, AttributeError):
+        return {
+            "phase": "invalid_endpoint",
+            "message": "Gateway endpoint is invalid; correct the selected profile before retrying.",
+        }
+    try:
+        with open_status(target, timeout=timeout) as response:
+            raw = response.read(16385)
+        if len(raw) > 16384:
+            raise ValueError("Oversized status receipt")
+        state = validate_status(json.loads(raw))
+        age = time.time() - state["checked_at"]
         if not -5 <= age <= 45:
             return {
                 "phase": "stale",
@@ -50,7 +117,7 @@ def get_status(endpoint: str, timeout: float = 3) -> dict:
             "http_status": error.code,
             "message": f"Status endpoint returned HTTP {error.code}; backend readiness is unknown.",
         }
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
         return {
             "phase": "unreachable",
             "message": "Gateway status is unreachable or invalid; backend readiness is unknown.",
@@ -59,7 +126,7 @@ def get_status(endpoint: str, timeout: float = 3) -> dict:
 
 def wait_for_gateway(endpoint: str, wait_seconds: float = 120) -> bool:
     deadline = time.monotonic() + wait_seconds
-    host = endpoint
+    host = display_endpoint(endpoint)
     print(f"Codex route: {host} -> Norman model gateway.", file=sys.stderr, flush=True)
     while True:
         remaining = max(0, deadline - time.monotonic())
@@ -78,7 +145,11 @@ def wait_for_gateway(endpoint: str, wait_seconds: float = 120) -> bool:
             file=sys.stderr,
             flush=True,
         )
-        if remaining <= 0 or phase in {"maintenance", "access_denied"}:
+        if remaining <= 0 or phase in {
+            "maintenance",
+            "access_denied",
+            "invalid_endpoint",
+        }:
             print(
                 "Session was not started; existing history is preserved. Check codex-gateway-status, or use codex-rescue with the appropriate --scope for local diagnosis.",
                 file=sys.stderr,
@@ -93,6 +164,8 @@ def main() -> int:
     parser.add_argument("--profile-file", type=Path)
     parser.add_argument("--wait", type=float, default=0)
     args = parser.parse_args()
+    if not math.isfinite(args.wait):
+        parser.error("--wait must be a finite number")
     endpoint = args.endpoint
     if args.profile_file:
         try:
@@ -102,10 +175,14 @@ def main() -> int:
                 import tomli as tomllib
             profile = tomllib.loads(args.profile_file.read_text())
             provider = profile.get("model_provider", "")
+            if not isinstance(provider, str):
+                raise ValueError("Invalid provider name")
             endpoint = (
                 profile.get("model_providers", {}).get(provider, {}).get("base_url", "")
             )
-        except (OSError, ValueError):
+            if not isinstance(endpoint, str):
+                raise ValueError("Invalid provider endpoint")
+        except (OSError, ValueError, TypeError, AttributeError):
             print(
                 "Gateway preflight could not read the selected profile.",
                 file=sys.stderr,
@@ -117,7 +194,7 @@ def main() -> int:
     if args.wait:
         return 0 if wait_for_gateway(endpoint, max(0, min(args.wait, 120))) else 1
     state = get_status(endpoint)
-    print(json.dumps({"endpoint": endpoint, **state}, indent=2))
+    print(json.dumps({"endpoint": display_endpoint(endpoint), **state}, indent=2))
     return 0 if state["phase"] == "ready" else 1
 
 

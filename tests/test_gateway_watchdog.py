@@ -75,13 +75,14 @@ def test_stale_ready_status_is_not_reported_as_ready(monkeypatch):
                 {
                     "schema": watchdog.SCHEMA,
                     "checked_at": 900,
+                    "backend_http": 200,
                     "phase": "ready",
                     "message": "Ready",
                 }
             ).encode()
         )
 
-    monkeypatch.setattr(client.urllib.request, "urlopen", open_response)
+    monkeypatch.setattr(client, "open_status", open_response)
     monkeypatch.setattr(client.time, "time", lambda: 1000)
     assert client.get_status("https://gateway.test/v1")["phase"] == "stale"
 
@@ -231,7 +232,7 @@ def test_http_status_access_denial_is_actionable_and_not_retried(monkeypatch):
     def denied(*a, **k):
         raise urllib.error.HTTPError("https://example.test", 403, "Forbidden", {}, None)
 
-    monkeypatch.setattr(client.urllib.request, "urlopen", denied)
+    monkeypatch.setattr(client, "open_status", denied)
     assert client.get_status("https://example.test/v1")["phase"] == "access_denied"
     assert not client.wait_for_gateway("https://example.test/v1", 120)
 
@@ -243,7 +244,7 @@ def test_work_status_uses_the_work_frontdoor_path(monkeypatch):
         seen.append(url)
         raise OSError("offline")
 
-    monkeypatch.setattr(client.urllib.request, "urlopen", offline)
+    monkeypatch.setattr(client, "open_status", offline)
     client.get_status("https://norman.home.arpa/work/v1/")
     assert seen == ["https://norman.home.arpa/work/_gateway/status"]
 
@@ -396,3 +397,117 @@ def test_observer_retains_attempt_when_local_diagnosis_response_is_malformed(
     }
     assert gateway_observer.main() == 0
     assert attempts == [True]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"phase": "ready", "backend_http": 503},
+        {"phase": "unknown"},
+        {"phase": []},
+        {"backend_http": True},
+        {"checked_at": float("nan")},
+        {"checked_at": 10**400},
+        {"message": "Ready\x1b[?1000h"},
+    ],
+)
+def test_invalid_status_never_claims_ready(monkeypatch, change):
+    from io import BytesIO
+
+    state = {
+        "schema": watchdog.SCHEMA,
+        "checked_at": 1000,
+        "phase": "ready",
+        "backend_http": 200,
+        "message": "Ready",
+    }
+    state.update(change)
+    monkeypatch.setattr(client.time, "time", lambda: 1000)
+    monkeypatch.setattr(
+        client, "open_status", lambda *a, **k: BytesIO(json.dumps(state).encode())
+    )
+    assert client.get_status("https://gateway.test/v1")["phase"] == "unreachable"
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://[broken",
+        "file:///tmp/status",
+        "https://user:secret@gateway.test/v1",
+        "https://gateway.test:99999/v1",
+        "https://gateway.test/v1\n",
+        123,
+    ],
+)
+def test_invalid_endpoint_stops_without_network_or_wait(monkeypatch, capsys, endpoint):
+    monkeypatch.setattr(
+        client, "open_status", lambda *a, **k: pytest.fail("must not open network")
+    )
+    monkeypatch.setattr(client.time, "sleep", lambda *a: pytest.fail("must not wait"))
+    assert not client.wait_for_gateway(endpoint, 120)
+    assert "secret" not in capsys.readouterr().err
+
+
+def test_status_uses_direct_connection_and_refuses_redirect(monkeypatch):
+    import http.server
+    import threading
+    import time
+
+    calls = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls.append(self.path)
+            if self.path.startswith("/redirect"):
+                self.send_response(302)
+                self.send_header("Location", "/good/_gateway/status")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "schema": watchdog.SCHEMA,
+                        "checked_at": time.time(),
+                        "phase": "ready",
+                        "backend_http": 200,
+                        "message": "Ready",
+                    }
+                ).encode()
+            )
+
+        def log_message(self, *args):
+            pass
+
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("no_proxy", "")
+    monkeypatch.setenv("NO_PROXY", "")
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            base = "http://127.0.0.1:" + str(server.server_port)
+            assert client.get_status(base + "/good/v1")["phase"] == "ready"
+            assert client.get_status(base + "/redirect/v1")["phase"] == "unreachable"
+            assert calls == ["/good/_gateway/status", "/redirect/_gateway/status"]
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("value", ["false", "123", '["url"]'])
+def test_malformed_profile_endpoint_fails_cleanly(monkeypatch, tmp_path, capsys, value):
+    import sys
+
+    path = tmp_path / "profile.toml"
+    path.write_text(
+        'model_provider = "gateway"\n[model_providers.gateway]\nbase_url = '
+        + value
+        + "\n"
+    )
+    monkeypatch.setattr(sys, "argv", ["status", "--profile-file", str(path)])
+    assert client.main() == 1
+    assert "could not read" in capsys.readouterr().err

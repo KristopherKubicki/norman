@@ -778,3 +778,19 @@ runs exit without observing or acting. Receipt writes use unique temporary files
 flush file and directory metadata, and atomically replace the live receipt before
 an automatic action. A failed write stops the action. These locks supplement
 systemd's single-instance scheduling and do not restart the application itself.
+
+
+The status client connects directly to the configured front door, without
+following redirects or consulting HTTP proxy environment variables. Invalid
+endpoints (including embedded credentials, bad ports and control characters)
+stop preflight immediately. Malformed profiles fail with an actionable message.
+A receipt must be bounded, fresh, use a known recovery phase, contain a printable
+message and report a valid backend HTTP code; `ready` requires backend HTTP 200.
+Contradictory or malformed receipts are unavailable, never optimistic readiness.
+These checks describe backend health; model readiness remains a separate probe.
+
+HAL's default status command probes the `/work` front door and its work-client
+access rules. Networking's scheduled observer explicitly probes
+`https://norman.home.arpa/v1`; use that same `--endpoint` for manual checks there.
+An HTTP 403 on the work route from Networking means access is denied, not that
+the backend is down. Keep those access rules intact when diagnosing recovery.
