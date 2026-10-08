@@ -424,3 +424,110 @@ def test_work_wrapper_local_information_with_unavailable_credentials(tmp_path, a
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == args
     assert not (tmp_path / ".codex-work").exists()
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        ["resume", "session-id", "--"],
+        ["resume", "--model"],
+        ["resume", "--image"],
+        ["resume", "-c"],
+    ],
+)
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_shell_resume_guard_cannot_be_bypassed_by_literal_help(tmp_path, prefix, flag):
+    import re
+    import subprocess
+
+    wrapper = Path(
+        os.environ.get(
+            "CODEX_AUDIT_WORK_WRAPPER",
+            Path(__file__).resolve().parents[1] / "scripts/codex_work_wrapper.sh",
+        )
+    )
+    source = wrapper.read_text()
+    functions = "\n".join(
+        re.search(rf"^{name}\(\) \{{\n.*?^\}}", source, re.M | re.S).group()
+        for name in ("resume_target", "is_help_request", "guard_resume")
+    )
+    pressure = tmp_path / "pressure.py"
+    pressure.write_text("raise SystemExit(3)\n")
+    environment = dict(
+        os.environ,
+        CODEX_HOME=str(tmp_path),
+        CODEX_SESSION_PRESSURE_SCRIPT=str(pressure),
+        CODEX_WORK_ALLOW_OVERSIZE_RESUME="0",
+    )
+    result = subprocess.run(
+        ["bash", "-c", functions + '\nguard_resume "$@"', "test", *prefix, flag],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 3, result.stderr
+    assert "session resume blocked" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["resume", "--help"],
+        ["resume", "-h"],
+        ["resume", "--image", "example.png", "--help"],
+    ],
+)
+def test_shell_resume_help_still_skips_pressure_guard(tmp_path, args):
+    import re
+    import subprocess
+
+    wrapper = Path(
+        os.environ.get(
+            "CODEX_AUDIT_WORK_WRAPPER",
+            Path(__file__).resolve().parents[1] / "scripts/codex_work_wrapper.sh",
+        )
+    )
+    source = wrapper.read_text()
+    functions = "\n".join(
+        re.search(rf"^{name}\(\) \{{\n.*?^\}}", source, re.M | re.S).group()
+        for name in ("resume_target", "is_help_request", "guard_resume")
+    )
+    result = subprocess.run(
+        ["bash", "-uc", functions + '\nguard_resume "$@"', "test", *args],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_shell_help_scanner_consumes_every_router_value_option(router):
+    import re
+    import subprocess
+
+    wrapper = Path(
+        os.environ.get(
+            "CODEX_AUDIT_WORK_WRAPPER",
+            Path(__file__).resolve().parents[1] / "scripts/codex_work_wrapper.sh",
+        )
+    )
+    function = re.search(
+        r"^is_help_request\(\) \{\n.*?^\}", wrapper.read_text(), re.M | re.S
+    ).group()
+    for option in router.OPTIONS_WITH_VALUE:
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                function + '\nis_help_request "$@"',
+                "test",
+                "resume",
+                option,
+                "--help",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 1, option

@@ -912,3 +912,9 @@ this shortcut. This does not change authentication requirements for sessions or
 connector management. The boundary audit also exercises both work wrapper paths
 with a deliberately failing fake credential loader, asserting that it is never
 called and no work profile directory is created for local CLI information.
+
+The work shell launcher's help scanner also respects option values and the `--`
+separator. Resume pressure checks and gateway preflight use this same scanner, so
+literal `--help`/`-h` prompt text cannot skip startup checks. Regression tests run
+the actual shell functions against a fake pressure guard and check every
+value-taking option declared by the router for scanner consistency.

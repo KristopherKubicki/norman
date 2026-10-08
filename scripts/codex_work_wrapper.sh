@@ -153,13 +153,9 @@ guard_resume() {
     return 0
   fi
 
-  for argument in "$@"; do
-    case "$argument" in
-      --help|-h)
-        return
-        ;;
-    esac
-  done
+  if is_help_request "$@"; then
+    return 0
+  fi
 
   case "${CODEX_WORK_ALLOW_OVERSIZE_RESUME:-0}" in
     0)
@@ -202,8 +198,18 @@ EOF
 }
 
 is_help_request() {
+  local argument=""
+  local expect_option_value=0
   for argument in "$@"; do
+    if [[ "$expect_option_value" == "1" ]]; then
+      expect_option_value=0
+      continue
+    fi
     case "$argument" in
+      --) return 1 ;;
+      -C|-c|-m|-p|-a|-i|-o|-s|--add-dir|--config|--cd|--color|--disable|--enable|--model|--profile|--profile-v2|--remote|--remote-auth-token-env|--image|--local-provider|--sandbox|--ask-for-approval|--output-last-message|--output-schema)
+        expect_option_value=1
+        ;;
       --help|-h)
         return 0
         ;;

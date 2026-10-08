@@ -42,6 +42,11 @@ def route_module(monkeypatch):
     try:
         spec.loader.exec_module(module)
         monkeypatch.setattr(module, "gateway_startup_ready", lambda _route: True)
+
+        def unexpected_exec(*args, **kwargs):
+            pytest.fail("Router test attempted an unmocked process replacement")
+
+        monkeypatch.setattr(module.os, "execve", unexpected_exec)
         yield module
     finally:
         sys.modules.pop(module_name, None)
