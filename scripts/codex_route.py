@@ -1102,6 +1102,11 @@ def route_payload(route: Route | None, launcher: str, cwd: Path) -> dict[str, ob
             "fallback": "regular-default",
         }
     payload = asdict(route)
+    payload["account_policy"] = {
+        "expected_owner": "work" if route.group == "work" else "personal",
+        "selection": "gateway-backend-required",
+        "client_account_switching": False,
+    }
     payload.update(
         {
             "checkout_root": str(root),

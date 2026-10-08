@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -113,6 +114,19 @@ ROUTE_POLICY_FALLBACKS = {
 }
 
 
+def named_cloud_alias_matches(alias: str, model: str) -> bool:
+    """Named TUI tiers cannot silently become a different model family."""
+    tier = alias.removeprefix("norman-code-")
+    if not alias.startswith("norman-code-") or tier not in {
+        "luna",
+        "terra",
+        "sol",
+        "astra",
+    }:
+        return True
+    return bool(re.fullmatch(r"(?:openai\.)?gpt-\d+(?:\.\d+)?-" + tier, model))
+
+
 def _explicit_cloud_models() -> dict[str, dict[str, str]]:
     selections: dict[str, dict[str, str]] = {}
     for role in ("economy", "authority", "frontier"):
@@ -126,7 +140,11 @@ def _explicit_cloud_models() -> dict[str, dict[str, str]]:
                 "lane": "coder",
                 "role": role,
             }
-    return selections
+    return {
+        alias: row
+        for alias, row in selections.items()
+        if named_cloud_alias_matches(alias, row["model"])
+    }
 
 
 ROUTE_POLICY_CLOUD_POLICY = {
@@ -189,7 +207,12 @@ def explicit_cloud_selection_for_model(
     provider = _clean(selected.get("provider")).lower().replace("_", "-")
     model = _clean(selected.get("model"))
     lane = _clean(selected.get("lane")).lower()
-    if provider != "aws-bedrock" or not model or not lane:
+    if (
+        provider != "aws-bedrock"
+        or not model
+        or not lane
+        or not named_cloud_alias_matches(requested, model)
+    ):
         return None
     return {
         "provider": provider,

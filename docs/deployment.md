@@ -647,3 +647,73 @@ If you encounter issues during deployment or operation, consult the following re
 
 Feel free to modify and expand this document to include any additional information or steps specific to your project or
 deployment preferences.
+
+## Resident maintenance and routing diagnostics
+
+`codex --print-route` describes the launcher route and expected owner. Account
+selection is enforced by the backend registry, not by a launcher preference.
+`codex-route-policy --route work` (or `--route norman` for generic personal use)
+reads the backend's current configured binding, allowed regions and named models
+through SSH. It exports no credentials or AWS account IDs. An expired policy or
+unknown route fails closed. Configured identity is not proof of an executed AWS
+request: the snapshot explicitly reports `execution_identity_verified: false`.
+Install `scripts/gateway_routing_snapshot.py` on Norman as
+`/usr/local/libexec/norman-routing-snapshot`, mode 0755; the router installer adds
+the local `codex-route-policy` wrapper. This diagnostic requires Norman SSH access
+and the account-routing registry introduced separately in the account-routing work.
+
+At the October 2026 validation, the registry had only `work` and `personal`
+bindings. There was no registered Evergreen binding and no automatic client
+account switch. Do not advertise Evergreen as active merely because it is a
+preferred account in a launcher. Register and validate an authorized same-owner
+binding before adding account failover; never cross work/personal ownership.
+
+Fleet role defaults can differ from named model choices on the Norman backend.
+The policy compiler now refuses `norman-code-sol` mapped to Astra (and analogous
+Luna/Terra/Astra mismatches). It preserves role defaults and only publishes a
+named tier when the concrete model matches that tier. This fixes misleading
+policy metadata without silently replacing the chosen model.
+
+Run `scripts/deploy_resident_prefetch.sh` as root **on Networking VM232 only**,
+from a checkout or staged scripts directory containing the controller and units.
+It installs `norllama-resident-prefetch@work.timer` and `@personal.timer`, running
+about every five minutes. The service uses the owning host's maintained fleet
+topology, not a copied historical topology. It observes signed-policy eligibility,
+worker readiness, the local model catalog and actual `/api/ps` residency. It
+renews approved `qwen3.8:27b` residency within ten minutes of expiry. A runtime
+without an eviction deadline is only observed. To exercise renewal once, run:
+
+```sh
+sudo -u kristopher /opt/hal-services/venv/bin/python \
+  /opt/hal-services/norman/scripts/norllama/resident_prefetch.py \
+  --scope work --topology /opt/hal-services/norman/config/fleet/topology.json \
+  --state /home/kristopher/.local/state/norman/resident-prefetch-work.json --warm-now
+```
+
+Use `--scope personal` and its own state file for personal Spark. A warm test must
+return its own completed job and confirm actual residency. Per-scope state in
+`~kristopher/.local/state/norman/resident-prefetch-*.json` records policy, residency,
+task admission and errors. Attempts are persisted before submission, locked against
+overlap, limited to six per hour and separated by five minutes. Malformed state
+blocks maintenance; inspect it rather than silently clearing the attempt budget.
+Requests disable proxying, redirects and peer forwarding, and verify model hosts
+belong to the selected worker. They carry no user conversation or task data.
+
+`resident` or `warm` does **not** authorize a coding or planning lane. The worker
+can truthfully remain `blocked` with unknown admission while Qwen is available
+for scoped, tool-free outage advice. Cold models are reported as `cold` and are
+not loaded automatically: loading needs a separate capacity decision. No model
+download, eviction, account switch, cloud fallback or backend restart is performed.
+The older resident warmer also reports unfinished jobs as timeouts and skips
+loads when required free GPU memory is unknown. Do not re-enable obsolete warmer
+timers with old model names.
+
+For rollback, disable both new timer instances and stop their services on
+Networking. The existing worker runtime is left intact. Restore a compiler backup
+only after checking for subsequent changes, then run the existing
+`norllama-fleet-policy-refresh.service` to validate and distribute a new generation;
+do not copy an expired artifact over a current policy. A narrow October 2026
+runtime rollout preserved unrelated live changes, with backups under
+`/var/lib/networking/routing-alignment-20261008` and local evidence on HAL's
+personal `/data` tier. A whole release must also reconcile the separate account,
+topology and gateway-recovery PRs rather than overwrite their live-only changes.
