@@ -1389,3 +1389,120 @@ def test_all_work_routes_consume_wrapper_flags_and_default_apps_off(
     assert "--work-apps" not in command
     assert "--work-no-apps" not in command
     assert command[-2:] == ["exec", "check"]
+
+
+@pytest.mark.parametrize(
+    "owner,other", [("work", ".codex"), ("personal", ".codex-work")]
+)
+@pytest.mark.parametrize("kind", ["exact", "child", "symlink", "symlink_parent"])
+def test_home_owner_rejects_opposite_paths_and_aliases(
+    route_module, tmp_path, monkeypatch, owner, other, kind
+):
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", ())
+    monkeypatch.delenv("CODEX_WORK_HOME", raising=False)
+    opposite = tmp_path / other
+    opposite.mkdir()
+    if kind == "exact":
+        candidate = opposite
+    elif kind == "child":
+        candidate = opposite / "nested"
+    elif kind == "symlink":
+        candidate = tmp_path / "alias"
+        candidate.symlink_to(opposite, target_is_directory=True)
+    else:
+        alias = tmp_path / "alias"
+        alias.symlink_to(tmp_path, target_is_directory=True)
+        candidate = alias / other / "nested"
+    with pytest.raises(RuntimeError, match="opposite-owner"):
+        route_module.validate_codex_home_owner(candidate, owner)
+
+
+def test_named_home_alias_cannot_cross_owners(route_module, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    alias = tmp_path / "work-alias"
+    alias.symlink_to(personal, target_is_directory=True)
+    work = replace(route_by_key(route_module, "control-plane"), codex_home=str(alias))
+    regular = replace(route_by_key(route_module, "norman"), codex_home=str(personal))
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", (work, regular))
+    for route in (work, regular):
+        with pytest.raises(RuntimeError, match="opposite-owner"):
+            route_module.route_home(route)
+
+
+def test_regular_launch_rejects_inherited_custom_work_home(
+    route_module, tmp_path, monkeypatch
+):
+    work = tmp_path / "custom-work"
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", ())
+    monkeypatch.setenv("CODEX_WORK_HOME", str(work))
+    monkeypatch.setenv("CODEX_HOME", str(work))
+    monkeypatch.setattr(route_module, "resolve_real_codex", lambda: tmp_path / "codex")
+    monkeypatch.setattr(
+        route_module.os, "execve", lambda *args: pytest.fail("must not launch")
+    )
+    for arguments in (["login"], ["mcp", "list"], ["resume", "example"]):
+        with pytest.raises(RuntimeError, match="opposite-owner"):
+            route_module.exec_regular_fallback(arguments)
+
+
+def test_work_home_must_not_be_personal_home(route_module, tmp_path, monkeypatch):
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", ())
+    monkeypatch.setenv("CODEX_WORK_HOME", str(tmp_path / ".codex"))
+    with pytest.raises(RuntimeError, match="opposite-owner"):
+        route_module.work_codex_home()
+    assert not (tmp_path / ".codex").exists()
+
+
+@pytest.mark.parametrize(
+    "owner,name",
+    [("work", ".codex-work"), ("personal", ".codex"), ("personal", "custom-personal")],
+)
+def test_home_owner_preserves_nonconflicting_homes(
+    route_module, tmp_path, monkeypatch, owner, name
+):
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", ())
+    monkeypatch.delenv("CODEX_WORK_HOME", raising=False)
+    home = tmp_path / name
+    assert route_module.validate_codex_home_owner(home, owner) == home
+    assert not home.exists()
+
+
+def test_home_owner_symlink_loop_is_not_treated_as_safe(
+    route_module, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(route_module, "HOME", tmp_path)
+    monkeypatch.setattr(route_module, "ROUTES", ())
+    link = tmp_path / "loop"
+    link.symlink_to(link)
+    with pytest.raises(RuntimeError, match="resolve Codex home ownership"):
+        route_module.validate_codex_home_owner(link, "work")
+
+
+def test_personal_clients_drop_work_ops_binding_without_changing_parent(
+    route_module, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY", "synthetic-test-binding")
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
+    personal = route_module.route_environment(route_by_key(route_module, "norman"))
+    work = route_module.route_environment(route_by_key(route_module, "control-plane"))
+    assert "OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY" not in personal
+    assert "CODEX_WORK_OPS_BINDING_LOADED" not in personal
+    assert work["OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY"] == "synthetic-test-binding"
+    monkeypatch.setattr(
+        route_module, "generic_codex_home", lambda: tmp_path / "personal"
+    )
+    monkeypatch.setattr(route_module, "resolve_real_codex", lambda: tmp_path / "codex")
+    calls = []
+    monkeypatch.setattr(route_module.os, "execve", lambda *args: calls.append(args))
+    route_module.exec_regular_fallback(["login"])
+    assert "OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY" not in calls[0][2]
+    assert "CODEX_WORK_OPS_BINDING_LOADED" not in calls[0][2]
+    assert os.environ["OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY"] == "synthetic-test-binding"

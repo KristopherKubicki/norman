@@ -573,8 +573,56 @@ def uses_route_scoped_management_command(
     return route.launcher == "work" and command_name(arguments) == "mcp"
 
 
+def resolved_codex_home_path(path: Path) -> Path:
+    """Allow absent homes while rejecting inaccessible paths and symlink loops."""
+    try:
+        path.stat()
+    except FileNotFoundError:
+        pass
+    return path.resolve()
+
+
+def validate_codex_home_owner(home: Path, owner: str) -> Path:
+    """Reject known opposite-owner homes without reading credential files."""
+    if owner not in {"work", "personal"}:
+        raise RuntimeError("Unknown Codex home owner.")
+    candidate = home.expanduser()
+    other_homes = [HOME / (".codex" if owner == "work" else ".codex-work")]
+    other_homes.extend(
+        Path(route.codex_home).expanduser()
+        for route in ROUTES
+        if (route.launcher == "work") != (owner == "work")
+    )
+    if owner == "personal" and os.getenv("CODEX_WORK_HOME", "").strip():
+        other_homes.append(Path(os.environ["CODEX_WORK_HOME"]).expanduser())
+    try:
+        resolved = resolved_codex_home_path(candidate)
+        opposites = [resolved_codex_home_path(other) for other in other_homes]
+        conflict = any(
+            resolved == other or resolved.is_relative_to(other) for other in opposites
+        )
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError("Unable to resolve Codex home ownership safely.") from exc
+    if conflict:
+        raise RuntimeError(
+            f"Refusing {owner} Codex launch in a known opposite-owner home. "
+            "Correct CODEX_HOME/CODEX_WORK_HOME or use the matching launcher."
+        )
+    return candidate
+
+
+def work_codex_home() -> Path:
+    """Resolve the generic work home while preserving the ownership boundary."""
+    configured = os.getenv("CODEX_WORK_HOME", "").strip()
+    return validate_codex_home_owner(
+        Path(configured) if configured else HOME / ".codex-work", "work"
+    )
+
+
 def route_home(route: Route) -> Path:
-    return Path(route.codex_home).expanduser()
+    return validate_codex_home_owner(
+        Path(route.codex_home), "work" if route.launcher == "work" else "personal"
+    )
 
 
 def profile_path(route: Route) -> Path:
@@ -1635,10 +1683,20 @@ def verify_route(route: Route) -> tuple[bool, str]:
     return True, "authenticated Responses gateway and GPT-5.6 Terra route verified"
 
 
+def personal_environment() -> dict[str, str]:
+    """Do not pass the work Ops binding into a personal client process."""
+    environment = os.environ.copy()
+    environment.pop("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY", None)
+    environment.pop("CODEX_WORK_OPS_BINDING_LOADED", None)
+    return environment
+
+
 def route_environment(route: Route) -> dict[str, str]:
     """Build a mapped TUI environment without model-visible secret plumbing."""
 
-    environment = os.environ.copy()
+    environment = (
+        os.environ.copy() if route.launcher == "work" else personal_environment()
+    )
     for name in MODEL_HIDDEN_SECRET_ENVIRONMENT_KEYS:
         environment.pop(name, None)
     return environment
@@ -1688,6 +1746,7 @@ def verify_managed_tui_secret_policy() -> None:
 
 
 def exec_work_route(route: Route, arguments: list[str]) -> None:
+    route_home(route)
     if not os.getenv("CODEX_WORK_OPS_BINDING_LOADED"):
         if not OPS_OPENBRAND_MCP_LAUNCHER.is_file():
             raise RuntimeError(
@@ -1758,18 +1817,18 @@ def exec_regular_route(route: Route, arguments: list[str]) -> None:
 
 def generic_codex_home() -> Path:
     configured = os.getenv("CODEX_HOME", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return HOME / ".codex"
+    return validate_codex_home_owner(
+        Path(configured) if configured else HOME / ".codex", "personal"
+    )
 
 
 def exec_regular_fallback(arguments: list[str]) -> None:
     real_codex = str(resolve_real_codex())
-    environment = os.environ.copy()
+    environment = personal_environment()
+    environment["CODEX_HOME"] = str(generic_codex_home())
     command = [real_codex]
     if starts_session(arguments):
         verify_managed_tui_secret_policy()
-        environment["CODEX_HOME"] = str(generic_codex_home())
         environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command.extend(arguments)
     os.execve(real_codex, command, environment)
@@ -1785,7 +1844,7 @@ def exec_work_fallback(reenter: str, arguments: list[str]) -> None:
     environment = os.environ.copy()
     environment["CODEX_ROUTER_RESOLVED"] = "1"
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
-    home = Path(environment.get("CODEX_WORK_HOME", HOME / ".codex-work")).expanduser()
+    home = work_codex_home()
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     write_routed_tui_secret_policy(home)
     environment["CODEX_HOME"] = str(home)

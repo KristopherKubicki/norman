@@ -875,3 +875,15 @@ retain the work home. A missing work launcher is an error; it must not fall
 through to regular/personal Codex. This also preserves the work boundary for
 `login`, `mcp`, and `resume` outside a mapped checkout. HAL already used this
 work fallback; the source router now does too.
+
+Codex home selection rejects known opposite-owner directories before launch or
+profile writes. This covers generic `.codex`/`.codex-work`, named route homes,
+an explicitly configured work home inherited by regular Codex, child paths,
+and symlink aliases. Resolution failures stop the launch. The check reads path
+metadata only; it never reads authentication files. Correct `CODEX_HOME` or
+`CODEX_WORK_HOME`, or use the matching launcher when rejected. An unknown custom
+home is not proven to belong to either owner; this is a guard against known
+cross-owner selection, not a complete classification or OAuth isolation system.
+Personal launches also discard the inherited work Ops MCP bearer variable and
+binding-loaded marker from the child environment, preserving the parent and
+work launches. Existing running processes are unchanged.
