@@ -12,11 +12,32 @@ readonly CODEX_WORK_AWS_REGION="${CODEX_WORK_AWS_REGION:-us-east-2}"
 readonly CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS="${CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS:-4}"
 readonly OPS_OPENBRAND_MCP_LAUNCHER="$HOME/code/control_plane/scripts/with_ops_openbrand_mcp.sh"
 
+# App availability does not establish connector identity; verify live profiles.
 disable_apps="${CODEX_WORK_DISABLE_APPS:-0}"
-if [[ "${1-}" == "--work-no-apps" ]]; then
-  disable_apps=1
-  shift
-fi
+filtered_args=()
+literal_arguments=0
+expect_option_value=0
+for argument in "$@"; do
+  if [[ "$literal_arguments" == "1" || "$expect_option_value" == "1" ]]; then
+    filtered_args+=("$argument")
+    expect_option_value=0
+    continue
+  fi
+  case "$argument" in
+    --)
+      literal_arguments=1
+      filtered_args+=("$argument")
+      ;;
+    --work-apps) disable_apps=0 ;;
+    --work-no-apps) disable_apps=1 ;;
+    -C|-c|-m|-p|-a|-i|-o|-s|--add-dir|--config|--cd|--color|--disable|--enable|--model|--profile|--profile-v2|--remote|--remote-auth-token-env|--image|--local-provider|--sandbox|--ask-for-approval|--output-last-message|--output-schema)
+      expect_option_value=1
+      filtered_args+=("$argument")
+      ;;
+    *) filtered_args+=("$argument") ;;
+  esac
+done
+set -- "${filtered_args[@]}"
 readonly CODEX_WORK_DISABLE_APPS="$disable_apps"
 export CODEX_WORK_DISABLE_APPS
 
@@ -58,7 +79,10 @@ esac
 
 run_codex() {
   local codex_bin="${CODEX_REAL_BIN:-codex}"
-  exec "$codex_bin" "$@"
+  if [[ "$disable_apps" == "1" ]]; then
+    exec "$codex_bin" --disable apps "$@"
+  fi
+  exec "$codex_bin" --enable apps "$@"
 }
 
 run_guarded_codex() {
@@ -74,10 +98,6 @@ run_guarded_codex() {
     exit 1
   fi
   export NORMAN_TUI_NO_DIRECT_VAULT=1
-  if [[ "$CODEX_WORK_DISABLE_APPS" == "1" ]]; then
-    local codex_bin="${CODEX_REAL_BIN:-codex}"
-    exec "$codex_bin" --disable apps "$@"
-  fi
   run_codex "$@"
 }
 

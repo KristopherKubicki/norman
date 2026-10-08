@@ -177,7 +177,7 @@ def test_explicit_gateway_profile_and_model_are_not_overridden(
     assert captured["environment"]["NORMAN_TUI_NO_DIRECT_VAULT"] == "1"
 
 
-def test_control_plane_work_sessions_disable_apps_unless_explicitly_enabled(
+def test_control_plane_work_sessions_enable_apps_by_default(
     route_module, monkeypatch, tmp_path
 ):
     route = route_by_key(route_module, "control-plane")
@@ -186,6 +186,7 @@ def test_control_plane_work_sessions_disable_apps_unless_explicitly_enabled(
     real_codex.chmod(0o700)
     captured = []
 
+    monkeypatch.delenv("CODEX_WORK_DISABLE_APPS", raising=False)
     monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
     monkeypatch.setattr(route_module, "write_gateway_profile", lambda _route: tmp_path)
     monkeypatch.setattr(route_module, "resolve_real_codex", lambda: real_codex)
@@ -206,7 +207,7 @@ def test_control_plane_work_sessions_disable_apps_unless_explicitly_enabled(
 
     assert captured[0][1] == [
         str(real_codex),
-        "--disable",
+        "--enable",
         "apps",
         "--profile",
         route.profile,
@@ -217,6 +218,8 @@ def test_control_plane_work_sessions_disable_apps_unless_explicitly_enabled(
     ]
     assert captured[1][1] == [
         str(real_codex),
+        "--enable",
+        "apps",
         "--profile",
         route.profile,
         "-m",
@@ -978,6 +981,7 @@ def test_model_route_unavailable_warns_then_starts_routed_session(
     route = route_by_key(route_module, "control-plane")
     executed = []
 
+    monkeypatch.delenv("CODEX_WORK_DISABLE_APPS", raising=False)
     monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
     monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: route)
     monkeypatch.setattr(
@@ -1207,3 +1211,41 @@ def test_norman_management_commands_skip_capacity_preflight(
     assert route_module.main(["--launcher", "regular", "--", *arguments]) == 0
     assert preflight_calls == []
     assert fallback_calls == [arguments]
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected_prefix"),
+    [
+        ("--work-no-apps", ["/bin/true", "--disable", "apps"]),
+        ("--work-apps", ["/bin/true", "--enable", "apps"]),
+        (None, ["/bin/true", "--enable", "apps"]),
+    ],
+)
+def test_bound_work_route_consumes_wrapper_app_marker(
+    route_module, monkeypatch, marker, expected_prefix
+):
+    route = route_by_key(route_module, "control-plane")
+    executed = []
+
+    monkeypatch.delenv("CODEX_WORK_DISABLE_APPS", raising=False)
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
+    monkeypatch.setattr(route_module, "verify_managed_tui_secret_policy", lambda: None)
+    monkeypatch.setattr(route_module, "write_gateway_profile", lambda _route: None)
+    monkeypatch.setattr(route_module, "route_environment", lambda _route: {})
+    monkeypatch.setattr(route_module, "resolve_real_codex", lambda: Path("/bin/true"))
+    monkeypatch.setattr(
+        route_module.os,
+        "execve",
+        lambda command, arguments, environment: executed.append(
+            (command, arguments, environment)
+        ),
+    )
+
+    route_module.exec_work_route(
+        route, ([marker] if marker else []) + ["exec", "hello"]
+    )
+
+    assert executed[0][1][: len(expected_prefix)] == expected_prefix
+    if marker:
+        assert marker not in executed[0][1]
+    assert executed[0][1][-2:] == ["exec", "hello"]

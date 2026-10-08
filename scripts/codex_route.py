@@ -193,7 +193,6 @@ ROUTES: tuple[Route, ...] = (
             "control-plane-gdrive-pricing-review",
             "ops-openbrand-mcp-ops",
         ),
-        default_disabled_features=("apps",),
     ),
     Route(
         key="earlybird",
@@ -316,21 +315,33 @@ MANAGEMENT_COMMANDS = frozenset(
 )
 NON_SESSION_FLAGS = frozenset({"--help", "--version", "-V", "-h"})
 OPTIONS_WITH_VALUE = frozenset(
-    {
+    [
         "--add-dir",
-        "--config",
+        "--ask-for-approval",
         "--cd",
         "--color",
+        "--config",
         "--disable",
         "--enable",
+        "--image",
+        "--local-provider",
         "--model",
+        "--output-last-message",
+        "--output-schema",
         "--profile",
         "--profile-v2",
+        "--remote",
+        "--remote-auth-token-env",
+        "--sandbox",
         "-C",
+        "-a",
         "-c",
+        "-i",
         "-m",
+        "-o",
         "-p",
-    }
+        "-s",
+    ]
 )
 
 
@@ -1594,6 +1605,27 @@ def verify_managed_tui_secret_policy() -> None:
         )
 
 
+def work_app_arguments(arguments: Sequence[str]) -> tuple[list[str], bool | None]:
+    """Consume wrapper switches without changing option values or literal prompts."""
+    filtered: list[str] = []
+    choice = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            filtered.extend(arguments[index:])
+            break
+        if argument in {"--work-apps", "--work-no-apps"}:
+            choice = argument == "--work-apps"
+        else:
+            filtered.append(argument)
+            if argument in OPTIONS_WITH_VALUE and index + 1 < len(arguments):
+                index += 1
+                filtered.append(arguments[index])
+        index += 1
+    return filtered, choice
+
+
 def exec_work_route(route: Route, arguments: list[str]) -> None:
     if not os.getenv("CODEX_WORK_OPS_BINDING_LOADED"):
         if not OPS_OPENBRAND_MCP_LAUNCHER.is_file():
@@ -1613,6 +1645,11 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
         )
         os.execve(str(OPS_OPENBRAND_MCP_LAUNCHER), command, work_environment())
 
+    arguments, work_apps = work_app_arguments(arguments)
+    inherited = os.getenv("CODEX_WORK_DISABLE_APPS", "0")
+    if inherited not in {"0", "1"}:
+        raise RuntimeError("CODEX_WORK_DISABLE_APPS must be 0 or 1.")
+    disable_apps = (inherited == "1") if work_apps is None else not work_apps
     verify_managed_tui_secret_policy()
     write_gateway_profile(route)
     environment = route_environment(route)
@@ -1620,6 +1657,8 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
     environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command = [environment["CODEX_REAL_BIN"]]
+    # Tool availability does not authenticate accounts or authorize actions.
+    command.extend(("--disable" if disable_apps else "--enable", "apps"))
     session_start = starts_session(arguments)
     explicit_features = explicit_feature_toggles(arguments)
     if session_start:
