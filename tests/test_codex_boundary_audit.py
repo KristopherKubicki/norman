@@ -531,3 +531,88 @@ def test_shell_help_scanner_consumes_every_router_value_option(router):
             timeout=10,
         )
         assert result.returncode == 1, option
+
+
+def shell_wrapper_source():
+    return Path(
+        os.environ.get(
+            "CODEX_AUDIT_WORK_WRAPPER",
+            Path(__file__).resolve().parents[1] / "scripts/codex_work_wrapper.sh",
+        )
+    ).read_text()
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (["exec", "--", "--profile", "other"], ""),
+        (["--image", "--profile=other", "exec"], ""),
+        (["-m", "-pother", "exec"], ""),
+        (["--profile", "work", "exec", "--", "-pother"], "work"),
+        (["-p=work", "exec"], "work"),
+        (["--profile-v2=work"], "work"),
+    ],
+)
+def test_shell_profile_selection_respects_values_and_literals(args, expected):
+    import subprocess
+
+    source = shell_wrapper_source()
+    block = source[
+        source.index('profile_name=""\n') : source.index("\nselected_profile=")
+    ]
+    result = subprocess.run(
+        ["bash", "-uc", block + '\nprintf "%s" "$profile_name"', "test", *args],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
+
+
+def test_shell_resume_target_consumes_all_router_value_options(router):
+    import re
+    import subprocess
+
+    function = re.search(
+        r"^resume_target\(\) \{\n.*?^\}", shell_wrapper_source(), re.M | re.S
+    ).group()
+    for option in router.OPTIONS_WITH_VALUE:
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                function + '\nresume_target "$@"',
+                "test",
+                "resume",
+                option,
+                "option-value",
+                "session-id",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "session-id", option
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["--profile", ""], ["--profile="], ["-p="], ["--profile-v2="], ["--profile"]],
+)
+def test_shell_profile_rejects_empty_or_missing_name(args):
+    import subprocess
+
+    source = shell_wrapper_source()
+    block = source[
+        source.index('profile_name=""\n') : source.index("\nselected_profile=")
+    ]
+    result = subprocess.run(
+        ["bash", "-uc", block, "test", *args],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 2
+    assert "requires a profile name" in result.stderr

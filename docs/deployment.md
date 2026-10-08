@@ -918,3 +918,10 @@ separator. Resume pressure checks and gateway preflight use this same scanner, s
 literal `--help`/`-h` prompt text cannot skip startup checks. Regression tests run
 the actual shell functions against a fake pressure guard and check every
 value-taking option declared by the router for scanner consistency.
+
+Work profile selection now stops at `--` and consumes unrelated option values
+before interpreting profile flags. Attached `-p=work` selects the same profile as
+`-p work`; empty or missing names fail explicitly. Resume-target discovery also
+consumes `--profile-v2`, `--color`, and output-file/schema options, preventing their
+values from being checked as session IDs. These are CLI parsing rules, not proof
+of any connector's authenticated identity.

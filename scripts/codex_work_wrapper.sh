@@ -125,6 +125,7 @@ resume_target() {
         fi
         return
         ;;
+      --profile-v2|--color|-o|--output-last-message|--output-schema|\
       -c|--config|--enable|--disable|--remote|--remote-auth-token-env|\
       -i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|\
       -C|--cd|--add-dir|-a|--ask-for-approval)
@@ -237,23 +238,39 @@ guard_resume "$@"
 
 profile_name=""
 expect_profile_name=0
+expect_other_value=0
 for arg in "$@"; do
+  if [[ "$expect_other_value" -eq 1 ]]; then
+    expect_other_value=0
+    continue
+  fi
   if [[ "$expect_profile_name" -eq 1 ]]; then
+    if [[ -z "$arg" ]]; then
+      echo "codex-work: --profile requires a profile name." >&2
+      exit 2
+    fi
     profile_name="$arg"
     expect_profile_name=0
     continue
   fi
 
   case "$arg" in
+    --) break ;;
     --profile|--profile-v2|-p)
       expect_profile_name=1
       ;;
-    --profile=*|--profile-v2=*)
-      profile_name="${arg#--profile=}"
-      profile_name="${profile_name#--profile-v2=}"
+    --profile=*|--profile-v2=*|-p?*)
+      case "$arg" in
+        --*) profile_name="${arg#*=}" ;;
+        *) profile_name="${arg#-p}"; profile_name="${profile_name#=}" ;;
+      esac
+      if [[ -z "$profile_name" ]]; then
+        echo "codex-work: --profile requires a profile name." >&2
+        exit 2
+      fi
       ;;
-    -p?*)
-      profile_name="${arg#-p}"
+    -C|-c|-m|-a|-i|-o|-s|--add-dir|--config|--cd|--color|--disable|--enable|--model|--remote|--remote-auth-token-env|--image|--local-provider|--sandbox|--ask-for-approval|--output-last-message|--output-schema)
+      expect_other_value=1
       ;;
   esac
 done
