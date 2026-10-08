@@ -35,20 +35,29 @@ def request(
 
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     with opener.open(req, timeout=timeout) as response:
-        return json.loads(response.read(1024 * 1024))
+        raw = response.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise ValueError("Local worker response exceeds the diagnostic limit")
+    result = json.loads(raw)
+    if not isinstance(result, dict):
+        raise ValueError("Local worker returned an invalid response")
+    return result
 
 
-def select_model(catalog: dict, requested: str = "") -> str:
+def select_model(catalog: dict, requested: str = "", *, worker: str = "") -> str:
     eligible = []
+    allowed_hosts = {"127.0.0.1", "localhost", "::1"}
+    if worker:
+        if worker not in WORKERS.values():
+            raise ValueError("Unknown owning worker")
+        allowed_hosts.add(urllib.parse.urlsplit(worker).hostname)
     for row in catalog.get("data", []):
         hosts = row.get("hosts") or [row.get("host", "")]
         if (
             row.get("provider") != "ollama"
             or not hosts
             or not all(
-                urllib.parse.urlsplit(host).hostname
-                in {"127.0.0.1", "localhost", "::1"}
-                for host in hosts
+                urllib.parse.urlsplit(host).hostname in allowed_hosts for host in hosts
             )
         ):
             continue
@@ -70,9 +79,8 @@ def select_model(catalog: dict, requested: str = "") -> str:
     )[0]
 
 
-def diagnose(scope: str, prompt: str, model: str = "") -> dict:
-    if not prompt.strip() or len(prompt.encode()) > 32768:
-        raise ValueError("Provide a nonempty diagnostic prompt no larger than 32 KiB")
+def check_readiness(scope: str, model: str = "") -> dict:
+    """Probe the owning worker without a prompt, inference, or session access."""
     base = WORKERS[scope]
     readiness = request(base, "/readyz")
     if (
@@ -82,7 +90,31 @@ def diagnose(scope: str, prompt: str, model: str = "") -> dict:
         raise ValueError(
             "Norllama readiness or signed policy is unavailable; refusing to bypass it"
         )
-    selected = select_model(request(base, "/v1/models"), model)
+    selected = select_model(request(base, "/v1/models"), model, worker=base)
+    resident = request(base, "/api/ps")
+    if not any(
+        row.get("model", row.get("name")) == selected
+        for row in resident.get("models", [])
+    ):
+        raise ValueError(
+            "Selected Qwen model is not resident; no cold load or fallback was attempted"
+        )
+    return {
+        "scope": scope,
+        "worker": base,
+        "model": selected,
+        "resident": True,
+        "ready_for": "tool_free_diagnosis",
+        "generation_performed": False,
+        "session_history_accessed": False,
+    }
+
+
+def diagnose(scope: str, prompt: str, model: str = "") -> dict:
+    if not prompt.strip() or len(prompt.encode()) > 32768:
+        raise ValueError("Provide a nonempty diagnostic prompt no larger than 32 KiB")
+    checked = check_readiness(scope, model)
+    base, selected = checked["worker"], checked["model"]
     print(
         f"LOCAL RESCUE: {scope} worker {base}, {selected}; no tools, cloud fallback, or peer failover.",
         file=sys.stderr,
@@ -130,17 +162,36 @@ def main() -> int:
     )
     parser.add_argument("--model", default="")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check local readiness without reading or sending a prompt",
+    )
     args = parser.parse_args()
-    prompt = args.prompt if args.prompt is not None else sys.stdin.read(32769)
+    if args.check and args.prompt is not None:
+        parser.error("--check cannot be combined with --prompt")
     try:
-        result = diagnose(args.scope, prompt, args.model)
-    except (OSError, ValueError, KeyError, IndexError) as error:
+        if args.check:
+            result = check_readiness(args.scope, args.model)
+        else:
+            prompt = args.prompt if args.prompt is not None else sys.stdin.read(32769)
+            result = diagnose(args.scope, prompt, args.model)
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        IndexError,
+        TypeError,
+        AttributeError,
+    ) as error:
         print(
             f"Local rescue unavailable ({type(error).__name__}): {error}. Existing Codex history is unchanged.",
             file=sys.stderr,
         )
         return 1
-    print(json.dumps(result, indent=2) if args.json else result["diagnosis"])
+    print(
+        json.dumps(result, indent=2) if args.json or args.check else result["diagnosis"]
+    )
     return 0
 
 

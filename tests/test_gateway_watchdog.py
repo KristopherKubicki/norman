@@ -103,6 +103,8 @@ def test_rescue_scope_stays_on_local_worker_without_tools(monkeypatch):
         calls.append((base, path, payload))
         if path == "/readyz":
             return {"ready": True, "policy": {"production_route_eligible": True}}
+        if path == "/api/ps":
+            return {"models": [{"model": "qwen3.8:27b"}]}
         if path == "/v1/models":
             return {
                 "data": [
@@ -244,3 +246,60 @@ def test_work_status_uses_the_work_frontdoor_path(monkeypatch):
     monkeypatch.setattr(client.urllib.request, "urlopen", offline)
     client.get_status("https://norman.home.arpa/work/v1/")
     assert seen == ["https://norman.home.arpa/work/_gateway/status"]
+
+
+@pytest.mark.parametrize("scope", ["work", "personal"])
+def test_rescue_accepts_only_owning_worker_lan_address(scope):
+    from urllib.parse import urlsplit
+
+    own = rescue.WORKERS[scope]
+    other = rescue.WORKERS["personal" if scope == "work" else "work"]
+    row = {
+        "id": "qwen3.8:27b",
+        "provider": "ollama",
+        "hosts": ["http://" + urlsplit(own).hostname + ":11435"],
+    }
+    assert rescue.select_model({"data": [row]}, worker=own) == row["id"]
+    row["hosts"].append("http://" + urlsplit(other).hostname + ":11435")
+    with pytest.raises(ValueError, match="No worker-local"):
+        rescue.select_model({"data": [row]}, worker=own)
+
+
+def test_rescue_check_never_reads_stdin_or_sends_a_prompt(monkeypatch, capsys):
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["codex-rescue", "--scope", "personal", "--check"])
+    monkeypatch.setattr(
+        sys.stdin, "read", lambda *a: pytest.fail("must not read stdin")
+    )
+    calls = []
+    docs = {
+        "/readyz": {"ready": True, "policy": {"production_route_eligible": True}},
+        "/v1/models": {
+            "data": [
+                {
+                    "id": "qwen3.8:27b",
+                    "provider": "ollama",
+                    "hosts": ["http://192.168.40.150:11435"],
+                }
+            ]
+        },
+        "/api/ps": {"models": [{"name": "qwen3.8:27b"}]},
+    }
+
+    def request(base, path, payload=None, timeout=5):
+        assert base == rescue.WORKERS["personal"]
+        assert payload is None
+        calls.append(path)
+        return docs[path]
+
+    monkeypatch.setattr(rescue, "request", request)
+    assert rescue.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["generation_performed"] is False
+    assert result["session_history_accessed"] is False
+    assert result["resident"] is True
+    docs["/api/ps"]["models"] = []
+    with pytest.raises(ValueError, match="not resident"):
+        rescue.diagnose("personal", "check this outage")
+    assert all(path != "/v1/chat/completions" for path in calls)

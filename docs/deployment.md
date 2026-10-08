@@ -713,6 +713,8 @@ Operator commands installed by `scripts/install_codex_route.sh`:
 ```sh
 codex-gateway-status
 codex-gateway-status --endpoint https://cp.kris.openbrand.com/v1 --wait 120
+codex-rescue --scope work --check
+codex-rescue --scope personal --check
 codex-rescue --scope work --prompt 'Backend TCP connections are refused during startup; suggest read-only checks.'
 codex-rescue --scope personal --prompt 'Summarize these personal-service outage observations.'
 ```
@@ -720,12 +722,17 @@ codex-rescue --scope personal --prompt 'Summarize these personal-service outage 
 Rescue talks directly to the owning Spark's Norllama gateway (work
 `192.168.42.151:18151`, personal `192.168.40.150:18151`), so it works independently
 of Norman, Keystone, their token broker, and cloud providers. It checks signed
-policy readiness, selects an advertised worker-local Qwen model, disables peer
+policy readiness and actual model residency, selects an advertised worker-local Qwen model, disables peer
 spillover, disables HTTP proxies/redirects, limits input/output/time, and sends
 no tools. It reads only explicitly supplied text, not session history or logs.
 Model suggestions are untrusted advisory output; they cannot restart services,
 change billing routes, execute repairs or resume a cloud conversation. A local
 worker or policy failure is reported rather than bypassed. Keep scope explicit.
+`--check` performs only readiness/catalog/residency reads: it does not read stdin,
+send a prompt, generate a completion or inspect history. A cold model is reported
+unavailable instead of triggering an implicit load during an outage. The catalog
+may advertise loopback or the selected worker's own LAN address; another worker's
+address is rejected, including catalogs mixing local and cross-owner hosts.
 
 Networking VM232 remains the owner of Norllama fleet checks and recovery drills;
 do not reactivate migrated HAL copies. Worker readiness is not proof of successful
