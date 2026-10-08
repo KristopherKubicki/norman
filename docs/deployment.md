@@ -925,3 +925,10 @@ before interpreting profile flags. Attached `-p=work` selects the same profile a
 consumes `--profile-v2`, `--color`, and output-file/schema options, preventing their
 values from being checked as session IDs. These are CLI parsing rules, not proof
 of any connector's authenticated identity.
+
+The work resume pressure guard recognizes `resume` after global options, such as
+`codex-work --profile work resume SESSION_ID`, and checks the same target as the
+command-first form. It consumes option values and stops at the literal separator;
+`resume` appearing in a prompt or option value cannot activate the guard. Original
+arguments remain available for help detection, and the pressure limits and
+explicit override are unchanged.

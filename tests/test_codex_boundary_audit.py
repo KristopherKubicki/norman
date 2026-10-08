@@ -616,3 +616,78 @@ def test_shell_profile_rejects_empty_or_missing_name(args):
     )
     assert result.returncode == 2
     assert "requires a profile name" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        ["--profile", "work"],
+        ["-pwork"],
+        ["--cd", "/checkout"],
+        ["-C/checkout"],
+        ["--model", "resume"],
+        ["--enable", "apps", "--profile=work"],
+    ],
+)
+def test_shell_resume_guard_handles_global_options(tmp_path, prefix):
+    import re
+    import subprocess
+
+    functions = "\n".join(
+        re.search(
+            rf"^{name}\(\) \{{\n.*?^\}}", shell_wrapper_source(), re.M | re.S
+        ).group()
+        for name in ("resume_target", "is_help_request", "guard_resume")
+    )
+    pressure = tmp_path / "pressure.py"
+    pressure.write_text(
+        'import sys\nassert sys.argv[sys.argv.index("--resume-target") + 1] == "session-id"\nraise SystemExit(3)\n'
+    )
+    environment = dict(
+        os.environ,
+        CODEX_HOME=str(tmp_path),
+        CODEX_SESSION_PRESSURE_SCRIPT=str(pressure),
+        CODEX_WORK_ALLOW_OVERSIZE_RESUME="0",
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-uc",
+            functions + '\nguard_resume "$@"',
+            "test",
+            *prefix,
+            "resume",
+            "session-id",
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 3, result.stderr
+    assert "session resume blocked" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--", "resume", "session-id"],
+        ["exec", "resume", "session-id"],
+        ["--image", "resume", "prompt"],
+        ["--profile", "resume"],
+    ],
+)
+def test_shell_resume_guard_does_not_interpret_prompt_or_values_as_command(args):
+    import re
+    import subprocess
+
+    function = re.search(
+        r"^guard_resume\(\) \{\n.*?^\}", shell_wrapper_source(), re.M | re.S
+    ).group()
+    result = subprocess.run(
+        ["bash", "-uc", function + '\nguard_resume "$@"', "test", *args],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr

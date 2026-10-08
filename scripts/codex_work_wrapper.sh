@@ -150,11 +150,24 @@ resume_target() {
 }
 
 guard_resume() {
-  if [[ "${1-}" != "resume" ]]; then
-    return 0
-  fi
+  local original_args=("$@")
+  # Global options may precede the subcommand. Consume their values so neither
+  # an option value nor literal prompt text can impersonate `resume`.
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --) return 0 ;;
+      -C|-c|-m|-p|-a|-i|-o|-s|--add-dir|--config|--cd|--color|--disable|--enable|--model|--profile|--profile-v2|--remote|--remote-auth-token-env|--image|--local-provider|--sandbox|--ask-for-approval|--output-last-message|--output-schema)
+        if [[ "$#" -lt 2 ]]; then return 0; fi
+        shift 2
+        ;;
+      -*) shift ;;
+      resume) break ;;
+      *) return 0 ;;
+    esac
+  done
+  if [[ "$#" -eq 0 ]]; then return 0; fi
 
-  if is_help_request "$@"; then
+  if is_help_request "${original_args[@]}"; then
     return 0
   fi
 
