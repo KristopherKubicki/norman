@@ -761,3 +761,20 @@ backups and validate before reloading. Preserve session files and watchdog
 attempt history. Operational receipts for the October 7 installation are under
 `~/.local/state/norman/gateway-outage-recovery-20261007` on Norman and
 `/var/lib/networking/gateway-outage-recovery-20261007` on Networking.
+
+
+Recovery receipts are also action budgets. Missing state permits first startup;
+malformed or unreadable state suspends automatic restarts and automatic local
+advice, with `recovery_state_invalid: true`. Health observations continue, including
+reporting a genuinely healthy backend as ready. The invalid-state flag survives
+subsequent writes and healthy periods. Preserve and inspect the damaged receipt,
+then restore a verified receipt or reconcile the previous action timestamps before
+clearing the flag; deleting the file is not a safe way to reset a spent budget.
+Non-finite, negative, boolean and nonnumeric timestamps are invalid. Valid future
+action timestamps remain in the budget so clock rollback cannot unlock retries.
+
+Scheduled and manual runs lock the same state file before reading it. Overlapping
+runs exit without observing or acting. Receipt writes use unique temporary files,
+flush file and directory metadata, and atomically replace the live receipt before
+an automatic action. A failed write stops the action. These locks supplement
+systemd's single-instance scheduling and do not restart the application itself.

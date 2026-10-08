@@ -303,3 +303,96 @@ def test_rescue_check_never_reads_stdin_or_sends_a_prompt(monkeypatch, capsys):
     with pytest.raises(ValueError, match="not resident"):
         rescue.diagnose("personal", "check this outage")
     assert all(path != "/v1/chat/completions" for path in calls)
+
+
+@pytest.mark.parametrize("raw", ["{broken", "[]", '"text"'])
+def test_damaged_receipt_blocks_repair_across_observations(tmp_path, raw):
+    path = tmp_path / "status.json"
+    path.write_text(raw)
+    previous = watchdog.read_state(path)
+    for now, code in [(1000, 0), (1500, 0), (1600, 200), (2000, 0), (2400, 0)]:
+        state, repair = watchdog.observe(previous, SERVICE, code, now, 999, False)
+        assert not repair
+        assert state["recovery_state_invalid"] is True
+        if code == 200:
+            assert state["phase"] == "ready"
+        watchdog.write_state(path, state)
+        previous = watchdog.read_state(path)
+
+
+@pytest.mark.parametrize(
+    "bad", ["yesterday", True, float("nan"), float("inf"), -1, 10**400]
+)
+@pytest.mark.parametrize(
+    "field", ["down_since", "restart_attempts", "last_diagnosis_attempt"]
+)
+def test_malformed_budget_fields_suspend_automatic_actions(monkeypatch, field, bad):
+    import sys
+    from pathlib import Path
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import gateway_observer
+
+    previous = {
+        "down_since": 1000,
+        field: [bad] if field == "restart_attempts" else bad,
+    }
+    state, repair = watchdog.observe(previous, SERVICE, 0, 5000, 999, False)
+    assert not repair and state["recovery_state_invalid"]
+    report, analyze = gateway_observer.update(previous, {"phase": "unavailable"}, 5000)
+    assert not analyze and report["recovery_state_invalid"]
+    assert not gateway_observer.update(report, {"phase": "unavailable"}, 10000)[1]
+
+
+def test_recovery_lock_blocks_an_overlapping_run_and_releases(tmp_path):
+    path = tmp_path / "state.json"
+    with watchdog.state_lock(path) as first:
+        assert first
+        with watchdog.state_lock(path) as second:
+            assert not second
+    with watchdog.state_lock(path) as after:
+        assert after
+
+
+def test_failed_receipt_serialization_preserves_previous_budget(tmp_path):
+    path = tmp_path / "state.json"
+    original = {"restart_attempts": [1234]}
+    watchdog.write_state(path, original)
+    with pytest.raises(ValueError):
+        watchdog.write_state(path, {"restart_attempts": [float("nan")]})
+    assert watchdog.read_state(path) == original
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_observer_retains_attempt_when_local_diagnosis_response_is_malformed(
+    monkeypatch, tmp_path
+):
+    import sys
+    from pathlib import Path
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import gateway_observer
+
+    path = tmp_path / "observer.json"
+    watchdog.write_state(path, {"down_since": 1000})
+    monkeypatch.setattr(
+        sys, "argv", ["observer", "--state", str(path), "--rescue-on-failure"]
+    )
+    monkeypatch.setattr(gateway_observer.time, "time", lambda: 1500)
+    monkeypatch.setattr(
+        gateway_observer, "get_status", lambda _: {"phase": "unreachable"}
+    )
+    attempts = []
+
+    def malformed(*args):
+        assert watchdog.read_state(path)["last_diagnosis_attempt"] == 1500
+        attempts.append(True)
+        raise AttributeError("malformed model response")
+
+    monkeypatch.setattr(gateway_observer, "diagnose", malformed)
+    assert gateway_observer.main() == 0
+    assert watchdog.read_state(path)["local_advice"] == {
+        "unavailable": "AttributeError"
+    }
+    assert gateway_observer.main() == 0
+    assert attempts == [True]

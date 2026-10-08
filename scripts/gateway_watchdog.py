@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import json
 import math
+import os
 from pathlib import Path
 import re
 import subprocess
 import time
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -86,6 +90,43 @@ def service_state() -> dict:
     }
 
 
+def valid_timestamp(value: object) -> bool:
+    try:
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+    except OverflowError:
+        return False
+
+
+def recovery_state_valid(previous: dict) -> bool:
+    """Malformed budgets must never become fresh automatic-action budgets."""
+    return (
+        not previous.get("recovery_state_invalid")
+        and (
+            previous.get("down_since") is None
+            or valid_timestamp(previous["down_since"])
+        )
+        and isinstance(previous.get("restart_attempts", []), list)
+        and all(valid_timestamp(item) for item in previous.get("restart_attempts", []))
+        and valid_timestamp(previous.get("last_diagnosis_attempt", 0))
+    )
+
+
+@contextmanager
+def state_lock(path: Path):
+    """Serialize scheduled and manual runs before reading their shared budget."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_suffix(".lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def observe(
     previous: dict,
     service: dict,
@@ -95,11 +136,22 @@ def observe(
     maintenance: bool,
 ) -> tuple[dict, bool]:
     """Pure state machine: never restart an intentional stop or model outage."""
+    valid = recovery_state_valid(previous)
+    budget = previous if valid else {}
     down_since = (
-        now if code == 200 else min(now, float(previous.get("down_since") or now))
+        now
+        if code == 200
+        else min(
+            now,
+            float(
+                budget.get("down_since")
+                if budget.get("down_since") is not None
+                else now
+            ),
+        )
     )
     elapsed = max(0, int(now - down_since))
-    actions = [t for t in previous.get("restart_attempts", []) if now - t < 3600]
+    actions = [t for t in budget.get("restart_attempts", []) if now - t < 3600]
     phase = "ready" if code == 200 else "unavailable"
     if code != 200 and service.get("ActiveState") in {"activating", "deactivating"}:
         phase = "restarting" if elapsed < GRACE else "recovery_stalled"
@@ -108,7 +160,8 @@ def observe(
     if maintenance:
         phase = "maintenance"
     repair = (
-        code == 0
+        valid
+        and code == 0
         and not maintenance
         and elapsed >= GRACE
         and uptime >= GRACE
@@ -139,23 +192,40 @@ def observe(
         "restart_attempts": actions,
         "model_readiness": "not_checked",
         "automatic_recovery_eligible": repair,
+        "recovery_state_invalid": not valid,
+        "recovery_state_message": "Automatic recovery is suspended; restore or reconcile the damaged budget receipt."
+        if not valid
+        else "",
     }, repair
 
 
 def read_state(path: Path) -> dict:
     try:
         value = json.loads(path.read_text())
-        return value if isinstance(value, dict) else {}
-    except (OSError, ValueError):
+        return value if isinstance(value, dict) else {"recovery_state_invalid": True}
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError):
+        return {"recovery_state_invalid": True}
 
 
 def write_state(path: Path, state: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(state, indent=2) + "\n")
-    temporary.chmod(0o644)
-    temporary.replace(path)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(json.dumps(state, indent=2, allow_nan=False) + "\n")
+            stream.flush()
+            os.fchmod(stream.fileno(), 0o644)
+            os.fsync(stream.fileno())
+            temporary.replace(path)
+            descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -172,6 +242,11 @@ def main() -> int:
         help="Allow bounded try-restart of an enabled, running, unresponsive production unit",
     )
     args = parser.parse_args()
+    with state_lock(args.state) as acquired:
+        return run(args) if acquired else 0
+
+
+def run(args: argparse.Namespace) -> int:
     now = time.time()
     previous = read_state(args.state)
     service = service_state()
