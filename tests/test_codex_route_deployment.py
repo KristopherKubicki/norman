@@ -417,6 +417,8 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
     )
     assert mcp.returncode == 0, mcp.stderr
     assert output.read_text(encoding="utf-8").splitlines() == [
+        "--disable",
+        "apps",
         "mcp",
         "list",
         "--json",
@@ -489,6 +491,8 @@ os.execve(
 
     assert result.returncode == 0, result.stderr
     assert output.read_text(encoding="utf-8").splitlines() == [
+        "--enable",
+        "apps",
         "--profile",
         "work",
         "resume",
