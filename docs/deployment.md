@@ -903,3 +903,12 @@ are consumed only as switches, preserving literal prompts and option values.
 The audit can target an installed router/wrapper using `CODEX_AUDIT_ROUTER_PATH`
 and `CODEX_AUDIT_WORK_WRAPPER`; its isolated homes and stubbed executors never
 send messages, mutate tickets, retrieve credentials, or launch model sessions.
+
+Local Codex help and version requests now bypass session preparation, gateway
+preflight, and optional Ops MCP credential loading. They still validate the
+launcher's Codex home against known opposite-owner homes and preserve the pinned
+work CLI selection. Argument values and literal prompts after `--` cannot trigger
+this shortcut. This does not change authentication requirements for sessions or
+connector management. The boundary audit also exercises both work wrapper paths
+with a deliberately failing fake credential loader, asserting that it is never
+called and no work profile directory is created for local CLI information.

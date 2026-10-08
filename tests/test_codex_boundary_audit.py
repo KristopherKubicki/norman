@@ -311,3 +311,116 @@ def test_real_git_origin_and_attached_cd_block_wrong_launcher_before_credentials
     )
     assert not (tmp_path / ".codex").exists()
     assert not (tmp_path / ".codex-work").exists()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["--help"], ["-h"], ["--version"], ["-V"], ["help", "exec"], ["exec", "--help"]],
+)
+@pytest.mark.parametrize("launcher", ["work", "regular"])
+def test_local_cli_information_never_enters_session_setup(
+    router, monkeypatch, tmp_path, args, launcher
+):
+    monkeypatch.setattr(router, "resolve_route", lambda cwd: None)
+    monkeypatch.setattr(router, "resolve_real_codex", lambda: Path("/fake/codex"))
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Local CLI information entered session/credential setup")
+
+    for name in (
+        "exec_work_fallback",
+        "exec_regular_fallback",
+        "verify_managed_tui_secret_policy",
+        "write_routed_tui_secret_policy",
+    ):
+        monkeypatch.setattr(router, name, forbidden)
+    calls = []
+    monkeypatch.setattr(router.os, "execve", lambda *call: calls.append(call))
+    monkeypatch.setenv("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY", "synthetic-test-value")
+    assert router.main(["--launcher", launcher, "--", *args]) == 0
+    executable, command, environment = calls.pop()
+    assert executable == "/fake/codex"
+    assert command == ["/fake/codex", *args]
+    assert environment["CODEX_HOME"] == str(
+        tmp_path / (".codex-work" if launcher == "work" else ".codex")
+    )
+    assert "OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY" not in environment
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--", "--help"],
+        ["-m", "--help"],
+        ["exec", "--", "help"],
+        ["--help=false"],
+        ["--version=false"],
+    ],
+)
+def test_local_information_classifier_preserves_literals(router, args):
+    assert not router.local_cli_information(args)
+
+
+@pytest.mark.parametrize("launcher", ["work", "regular"])
+def test_local_information_still_rejects_opposite_owner_home(
+    router, monkeypatch, tmp_path, launcher
+):
+    monkeypatch.setattr(router, "resolve_route", lambda cwd: None)
+    monkeypatch.setenv(
+        "CODEX_WORK_HOME" if launcher == "work" else "CODEX_HOME",
+        str(tmp_path / (".codex" if launcher == "work" else ".codex-work")),
+    )
+    with pytest.raises(RuntimeError, match="opposite-owner"):
+        router.main(["--launcher", launcher, "--", "--version"])
+
+
+@pytest.mark.parametrize(
+    "args", [["--help"], ["--version"], ["help", "exec"], ["exec", "--help"]]
+)
+def test_work_wrapper_local_information_with_unavailable_credentials(tmp_path, args):
+    import subprocess
+
+    wrapper = Path(
+        os.environ.get(
+            "CODEX_AUDIT_WORK_WRAPPER",
+            Path(__file__).resolve().parents[1] / "scripts/codex_work_wrapper.sh",
+        )
+    )
+    binary = tmp_path / ".local/lib/codex-work-0.158.0/node_modules/.bin/codex"
+    binary.parent.mkdir(parents=True)
+    binary.write_text(
+        "#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n"
+    )
+    binary.chmod(0o700)
+    broker = tmp_path / "code/control_plane/scripts/with_ops_openbrand_mcp.sh"
+    broker.parent.mkdir(parents=True)
+    marker = tmp_path / "broker-called"
+    broker.write_text('#!/bin/sh\ntouch "$HOME/broker-called"\nexit 97\n')
+    broker.chmod(0o700)
+    environment = dict(
+        os.environ,
+        HOME=str(tmp_path),
+        CODEX_ROUTER_SCRIPT=str(ROUTER_PATH),
+        CODEX_REAL_BIN=str(binary),
+        CODEX_WORK_HOME=str(tmp_path / ".codex-work"),
+    )
+    for key in (
+        "CODEX_ROUTER_RESOLVED",
+        "CODEX_WORK_OPS_BINDING_LOADED",
+        "OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY",
+        "CODEX_HOME",
+    ):
+        environment.pop(key, None)
+    result = subprocess.run(
+        [str(wrapper), *args],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert not marker.exists(), "Local information attempted credential loading"
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == args
+    assert not (tmp_path / ".codex-work").exists()

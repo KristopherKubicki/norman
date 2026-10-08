@@ -1890,6 +1890,27 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     return parsed
 
 
+def local_cli_information(arguments: Sequence[str]) -> bool:
+    """Only actual help/version requests bypass credentialed session setup."""
+    return command_name(arguments) == "help" or any(
+        key in {"--help", "-h", "--version", "-V"} and value is None
+        for key, value in routing_tokens(arguments)
+    )
+
+
+def exec_local_cli_information(launcher: str, arguments: list[str]) -> None:
+    # Validate ownership even for local commands; never prepare profiles, contact
+    # gateways, or fetch an optional MCP binding just to print CLI information.
+    home = work_codex_home() if launcher == "work" else generic_codex_home()
+    environment = os.environ.copy()
+    environment.pop("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY", None)
+    environment.pop("CODEX_WORK_OPS_BINDING_LOADED", None)
+    environment["CODEX_HOME"] = str(home)
+    real_codex = str(resolve_real_codex())
+    arguments, _ = work_app_arguments(arguments)
+    os.execve(real_codex, [real_codex, *arguments], environment)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parsed = parse_args(argv or sys.argv[1:])
     if parsed.routes:
@@ -1931,6 +1952,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         success, detail = verify_route(route)
         print(f"{route.key}: {detail}", file=sys.stderr)
         return 0 if success else 1
+
+    if local_cli_information(parsed.codex_args):
+        exec_local_cli_information(parsed.launcher, parsed.codex_args)
+        return 0
 
     if starts_session(parsed.codex_args):
         arguments_error = secret_guard_arguments_error(parsed.codex_args)

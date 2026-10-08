@@ -1246,6 +1246,12 @@ def test_norman_management_commands_skip_capacity_preflight(
         lambda codex_args: fallback_calls.append(codex_args),
     )
 
+    monkeypatch.setattr(
+        route_module,
+        "exec_local_cli_information",
+        lambda launcher, codex_args: fallback_calls.append(codex_args),
+    )
+
     assert route_module.main(["--launcher", "regular", "--", *arguments]) == 0
     assert preflight_calls == []
     assert fallback_calls == [arguments]
