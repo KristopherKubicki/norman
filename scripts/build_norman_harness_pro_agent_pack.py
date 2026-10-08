@@ -98,6 +98,7 @@ SCRIPT_FILES = (
     "scripts/caddy_gateway_policy.py",
     "scripts/codex_gateway_status.py",
     "scripts/codex_work_gateway.py",
+    "scripts/codex_terminal_guard.py",
     "scripts/codex_rescue.py",
     "scripts/gateway_watchdog.py",
     "scripts/runbook_hybrid_architecture_audit.py",

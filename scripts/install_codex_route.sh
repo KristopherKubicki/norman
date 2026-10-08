@@ -40,6 +40,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 for source in \
+  "$SCRIPT_DIR/codex_terminal_guard.py" \
   "$SCRIPT_DIR/codex_gateway_status.py" \
   "$SCRIPT_DIR/codex_work_gateway.py" \
   "$SCRIPT_DIR/codex_rescue.py" \
@@ -60,6 +61,7 @@ for source in \
 done
 
 install -d -m 0700 "$BIN_DIR" "$LIB_DIR"
+install -m 0700 "$SCRIPT_DIR/codex_terminal_guard.py" "$LIB_DIR/codex_terminal_guard.py"
 install -m 0700 "$SCRIPT_DIR/codex_work_gateway.py" "$LIB_DIR/codex_work_gateway.py"
 install -m 0700 "$SCRIPT_DIR/codex_gateway_status.py" "$LIB_DIR/codex_gateway_status.py"
 install -m 0700 "$SCRIPT_DIR/codex_gateway_status.py" "$BIN_DIR/codex-gateway-status"

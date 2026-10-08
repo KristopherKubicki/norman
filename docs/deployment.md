@@ -794,3 +794,20 @@ access rules. Networking's scheduled observer explicitly probes
 `https://norman.home.arpa/v1`; use that same `--endpoint` for manual checks there.
 An HTTP 403 on the work route from Networking means access is denied, not that
 the backend is down. Keep those access rules intact when diagnosing recovery.
+
+Interactive `codex` and `codex-work` launches keep a small terminal supervisor
+outside router re-entry. It restores the original terminal attributes and disables
+mouse/focus reporting, bracketed paste and alternate-screen mode after the client
+exits, then makes the cursor visible. This limits raw mouse escape sequences leaking
+into the shell after an abnormal client exit. It preserves exit status, leaves the
+child in the foreground job's process group, and propagates child-only suspension
+so shell suspend/resume still works. Ctrl-C is not forwarded twice to the client.
+
+The supervisor never reads or flushes terminal input, copies transcripts, resumes
+sessions or retries requests. Piped/non-TTY commands execute directly, preserving
+machine-readable output. Install `scripts/codex_terminal_guard.py` with the launcher
+installer; narrowly updating existing wrappers preserves their local routing changes.
+It applies to new launches only. Killing the supervisor itself with SIGKILL, a host
+failure or a closed terminal can prevent cleanup. Already queued mouse bytes may
+remain because discarding input could also discard the user's keystrokes. This is
+terminal recovery, not a fix for interrupted inference or durable Responses state.
